@@ -1,0 +1,6 @@
+{
+    "test": {
+        "max_iter": 10,
+        "train_batch_size": "8;16"
+    }
+}
