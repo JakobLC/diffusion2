@@ -58,7 +58,7 @@ def main(**modified_args):
             raise ValueError(f"Could not find ckpt for {args.model_name} in {logs_root} with model_str={args.model_str}. Available ckpts: {available_ckpts}")
             
     save_path = logs_root / f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')}_{args.model_name}"
-    
+    args.save_path = str(save_path)
     pprint(args.__dict__)
     
     if new_log:

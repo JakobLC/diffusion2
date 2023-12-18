@@ -1,5 +1,6 @@
 {               
     "model_name": ["test",                          "Name of the model. TYPE: string. DEFAULT: 'test'"],
+    "save_path": ["",                               "Path to save the model. TYPE: str. DEFAULT: ''"],
     "diffusion": {
         "no_diffusion": [false,                     "Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false"],
         "noise_schedule": ["linear",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: linear"],

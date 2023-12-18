@@ -4,14 +4,14 @@ Various utilities for neural networks.
 
 import math
 
-import torch as th
+import torch
 import torch.nn as nn
 
 
 # PyTorch 1.7 has SiLU, but we support PyTorch 1.5.
 class SiLU(nn.Module):
     def forward(self, x):
-        return x * th.sigmoid(x)
+        return x * torch.sigmoid(x)
 
 
 class GroupNorm32(nn.GroupNorm):
@@ -119,7 +119,7 @@ def normalization(channels):
     return GroupNorm32(thirty_two, channels)
 
 
-def timestep_embedding(timesteps, dim, max_period=10000):
+def timestep_embedding(timesteps, dim, max_period=10):
     """
     Create sinusoidal timestep embeddings.
 
@@ -130,13 +130,13 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     :return: an [N x dim] Tensor of positional embeddings.
     """
     half = dim // 2
-    freqs = th.exp(
-        -math.log(max_period) * th.arange(start=0, end=half, dtype=th.float32) / half
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
     ).to(device=timesteps.device)
     args = timesteps[:, None].float() * freqs[None]
-    embedding = th.cat([th.cos(args), th.sin(args)], dim=-1)
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:
-        embedding = th.cat([embedding, th.zeros_like(embedding[:, :1])], dim=-1)
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
 
 
@@ -158,26 +158,26 @@ def checkpoint(func, inputs, params, flag):
         return func(*inputs)
 
 
-class CheckpointFunction(th.autograd.Function):
+class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, length, *args):
         ctx.run_function = run_function
         ctx.input_tensors = list(args[:length])
         ctx.input_params = list(args[length:])
-        with th.no_grad():
+        with torch.no_grad():
             output_tensors = ctx.run_function(*ctx.input_tensors)
         return output_tensors
 
     @staticmethod
     def backward(ctx, *output_grads):
         ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
-        with th.enable_grad():
+        with torch.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
             # Tensor storage in place, which is not allowed for detach()'d
             # Tensors.
             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
-        input_grads = th.autograd.grad(
+        input_grads = torch.autograd.grad(
             output_tensors,
             ctx.input_tensors + ctx.input_params,
             output_grads,

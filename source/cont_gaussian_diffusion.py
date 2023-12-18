@@ -37,7 +37,7 @@ def coefs_(coefs, shape, dtype=torch.float32, device="cuda", batch_dim=0):
     view_shape[batch_dim] = -1
     return coefs.view(view_shape).to(device).to(dtype)
 
-def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
+def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
     float64 = lambda x: torch.tensor(float(x),dtype=torch.float64)
     if schedule_name=="linear":
         return lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
@@ -72,16 +72,21 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
     else:
         raise ValueError(f"Unknown schedule name: {schedule_name}, must be one of ['linear', 'cosine_[start]_[end]_[tau]', 'sigmoid_[start]_[end]_[tau]', 'linear_simple']")
     
-    def wrap_with_high_precision_clip_scale(t,gamma,b):
-        t = (t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)
-        b = (b if torch.is_tensor(b) else torch.tensor(b)).to(torch.float64)
-        gamma_t = gamma(t)
-        if (b-1.0).abs().item()<1e-9: #no input scaling
-            return torch.clip(gamma_t,clip_min,1.0)
-        else:
-            return torch.clip(b*gamma_t/((b-1)*gamma_t+1),clip_min,1.0)
-    return lambda t: wrap_with_high_precision_clip_scale(t,gamma,b)
-    
+    b = (b if torch.is_tensor(b) else torch.tensor(b)).to(torch.float64)
+    input_scaling = (b-1.0).abs().item()>1e-9
+    if input_scaling:
+        gamma_input_scaled = lambda t: b*gamma(t)/((b-1)*gamma(t)+1)
+    else:
+        gamma_input_scaled = gamma
+        
+    return lambda t: gamma_logsnr_limits(t,gamma_input_scaled,logsnr_min,logsnr_max)
+
+def gamma_logsnr_limits(t,gamma_input_scaled,logsnr_min,logsnr_max):
+    t = (t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)
+    tmax,tmin = find_logsnr_t_values(gamma_input_scaled,[logsnr_min,logsnr_max],1e-10,100)
+    t_hat = (t-tmin)/(tmax-tmin)
+    return gamma_input_scaled(t_hat)
+
 class ModelPredType(enum.Enum):
     """Which type of output the model predicts."""
     EPS = enum.auto()  
@@ -107,10 +112,9 @@ class VarType(enum.Enum):
     large = enum.auto()
 
 class ContinuousGaussianDiffusion():
-    def __init__(self, schedule_name, input_scale, model_pred_type, weights_type, time_cond_type, var_type, clip_min=1e-9):
+    def __init__(self, schedule_name, input_scale, model_pred_type, weights_type, time_cond_type, var_type, logsnr_min=-20.0, logsnr_max=20.0):
         """class to handle the diffusion process"""
-        self.gamma = get_named_gamma_schedule(schedule_name,input_scale,clip_min=clip_min)
-        self.weights_type = weights_type
+        self.gamma = get_named_gamma_schedule(schedule_name,input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
         self.model_pred_type = model_pred_type
         self.time_cond_type = time_cond_type
         self.var_type = var_type
@@ -443,35 +447,51 @@ def main():
         print("UNIT TEST: compare loss weight functions")
         loss_weight_types = [WeightsType.SNR,WeightsType.SNR_plus1,WeightsType.SNR_trunc]
         t = torch.linspace(0,1,1000)
-        uniform_prob = 0.001
         for loss_weight_type in loss_weight_types:
             cgd = ContinuousGaussianDiffusion("cosine",1.0,
                                                 ModelPredType.X,
                                                 loss_weight_type,
                                                 TimeCondType.t,
                                                 VarType.small)
-            plt.subplot(1,2,1)
+            
             w = cgd.loss_weights(t)
             
             #w *= 1 - uniform_prob
             #w += uniform_prob / len(w)
             #w /= w.sum()
+            print(w[:5],w[-5:])
+            print(w.min(),w.max())
             logw = torch.log(w)
+            print(logw.min(),logw.max())
             
+            plt.subplot(2,2,1)
             plt.plot(cgd.logsnr(t),logw,label=f"{loss_weight_type.name}")
-            plt.subplot(1,2,2)
+            plt.subplot(2,2,2)
             plt.plot(cgd.logsnr(t),w,label=f"{loss_weight_type.name}")
-        plt.subplot(1,2,1)
+            plt.subplot(2,2,3)
+            plt.plot(t,logw,label=f"{loss_weight_type.name}")
+            plt.subplot(2,2,4)
+            plt.plot(t,w,label=f"{loss_weight_type.name}")
+        plt.subplot(2,2,1)
         plt.legend()
         plt.ylabel("log(loss_weight)")
         plt.xlabel("logSNR")
-        plt.xlim(-6,6)
-        plt.subplot(1,2,2)
+        #plt.xlim(-6,6)
+        plt.subplot(2,2,2)
         plt.legend()
         plt.ylabel("loss_weight")
         plt.xlabel("logSNR")
         plt.xlim(-6,6)
         plt.ylim(0,10)
+        plt.subplot(2,2,3)
+        plt.legend()
+        plt.ylabel("log(loss_weight)")
+        plt.xlabel("t")
+        plt.subplot(2,2,4)
+        plt.legend()
+        plt.ylabel("loss_weight")
+        plt.xlabel("t")
+        
         plt.show()
     elif args.unit_test==8:
         print("UNIT TEST: compare loss alpha,sigma,SNR,logSNR")

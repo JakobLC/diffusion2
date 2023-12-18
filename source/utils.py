@@ -1,6 +1,69 @@
 import torch
 import numpy as np
 import random
+from pathlib import Path
+import csv
+import os
+
+def dump_kvs(filename, kvs, sep=","):
+    file_exists = os.path.isfile(filename)
+    if file_exists:
+        with open(filename, 'r', newline='') as file:
+            reader = csv.reader(file, delimiter=sep)
+            old_headers = next(reader, [])
+        new_headers = set(kvs.keys()) - set(old_headers)
+        if new_headers:
+            header_write = old_headers + sorted(new_headers)
+            
+            with open(filename, 'r', newline='') as file:
+                reader = csv.reader(file, delimiter=sep)
+                data = list(reader)
+            
+            with open(filename, 'w', newline='') as file:
+                writer = csv.writer(file, delimiter=sep)
+                writer.writerow(header_write)  # Write sorted headers
+                #remove the old header
+                data.pop(0)
+                # Modify old lines to have empty values for the new columns
+                for line in data:
+                    line_dict = dict(zip(old_headers, line))
+                    line_dict.update({col: "" for col in new_headers})
+                    writer.writerow([line_dict[col] for col in header_write])
+            
+        else:
+            header_write = old_headers
+    else:
+        # create a file with headers
+        header_write = sorted(kvs.keys())
+        with open(filename, 'w', newline='') as file:
+            writer = csv.writer(file, delimiter=sep)
+            writer.writerow(header_write)  # Write sorted headers
+    
+    # Write the key-value pairs to the file, taking into account that only some columns might be present
+    kvs_write = {col: kvs[col] if col in kvs else "" for col in header_write}
+    with open(filename, 'a', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=header_write, delimiter=sep)
+        writer.writerow(kvs_write)
+
+def load_kvs(filename):
+    #loads the key-value pairs in a file with formatting and returns them as a numpy array of objects
+    column_names = np.genfromtxt(filename, delimiter=',', dtype=str, max_rows=1)
+    values = np.genfromtxt(filename, delimiter=',', dtype=str, skip_header=1)
+    values = values.astype(object)
+    for i in range(values.shape[0]):
+        for j in range(values.shape[1]):
+            values[i,j] = formatter(values[i,j])
+    return column_names, values
+
+def formatter(s,order=[int,float,str]):
+    if t=="":
+        return float("nan")
+    for t in order:
+        try:
+            return t(s)
+        except ValueError:
+            pass
+    return s
 
 def normal_kl(mean1, logvar1, mean2, logvar2):
     """
