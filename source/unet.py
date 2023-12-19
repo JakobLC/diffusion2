@@ -327,7 +327,12 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         self.model_channels = model_channels
         self.num_res_blocks = num_res_blocks
-        self.attention_resolutions = attention_resolutions.split(",")
+        self.attention_resolutions = []
+        for ar in attention_resolutions.split(","):
+            ar = int(ar)
+            if ar < 0:
+                ar = len(channel_mult) + ar - 1
+            self.attention_resolutions.append(ar)
         self.dropout = dropout
         self.channel_mult = channel_mult
         self.conv_resample = conv_resample
@@ -368,7 +373,7 @@ class UNetModel(nn.Module):
         )
         input_block_chans = [model_channels]
         ch = model_channels
-        ds = 1
+        resolution = 0
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
                 layers = [
@@ -383,7 +388,7 @@ class UNetModel(nn.Module):
                     )
                 ]
                 ch = mult * model_channels
-                if ds in self.attention_resolutions:
+                if resolution in self.attention_resolutions:
                     layers.append(
                         AttentionBlock(
                             ch, use_checkpoint=use_checkpoint, num_heads=num_heads
@@ -396,7 +401,7 @@ class UNetModel(nn.Module):
                     TimestepEmbedSequential(Downsample(ch, conv_resample, dims=dims))
                 )
                 input_block_chans.append(ch)
-                ds *= 2
+                resolution += 1
 
         self.middle_block = TimestepEmbedSequential(
             ResBlock(
@@ -433,7 +438,7 @@ class UNetModel(nn.Module):
                     )
                 ]
                 ch = model_channels * mult
-                if ds in self.attention_resolutions:
+                if resolution in self.attention_resolutions:
                     layers.append(
                         AttentionBlock(
                             ch,
@@ -443,7 +448,7 @@ class UNetModel(nn.Module):
                     )
                 if level and i == num_res_blocks:
                     layers.append(Upsample(ch, conv_resample, dims=dims))
-                    ds //= 2
+                    resolution -= 1
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
 
         self.out = nn.Sequential(
@@ -546,6 +551,47 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(labels)
             
         return h, emb
+
+
+def create_unet_from_args(args):
+    if not isinstance(args,dict):
+        args = copy.deepcopy(args.__dict__)
+    image_size = args["image_size"]
+    if image_size == 256:
+        if args["deeper_net"]:
+            channel_mult = (1, 1, 1, 2, 2, 4, 4)
+        else:
+            channel_mult = (1, 1, 2, 2, 4, 4)
+    elif image_size == 128:
+        if args["deeper_net"]:
+            channel_mult = (1, 1, 2, 2, 4, 4)
+        else:
+            channel_mult = (1, 2, 2, 4, 4)
+    elif image_size == 64:
+        channel_mult = (1, 2, 3, 4)
+    elif image_size == 32:
+        channel_mult = (1, 2, 2, 2)
+    elif image_size == 16:
+        channel_mult = (1, 2, 2)
+    else:
+        raise ValueError(f"unsupported image size: {image_size}")
+    out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int) if args["cat_ball_data"] else 1
+    if args["predict"]=="both":
+        out_channels *= 2
+    unet = UNetModel(image_size=args["image_size"],
+                    out_channels=out_channels,
+                    image_channels=0 if args.cat_ball_data else 3,
+                    num_res_blocks=args["num_res_blocks"],
+                    attention_resolutions=args["attention_resolutions"],
+                    dropout=args["dropout"],
+                    channel_mult=channel_mult,
+                    num_classes=None,
+                    num_heads=args["num_heads"],
+                    num_heads_upsample=args["num_heads_upsample"],
+                    weak_signals=args["weak_signals"],
+                    self_cond=args["self_conditioning"],
+                    cond=args["conditioning"]!="none")
+    return unet
 
 def main():
     import argparse

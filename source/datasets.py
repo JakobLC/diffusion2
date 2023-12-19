@@ -85,14 +85,13 @@ class AnalogBits(object):
         return x
         
 
-
 class CatBallDataset(torch.utils.data.Dataset):
     def __init__(self,
                  size : int = 64,
                  dtype : str ="uint8",
                  dataset_len : int = 1000,
                  background_is_zero : bool = True,
-                 num_balls : int = 4,
+                 num_balls : list = list(range(10)),
                  max_classes : int = 8,
                  seed_translation : int = 0):
         assert dtype in ["float","double","uint8"]

@@ -8,10 +8,10 @@
         "clip_denoised": [true,                     "Should the denoised image be clipped to the input range? TYPE: boolean. DEFAULT: true. DEFAULT: true"],
         "sigma_small": [false,                      "Should the small sigma be used? TYPE: boolean. DEFAULT: false. DEFAULT: false"],
         "schedule_sampler": ["uniform",             "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','loss_aware']. DEFAULT: uniform."],
-        "input_scale": [1.0,                        "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"]
+        "input_scale": [1.0,                        "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"],
+        "gamma_clip_min": [1e-9,                    "Minimum value for gamma (to avoid singularities). TYPE: float. DEFAULT: 1e-9"]
     },
     "model": {
-        "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','resnet','stylegan2']. DEFAULT: 'none'"],
         "dropout": [0.0,                            "UNet dropout probability. TYPE: float. DEFAULT: 0.0"],
         "predict": ["x",                            "How to parmeterize x_t. TYPE: One of ['x','v','eps','both']. DEFAULT: 'x'"],
         "use_scale_shift_norm": [false,             "Should scaling and shifting of normalization layers be be used for class conditioning? otherwise simply linear addition. TYPE: boolean. DEFAULT: false"],
@@ -25,7 +25,9 @@
         "weak_signals": [false,                     "Should weak signals (bbox,points) be used? TYPE: boolean. DEFAULT: false"],
         "num_classes": [0,                          "Number of classes. TYPE: positive integer or 0 (no classes). DEFAULT: 0"],
         "datasets_as_classes": [false,              "Should datasets be treated as classes? TYPE: boolean. DEFAULT: false"],
-        "self_conditioning": [false,                "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"]
+        "self_conditioning": [false,                "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"],
+        "max_num_classes": [8,                      "Maximum number of classes. TYPE: positive integer or 0 (no maximum). DEFAULT: 0"],
+        "conditioning_type": ["none",               "Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"]
     }, 
     "meta": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'"],
@@ -52,6 +54,7 @@
         "eval_ema_step": [50000,                    "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"]
     },
     "training": {
+        "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false"],
         "lr": [0.0001,                              "Learning rate. TYPE: float. DEFAULT: 0.0001"],
         "loss_weights": ["uniform",                 "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc']. DEFAULT: 'uniform'"],
         "betas": ["0.9,0.999",                      "Adam betas. TYPE: comma separated list of floats. DEFAULT: '0.9,0.999'"],
@@ -66,8 +69,9 @@
         "eval_batch_size": [0,                      "Batch size for evaluation. positive integer or 0 (same as train_batch_size). DEFAULT: 0"],
         "weight_decay": [0.0,                       "Weight decay. TYPE: float. DEFAULT: 0.0"],
         "lr_warmup_steps": [0,                      "Number of warmup steps for learning rate. TYPE: positive integer or 0 (no warmup). DEFAULT: 0"],
-        "lr_anneal_steps": [0,                      "Number of annealing steps for learning rate. TYPE: positive integer or 0 (no annealing). DEFAULT: 0"], 
-        "lr_annel_type": ["linear",                 "Which annealing type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
+        "lr_warmup_type": ["linear",                "Which warmup type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
+        "lr_decay_steps": [0,                      "Number of decaying steps for learning rate. TYPE: positive integer or 0 (no decaying). DEFAULT: 0"], 
+        "lr_decay_type": ["linear",                 "Which decaying type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
         "use_fp16": [true,                          "Should fp16 be used for memory reduction? TYPE: boolean. DEFAULT: true"],
         "fp16_scale_growth": [0.001,                "Growth constant for fp16 loss scale when NANs are not encountered. TYPE: float. DEFAULT: 0.001"],
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'"]
@@ -92,6 +96,7 @@
         "loss_domain": "same",
         "ignore_unsafe": false,
         "override_incompatible_args": false,
-        "use_checkpoint": false
+        "use_checkpoint": false,
+        "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','resnet','stylegan2']. DEFAULT: 'none'"]
     }
 }

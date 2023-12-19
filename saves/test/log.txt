@@ -1,0 +1,4 @@
+Starting training loop...
+dumping kvs
+dumping kvs
+Training loop finished.

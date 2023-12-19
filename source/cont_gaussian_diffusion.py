@@ -37,10 +37,10 @@ def coefs_(coefs, shape, dtype=torch.float32, device="cuda", batch_dim=0):
     view_shape[batch_dim] = -1
     return coefs.view(view_shape).to(device).to(dtype)
 
-def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
+def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
     float64 = lambda x: torch.tensor(float(x),dtype=torch.float64)
     if schedule_name=="linear":
-        return lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
+        gamma = lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
     elif schedule_name.startswith("cosine"):
         num_params = len(schedule_name.split("_"))-1
         #format: cosine_start_end_tau
@@ -79,14 +79,18 @@ def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
     else:
         gamma_input_scaled = gamma
         
-    return lambda t: gamma_logsnr_limits(t,gamma_input_scaled,logsnr_min,logsnr_max)
+    gamma_wrapped = lambda t: gamma_input_scaled((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)).clamp_min(clip_min)
+    return gamma_wrapped
 
-def gamma_logsnr_limits(t,gamma_input_scaled,logsnr_min,logsnr_max):
-    t = (t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)
-    tmax,tmin = find_logsnr_t_values(gamma_input_scaled,[logsnr_min,logsnr_max],1e-10,100)
-    t_hat = (t-tmin)/(tmax-tmin)
-    return gamma_input_scaled(t_hat)
-
+def type_from_maybe_str(s,class_type):
+    if isinstance(s,class_type):
+        return s
+    list_of_attribute_strings = [a.lower() for a in dir(class_type) if not a.startswith("__")]
+    print(list_of_attribute_strings)
+    if s.lower() in list_of_attribute_strings:
+        return class_type[s.lower()]
+    raise ValueError(f"Unknown type: {s}, must be one of {list_of_attribute_strings}")
+    
 class ModelPredType(enum.Enum):
     """Which type of output the model predicts."""
     EPS = enum.auto()  
@@ -111,13 +115,27 @@ class VarType(enum.Enum):
     small = enum.auto()
     large = enum.auto()
 
+class SamplerType(enum.Enum):
+    """How to sample timesteps for training"""
+    uniform = enum.auto()
+    low_discrepency = enum.auto()
+
 class ContinuousGaussianDiffusion():
-    def __init__(self, schedule_name, input_scale, model_pred_type, weights_type, time_cond_type, var_type, logsnr_min=-20.0, logsnr_max=20.0):
+    def __init__(self, schedule_name, 
+                 input_scale, 
+                 model_pred_type, 
+                 weights_type, 
+                 time_cond_type, 
+                 sampler_type,
+                 var_type, 
+                 clip_min=1e-9):
         """class to handle the diffusion process"""
-        self.gamma = get_named_gamma_schedule(schedule_name,input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
-        self.model_pred_type = model_pred_type
-        self.time_cond_type = time_cond_type
-        self.var_type = var_type
+        self.gamma = get_named_gamma_schedule(schedule_name,input_scale,clip_min=clip_min)
+        self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
+        self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
+        self.var_type = type_from_maybe_str(var_type,VarType)
+        self.weights_type = type_from_maybe_str(weights_type,WeightsType)
+        self.sampler_type = type_from_maybe_str(sampler_type,SamplerType)
         
     def snr(self,t):
         """returns the signal to noise ratio"""
@@ -293,6 +311,17 @@ class ContinuousGaussianDiffusion():
             raise NotImplementedError(x_logvar)
         return {'mean': mean, 'std': torch.sqrt(var), 'var': var, 'logvar': logvar}
     
+def create_diffusion_from_args(args):
+    cgd = ContinuousGaussianDiffusion(schedule_name=args["noise_schedule"],
+                                    input_scale=args["input_scale"],
+                                    model_pred_type=args["predict"],
+                                    weights_type=args["weights_type"],
+                                    time_cond_type=args["time_cond_type"],
+                                    sampler_type=args["schedule_sampler"],
+                                    var_type=args["var_type"],
+                                    clip_min=args["gamma_clip_min"])
+    return cgd
+    
 def main():
     import argparse
     import matplotlib.pyplot as plt
@@ -392,6 +421,7 @@ def main():
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
+                                                SamplerType.uniform,
                                                 VarType.small)
         
         out = cgd.train_loss_step(model,x)
@@ -407,6 +437,7 @@ def main():
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
+                                                SamplerType.uniform,
                                                 VarType.small)
         
         out = cgd.train_loss_step(model,x)
@@ -428,6 +459,7 @@ def main():
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
+                                                SamplerType.uniform,
                                                 VarType.small)  
         pred_x = cgd.sample_loop(model,x_t,10,"ddim",clip_x=1.0)
         print(pred_x.shape)
@@ -452,6 +484,7 @@ def main():
                                                 ModelPredType.X,
                                                 loss_weight_type,
                                                 TimeCondType.t,
+                                                SamplerType.uniform,
                                                 VarType.small)
             
             w = cgd.loss_weights(t)
@@ -501,6 +534,7 @@ def main():
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
+                                                SamplerType.uniform,
                                                 VarType.small)
         t = torch.linspace(0,1,1000)
         plt.plot(t,cgd.snr(t),label="SNR")
