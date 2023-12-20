@@ -1,7 +1,7 @@
 from abc import abstractmethod
 
 import math
-
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -464,7 +464,6 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
         self.output_blocks.apply(convert_module_to_f16)
-        self.image_encoder.apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
         """
@@ -473,7 +472,6 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
-        self.image_encoder.apply(convert_module_to_f32)
 
     @property
     def inner_dtype(self):
@@ -482,7 +480,7 @@ class UNetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
-    def forward(self, sample, timesteps, labels, **kwargs):
+    def forward(self, sample, timesteps, labels=None, **kwargs):
         """
         Apply the model to an input batch.
 
@@ -519,9 +517,9 @@ class UNetModel(nn.Module):
         for k,v in kwargs.items():
             assert k in self.input_dict.keys(), k+" is not an available kwarg for the model. legal inputs: "+str(self.input_dict.keys())
             if len(self.input_dict[k])>0:
-                assert len(v.shape) == 4, "Expected 4 dimensions for "+k+", got: "+str(len(v.shape))+" instead."
-                assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for "+k+", got: "+str(v.shape[1])+" instead."
-                assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+", got: "+str(v.shape[2:])+" instead."
+                assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
+                assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
+                assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
                 if v.shape[0]==1:
                     v = v.repeat(bs,1,1,1)
                 assert v.shape[0] == bs, "Expected first dimension to be batch size, got: "+str(v.shape[0])+" instead."
@@ -575,12 +573,12 @@ def create_unet_from_args(args):
         channel_mult = (1, 2, 2)
     else:
         raise ValueError(f"unsupported image size: {image_size}")
-    out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int) if args["cat_ball_data"] else 1
+    out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
     if args["predict"]=="both":
         out_channels *= 2
     unet = UNetModel(image_size=args["image_size"],
                     out_channels=out_channels,
-                    image_channels=0 if args.cat_ball_data else 3,
+                    image_channels=0 if args["cat_ball_data"] else 3,
                     num_res_blocks=args["num_res_blocks"],
                     attention_resolutions=args["attention_resolutions"],
                     dropout=args["dropout"],
@@ -590,7 +588,7 @@ def create_unet_from_args(args):
                     num_heads_upsample=args["num_heads_upsample"],
                     weak_signals=args["weak_signals"],
                     self_cond=args["self_conditioning"],
-                    cond=args["conditioning"]!="none")
+                    cond=args["conditioning_type"]!="none")
     return unet
 
 def main():

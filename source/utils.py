@@ -4,8 +4,256 @@ import random
 from pathlib import Path
 import csv
 import os
-from unet import UNetModel
 import copy
+import argparse
+import json
+from collections import OrderedDict
+
+def get_costs_area_per_class(A, B):
+    areas = []
+    costs = []
+    for uq in torch.unique(A):
+        mask = A==uq
+        uq_dist, counts = torch.unique(B[mask],return_counts=True)
+        area = mask.sum()
+        cost = 1-max(counts)/area
+        
+        costs.append(cost)
+        areas.append(area)
+    return costs, areas
+
+def fast_agnostic_classification_metric(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
+    costs, areas = get_costs_area_per_class(target, pred)
+    metric_pred = 1-np.average(costs,weights=areas if weighed_by_area else None)
+    
+    costs, areas = get_costs_area_per_class(pred, target)
+    metric_target = 1-np.average(costs,weights=areas if weighed_by_area else None)
+    
+    c = target_splitting_coef
+    return c*metric_pred + (1-c)*metric_target
+    
+
+def slow_agnostic_classification_metric(pred, target, target_splitting_coef=0.5):
+    pred = pred.flatten()
+    target = target.flatten()
+
+    pred_in_same_group = (pred.unsqueeze(1) == pred.unsqueeze(0)).float()
+    target_in_same_group = (target.unsqueeze(1) == target.unsqueeze(0)).float()
+
+    p_same_given_same = (pred_in_same_group * target_in_same_group).sum() / target_in_same_group.sum()
+    p_diff_given_diff = ((1-pred_in_same_group) * (1-target_in_same_group)).sum() / (1-target_in_same_group).sum()
+    c = target_splitting_coef
+    return c*(1-p_same_given_same) + (1-c)*(1-p_diff_given_diff)
+
+def multiclass_iou(pred, target, weighed_by_area=True, ignore_nonpresent=True, check_for_batched=True):
+    if check_for_batched:
+        if len(pred.shape)>2:
+            if pred.shape[0]>1:
+                iou = 0
+                for i in range(pred.shape[0]):
+                    ious_i = multiclass_iou(pred[i],target[i],weighed_by_area=weighed_by_area,ignore_nonpresent=ignore_nonpresent,check_for_batched=False)
+                    iou += ious_i
+                return iou/pred.shape[0]
+    pred = pred.clone().detach().flatten()
+    target = target.clone().detach().flatten()
+    if ignore_nonpresent:
+        unique_classes = torch.unique(target)
+    else:
+        unique_classes = torch.unique(torch.cat([pred,target]))
+    ious = []
+    areas = []
+    for uq in unique_classes:
+        
+        target_uq = (target==uq).float()
+        pred_uq = (pred==uq).float()
+        
+        intersection = (target_uq * pred_uq).sum()
+        union = target_uq.sum() + pred_uq.sum() - intersection
+        iou = (intersection / union).item()
+        
+        ious.append(iou)
+        areas.append(target_uq.sum().item())
+        
+    return np.average(ious,weights=areas if weighed_by_area else None)
+
+def mse_loss(pred_x, x, batch_dim=0):
+    """mean squared error loss reduced over all dimensions except batch"""
+    non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
+    return torch.mean((pred_x-x)**2, dim=non_batch_dims)
+
+def get_batch_metrics(output,ab):
+    pred_x_thresh = ab.bit2int(output["pred_x"]).cpu()
+    target_x_thresh = ab.bit2int(output["x"]).cpu()
+    iou = multiclass_iou(pred_x_thresh, target_x_thresh)
+    facm = fast_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
+    sacm = slow_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
+    mse_x = mse_loss(output["pred_x"], output["x"]).mean().item()
+    mse_eps = mse_loss(output["pred_eps"], output["eps"]).mean().item()
+    metrics = {"iou": iou,
+               "facm": facm,
+               "sacm": sacm,
+               "mse_x": mse_x,
+               "mse_eps": mse_eps}
+               
+    return metrics
+
+def model_and_diffusion_defaults(idx=0,ordered_dict=False):
+    default_path = Path(__file__).parent/"args_def.json"
+    if ordered_dict:
+        args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
+    else:
+        args_dicts = json.loads(default_path.read_text())
+    args_dict = {}
+    for k,v in args_dicts.items():
+        if isinstance(v,dict):
+            if k!="deprecated":
+                for k2,v2 in v.items():
+                    args_dict[k2] = v2[idx]
+        else:
+            args_dict[k] = v[idx]
+    return args_dict
+
+class SmartParser():
+    def __init__(self,defaults_func=model_and_diffusion_defaults):
+        self.parser = argparse.ArgumentParser()
+        self.descriptions = model_and_diffusion_defaults(idx=1)
+        defaults = defaults_func()
+        self.type_dict = {}
+        for k, v in defaults.items():
+            v_hat = v
+            t = self.get_type_from_default(v)
+            if isinstance(v, str):
+                if v.endswith(","):
+                    v_hat = v[:-1]
+            self.parser.add_argument(f"--{k}", 
+                                     default=v_hat, 
+                                     type=t, 
+                                     help=self.get_description_from_key(k))
+            self.type_dict[k] = t
+            
+    def parse_types(self, args):
+        args_dict = {k: v if isinstance(v,list) else self.type_dict[k](v) for k,v in args.__dict__.items()}
+        args = argparse.Namespace(**args_dict)
+        return args
+        
+    def get_args(self,modified_args={}):
+        args = self.parser.parse_args()
+        args = model_specific_args(args)
+        args = self.parse_types(args)
+        for k,v in modified_args.items():
+            assert k in args.__dict__.keys(), f"key {k} not found in args.__dict__.keys()={args.__dict__.keys()}"
+            args.__dict__[k] = v
+            assert not isinstance(v,list), f"list not supported in modified_args to avoid recursion."
+        if any([isinstance(v,list) for v in args.__dict__.values()]):
+            modified_args_list = []
+            num_modified_args = 1
+            for k,v in args.__dict__.items():
+                if isinstance(v,list):
+                    if len(v)>1:
+                        num_modified_args *= len(v)
+                        if num_modified_args>100:
+                            raise ValueError(f"Too many modified args. num_modified_args={num_modified_args}")
+                        if len(modified_args_list)==0:
+                            modified_args_list.extend([{k: v2} for v2 in v])
+                        else:
+                            modified_args_list = [{**d, k: v2} for d in modified_args_list for v2 in v]
+            
+            if num_modified_args>1:
+                for i in range(num_modified_args):
+                    model_name_new = args.model_name
+                    for k,v in modified_args_list[i].items():
+                        model_name_new += f"_({k}={v})"
+                    modified_args_list[i]["model_name"] = model_name_new
+                args = args, modified_args_list
+        return args
+    
+    def list_wrap_type(self,t):
+        def list_wrap(x):
+            if isinstance(x,str):
+                if x.find(";")>=0:
+                    return [t(y) for y in x.split(";")]
+                else:
+                    return t(x)
+            else:
+                return t(x)
+        return list_wrap
+    
+    def get_type_from_default(self, default_v):
+        assert isinstance(default_v,(float,int,str,bool)), f"default_v={default_v} is not a valid type."
+        if isinstance(default_v, str):
+            assert default_v.find(";")<0, f"semicolon not supported in default arguments"
+        t = self.list_wrap_type(str2bool if isinstance(default_v, bool) else type(default_v))
+        return t
+    
+    def get_description_from_key(self, k):
+        if k in self.descriptions.keys():
+            return self.descriptions[k]
+        else:
+            return ""
+        
+def model_specific_args(args):
+    model_dicts = json.loads((Path(__file__).parent/"args_model.json").read_text())
+    model_name = args.model_name
+    if "+" in model_name:
+        plus_names = model_name.split("+")[1:]
+        model_name = model_name.split("+")[0]
+    else:
+        plus_names = []
+    ver_names = []
+    if ("[" in model_name) and ("]" in model_name):
+        idx = 0
+        for _ in range(model_name.count("[")):
+            idx0 = model_name.find("[",idx)
+            idx1 = model_name.find("]",idx)
+            assert idx0<idx1, f"model_name={model_name} has mismatched brackets."
+            ver_names.append(model_name[idx0+1:idx1])
+            idx = idx1+1
+        
+    if not model_name in model_dicts.keys():
+        raise ValueError(f"model_name={model_name} not found in model_dicts")
+    for k,v in model_dicts[model_name].items():
+        if k!="versions":
+            args.__dict__[k] = v
+    if len(ver_names)>0:
+        assert "versions" in model_dicts[model_name].keys(), f"model_name={model_name} does not have versions."
+        for k,v in model_dicts[model_name]["versions"].items():
+            if k in ver_names:
+                for k2,v2 in v.items():
+                    args.__dict__[k2] = v2
+    for mn in plus_names:
+        assert "+"+mn in model_dicts.keys(), f"model_name={'+'+mn} not found in model_dicts."
+        for k,v in model_dicts["+"+mn].items():
+            args.__dict__[k] = v
+    return args
+
+def write_args(args, save_path, match_keys=True):
+    if isinstance(save_path,str):
+        save_path = Path(save_path)
+    ref_args = model_and_diffusion_defaults(idx=0,ordered_dict=True)
+    args_dict = args.__dict__
+    if match_keys:
+        ref_to_save = all([k in args_dict.keys() for k in ref_args.keys()])
+        save_to_ref = all([k in ref_args.keys() for k in args_dict.keys()])
+        all_keys_are_there = ref_to_save and save_to_ref
+        assert all_keys_are_there, f"args and ref_args do not have the same keys. mismatched keys: {[k for k in ref_args.keys() if not k in args_dict.keys()] + [k for k in args_dict.keys() if not k in ref_args.keys()]}"
+        
+    args_dict = {k:args_dict[k] for k in ref_args.keys()}
+    save_path.write_text(json.dumps(args_dict,indent=4))
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    elif isinstance(v, [int,float]):
+        return bool(v)
+    elif isinstance(v, str):
+        if v.lower() in ["yes", "true", "t", "y", "1"]:
+            return True
+        elif v.lower() in ["no", "false", "f", "n", "0"]:
+            return False
+        else:
+            raise argparse.ArgumentTypeError("Cannot convert string: {} to bool".format(v))
+    else:
+        raise argparse.ArgumentTypeError("boolean value expected")
 
 
 def dump_kvs(filename, kvs, sep=","):

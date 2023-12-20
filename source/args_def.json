@@ -27,7 +27,8 @@
         "datasets_as_classes": [false,              "Should datasets be treated as classes? TYPE: boolean. DEFAULT: false"],
         "self_conditioning": [false,                "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"],
         "max_num_classes": [8,                      "Maximum number of classes. TYPE: positive integer or 0 (no maximum). DEFAULT: 0"],
-        "conditioning_type": ["none",               "Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"]
+        "conditioning_type": ["none",               "Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"],
+        "time_cond_type": ["t",                     "Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"]
     }, 
     "meta": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'"],

@@ -3,7 +3,8 @@
 import enum
 import numpy as np
 import torch
-from utils import normal_kl
+from datasets import AnalogBits
+from utils import normal_kl,mse_loss
 import nn
 
 def add_(coefs,x,batch_dim=0,flat=False):
@@ -85,10 +86,11 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
 def type_from_maybe_str(s,class_type):
     if isinstance(s,class_type):
         return s
-    list_of_attribute_strings = [a.lower() for a in dir(class_type) if not a.startswith("__")]
-    print(list_of_attribute_strings)
-    if s.lower() in list_of_attribute_strings:
-        return class_type[s.lower()]
+    list_of_attribute_strings = [a for a in dir(class_type) if not a.startswith("__")]
+    list_of_attribute_strings_lower = [a.lower() for a in list_of_attribute_strings]
+    if s.lower() in list_of_attribute_strings_lower:
+        s_maybe_not_lower = list_of_attribute_strings[list_of_attribute_strings_lower.index(s.lower())]
+        return class_type[s_maybe_not_lower]
     raise ValueError(f"Unknown type: {s}, must be one of {list_of_attribute_strings}")
     
 class ModelPredType(enum.Enum):
@@ -121,7 +123,9 @@ class SamplerType(enum.Enum):
     low_discrepency = enum.auto()
 
 class ContinuousGaussianDiffusion():
-    def __init__(self, schedule_name, 
+    def __init__(self, 
+                 analog_bits,
+                 schedule_name, 
                  input_scale, 
                  model_pred_type, 
                  weights_type, 
@@ -130,6 +134,7 @@ class ContinuousGaussianDiffusion():
                  var_type, 
                  clip_min=1e-9):
         """class to handle the diffusion process"""
+        self.ab = analog_bits
         self.gamma = get_named_gamma_schedule(schedule_name,input_scale,clip_min=clip_min)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
@@ -161,12 +166,21 @@ class ContinuousGaussianDiffusion():
             weights = 1+snr
         elif self.weights_type==WeightsType.SNR_trunc:
             weights = torch.maximum(snr,torch.ones_like(snr))
+        elif self.weights_type==WeightsType.uniform:
+            weights = torch.ones_like(snr)
         return weights
     
     def train_loss_step(self, model, x, model_kwargs={}, eps=None):
         """compute one training step and return the loss"""
+        if self.ab is not None:
+            x = self.ab.int2bit(x)
         bs = x.shape[0]
-        t = torch.rand(bs,1,1,1).to(x.device)
+        if self.sampler_type==SamplerType.uniform:
+            t = torch.rand(bs).to(x.device)
+        elif self.sampler_type==SamplerType.low_discrepency:
+            t0 = torch.rand()/bs
+            t = (torch.arange(bs)/bs+t0).to(x.device)
+            
         if eps is None:
             eps = torch.randn_like(x)
         
@@ -177,7 +191,7 @@ class ContinuousGaussianDiffusion():
         output = model(x_t, t, **model_kwargs)
         
         pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
-        losses = mult_(loss_weights,self.mse_loss(pred_x,x))
+        losses = mult_(loss_weights,mse_loss(pred_x,x))
         loss = torch.mean(losses)
         out =  {"loss_weights": loss_weights,
                 "loss": loss,
@@ -186,36 +200,46 @@ class ContinuousGaussianDiffusion():
                 "x": x,
                 "pred_eps": pred_eps,
                 "x_t": x_t,
-                "eps": eps}
+                "eps": eps,
+                "raw_model_output": output}
         return out
-
-    def mse_loss(self, pred_x, x, batch_dim=0):
-        """mean squared error loss reduced over all dimensions except batch"""
-        non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
-        return torch.mean((pred_x-x)**2, dim=non_batch_dims)
     
-    def get_predictions(self, output, x_t, sigma_t, alpha_t, clip_x=False):
+    def get_x_from_eps(self,eps,x_t,alpha_t,sigma_t):
+        """returns the predicted x from eps"""
+        #return (1/alpha_t)*(x_t-sigma_t*eps)
+        return mult_(1/alpha_t,x_t) - mult_(sigma_t/alpha_t,eps)
+    
+    def get_eps_from_x(self,x,x_t,alpha_t,sigma_t):
+        """returns the predicted eps from x"""
+        #return (1/sigma_t)*(x_t-alpha_t*x)
+        return mult_(1/sigma_t,x_t) - mult_(alpha_t/sigma_t,x)
+    
+    def get_predictions(self, output, x_t, alpha_t, sigma_t, clip_x=False,guidance_weight=None,model_output_guidance=None):
         """returns predictions based on the equation x_t = alpha_t*x + sigma_t*eps"""
         if self.model_pred_type==ModelPredType.EPS:
             pred_eps = output
-            pred_x = (1/alpha_t)*(x_t-sigma_t*pred_eps)
+            if guidance_weight is None:
+                pred_x = self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
         elif self.model_pred_type==ModelPredType.X:
             pred_x = output
-            pred_eps = (1/sigma_t)*(x_t-alpha_t*pred_x)
+            pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
         elif self.model_pred_type==ModelPredType.BOTH:
             pred_eps, pred_x = torch.split(output, output.shape[1]//2, dim=1)
-            pred_x_from_eps = (1/alpha_t)*(x_t-sigma_t*pred_eps)
             #reconsiles the two predictions (parameterized by eps and by direct prediction):
-            pred_x = alpha_t*pred_x+sigma_t*pred_x_from_eps
+            pred_x = alpha_t*pred_x+sigma_t*self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
         elif self.model_pred_type==ModelPredType.V:
             #V = alpha*eps-sigma*x
             v = output
             pred_x = alpha_t*x_t - sigma_t*v
-            pred_eps = (1/sigma_t)*(x_t-alpha_t*pred_x)
+            pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
+        
+        if guidance_weight is not None:
+            pred_eps = (1+guidance_weight)*pred_eps - guidance_weight*self.get_predictions(model_output_guidance,x_t,alpha_t,sigma_t,clip_x=False)[1]
+            pred_x = self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
         if clip_x:
             assert not pred_x.requires_grad
             pred_x = torch.clamp(pred_x,-1,1)
-            pred_eps = (1/sigma_t)*(x_t-alpha_t*pred_x)
+            #pred_eps = (1/sigma_t)*(x_t-alpha_t*pred_x) Should this be done? TODO
         return pred_x, pred_eps
         
     def ddim_step(self, i, pred_x, pred_eps, num_steps):
@@ -241,7 +265,25 @@ class ContinuousGaussianDiffusion():
         else:
             return x_s_dist['mean'] + x_s_dist['std'] * torch.randn_like(x_t)
         
-    def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={}):
+    def transform_guidance_weight(self, gw, x):
+        if gw is None:
+            return None
+        else:
+            bs = x.shape[0]
+            device = x.device
+            dtype = x.dtype
+            w = torch.tensor(gw, dtype=dtype, device=device) if not torch.is_tensor(gw) else gw
+            if w.numel() != bs:
+                assert w.numel() == 1, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
+                if abs(w)<1e-9:
+                    return None
+                w = w.repeat(bs)
+            assert w.numel() == bs, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
+            w = w.view(bs,1,1,1)
+            return w
+        
+    def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
+                    guidance_weight=0.0):
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -249,12 +291,23 @@ class ContinuousGaussianDiffusion():
         else:
             raise NotImplementedError(sampler_type)
         
+        guidance_weight = self.transform_guidance_weight(guidance_weight,x_init)
+        
         x_t = x_init
         for i in range(num_steps-1, -1, -1):
             t = torch.tensor((i + 1.) / num_steps)
             alpha_t, sigma_t = self.alpha(t), self.sigma(t)
             t_cond = self.to_t_cond(t).to(x_t.dtype).to(x_t.device)
-            pred_x, pred_eps = self.get_predictions(model(x_t, t_cond, **model_kwargs),x_t,alpha_t,sigma_t,clip_x)
+            
+            
+            if guidance_weight is not None:
+                model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs if k in self.guidance_kwargs})
+            else:
+                model_output_guidance = None
+                
+            pred_x, pred_eps = self.get_predictions(model(x_t, t_cond, **model_kwargs),
+                                                    x_t,alpha_t,sigma_t,clip_x,guidance_weight,model_output_guidance)
+            
             x_t = body_fun(i, pred_x, pred_eps, x_t)
             
             #update model_kwargs TODO
@@ -312,14 +365,18 @@ class ContinuousGaussianDiffusion():
         return {'mean': mean, 'std': torch.sqrt(var), 'var': var, 'logvar': logvar}
     
 def create_diffusion_from_args(args):
-    cgd = ContinuousGaussianDiffusion(schedule_name=args["noise_schedule"],
-                                    input_scale=args["input_scale"],
-                                    model_pred_type=args["predict"],
-                                    weights_type=args["weights_type"],
-                                    time_cond_type=args["time_cond_type"],
-                                    sampler_type=args["schedule_sampler"],
-                                    var_type=args["var_type"],
-                                    clip_min=args["gamma_clip_min"])
+    num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
+    ab = AnalogBits(num_bits=num_bits)
+
+    cgd = ContinuousGaussianDiffusion(analog_bits=ab,
+                                    schedule_name=args.noise_schedule,
+                                    input_scale=args.input_scale,
+                                    model_pred_type=args.predict,
+                                    weights_type=args.loss_weights,
+                                    time_cond_type=args.time_cond_type,
+                                    sampler_type=args.schedule_sampler,
+                                    var_type="small" if args.sigma_small else "large",
+                                    clip_min=args.gamma_clip_min)
     return cgd
     
 def main():
@@ -337,7 +394,6 @@ def main():
         return x_big
     if args.unit_test==0:
         print("UNIT TEST: basic gamma functions")
-        
         
         schedule_names = ["cosine","sigmoid","linear","linear_simple"]
         for schedule_name in schedule_names:
@@ -416,8 +472,9 @@ def main():
         print("UNIT TEST: test train_loss_step")
         x = dummy_data()
         model = lambda x,t: dummy_model(x,t,noise_level=0.01)
-        
-        cgd = ContinuousGaussianDiffusion("linear_simple",1.0,
+        cgd = ContinuousGaussianDiffusion(AnalogBits(),
+                                                "linear_simple",
+                                                1.0,
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
@@ -433,7 +490,7 @@ def main():
         x = dummy_data()
         model = lambda x,t: dummy_model(x,t,noise_level=0.01)
         
-        cgd = ContinuousGaussianDiffusion("linear_simple",1.0,
+        cgd = ContinuousGaussianDiffusion(AnalogBits(),"linear_simple",1.0,
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
@@ -455,7 +512,7 @@ def main():
         print("UNIT TEST: test sample_loop")
         x_t = dummy_data()
         model = lambda x,t: dummy_model(x,t,noise_level=0.01)
-        cgd = ContinuousGaussianDiffusion("linear_simple",1.0,
+        cgd = ContinuousGaussianDiffusion(AnalogBits(),"linear_simple",1.0,
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,
@@ -480,7 +537,7 @@ def main():
         loss_weight_types = [WeightsType.SNR,WeightsType.SNR_plus1,WeightsType.SNR_trunc]
         t = torch.linspace(0,1,1000)
         for loss_weight_type in loss_weight_types:
-            cgd = ContinuousGaussianDiffusion("cosine",1.0,
+            cgd = ContinuousGaussianDiffusion(AnalogBits(),"cosine",1.0,
                                                 ModelPredType.X,
                                                 loss_weight_type,
                                                 TimeCondType.t,
@@ -530,7 +587,7 @@ def main():
         print("UNIT TEST: compare loss alpha,sigma,SNR,logSNR")
         schedule_name = "cosine"
         
-        cgd = ContinuousGaussianDiffusion(schedule_name,1.0,
+        cgd = ContinuousGaussianDiffusion(AnalogBits(),schedule_name,1.0,
                                                 ModelPredType.X,
                                                 WeightsType.SNR,
                                                 TimeCondType.t,

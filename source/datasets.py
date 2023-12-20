@@ -59,10 +59,8 @@ class AnalogBits(object):
         assert x.shape[self.bit_dim]==1
         if self.shuffle:
             x = self.get_perm(inv=False)[x]
-        
         #convert to binary
-        x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim)
-
+        x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits).astype(np.float32)*2-1
         if was_torch:
             x = torch.from_numpy(x).to(device)
         return x
@@ -70,13 +68,16 @@ class AnalogBits(object):
     def bit2int(self,x):
         if isinstance(x,torch.Tensor):
             device = x.device
-            x = x.cpu().numpy()
+            x = x.cpu().detach().numpy()
             was_torch = True
         else:
             was_torch = False
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
         assert x.shape[self.bit_dim]==self.num_bits
+        #convert to ints if necessary
+        if x.dtype in [np.float32,np.float64]:
+            x = (x>0).astype(np.uint8)
         x = np.packbits(x,axis=self.bit_dim)
         if self.shuffle:
             x = self.get_perm(inv=True)[x]
@@ -91,7 +92,7 @@ class CatBallDataset(torch.utils.data.Dataset):
                  dtype : str ="uint8",
                  dataset_len : int = 1000,
                  background_is_zero : bool = True,
-                 num_balls : list = list(range(10)),
+                 num_balls : list = list(range(1,10)),
                  max_classes : int = 8,
                  seed_translation : int = 0):
         assert dtype in ["float","double","uint8"]

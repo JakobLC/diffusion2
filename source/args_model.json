@@ -1,6 +1,12 @@
 {
     "test": {
         "max_iter": 10,
-        "train_batch_size": "8;16"
+        "train_batch_size": "4",
+        "save_interval": 5,
+        "eval_interval": 5,
+        "log_vali_interval": 2,
+        "update_loss_plot_interval": 2,
+        "update_foward_pass_plot_interval": 2,
+        "image_size": 16
     }
 }

@@ -17,11 +17,13 @@ from fp16_util import (
     unflatten_master_params,
     zero_grad,
 )
+from datasets import CatBallDataset, custom_collate_with_info
+from datasets import AnalogBits
 from nn import update_ema
 from unet import create_unet_from_args
 from cont_gaussian_diffusion import create_diffusion_from_args
 #from .sampling_util import DiffusionSampler,plot_forward_pass
-from utils import dump_kvs
+from utils import dump_kvs,get_batch_metrics
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
@@ -36,6 +38,18 @@ class DiffusionModelTrainer:
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
         
+        train_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=1000,size=args.image_size)
+        vali_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=100,seed_translation=1000,size=args.image_size)
+        eval_batch_size = args.eval_batch_size if args.eval_batch_size>0 else args.train_batch_size
+        self.train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, 
+                                                                           batch_size=args.train_batch_size, 
+                                                                           shuffle=True,
+                                                                           collate_fn=custom_collate_with_info))
+        self.vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, 
+                                                                          batch_size=eval_batch_size, 
+                                                                          shuffle=True, 
+                                                                          collate_fn=custom_collate_with_info))
+                                    
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -61,15 +75,16 @@ class DiffusionModelTrainer:
             os.makedirs(self.args.save_path)
 
         #init models, optimizers etc
-        self.model = self.model.to(self.args.device)
-        self.ema = copy.deepcopy(self.model).eval()
+        self.model = self.model.to(self.device)
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
+        
+        betas = [float(x) for x in self.args.betas.split(",")]
         self.opt = AdamW(self.master_params, lr=self.args.lr, weight_decay=self.args.weight_decay,
-                         betas=self.args.betas)
-        self.ema_params = [
-                copy.deepcopy(self.master_params) for _ in range(len(self.ema_rate))
-            ]
+                         betas=betas)
+        
+        self.ema_rate = [float(x) for x in self.args.ema_rate.split(",")]
+        self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rate]
         
         if self.args.use_fp16:
             self.master_params = make_master_params(self.model_params)
@@ -77,12 +92,14 @@ class DiffusionModelTrainer:
             
         
         if new_training:
+            self.log("Starting new training run.")
             self.step = 1
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
             self.best_miou = 0.0
             self.fixed_batch = None
             self.log_kv_step("loss")
         else:
+            self.log("Resuming training run.")
             self.step = ckpt["step"]
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_miou = ckpt["best_miou"]
@@ -91,8 +108,8 @@ class DiffusionModelTrainer:
             self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model_params = list(self.model.parameters())
             
-            for i, ema_rate in enumerate(self.args.ema_rate.split(",")):
-                if "ema_"+ema_rate in ckpt.keys():
+            for i, ema_rate in enumerate(self.ema_rate):
+                if "ema_"+str(ema_rate) in ckpt.keys():
                     self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+ema_rate])
 
     def save_state_dict(self,ema_idx=None,delete_old=False,miou=None):
@@ -102,7 +119,7 @@ class DiffusionModelTrainer:
             name = "model"
             params = self.master_params
         else:
-            assert ema_idx<len(self.args.ema_rate.split(",")), "ema_idx must be smaller than the number of ema rates"
+            assert ema_idx<len(self.ema_rate), "ema_idx must be smaller than the number of ema rates"
             name = "ema"
             params = self.ema_params[ema_idx]
         
@@ -121,8 +138,8 @@ class DiffusionModelTrainer:
                      "log_loss_scale": self.log_loss_scale,
                      "best_miou": self.best_miou,
                      "fixed_batch": self.fixed_batch}
-        for ema_rate_str, params in zip(self.args.ema_rate.split(","), self.ema_params):
-            save_dict["ema_"+ema_rate_str] = self._master_params_to_state_dict(params)
+        for ema_rate, params in zip(self.ema_rate, self.ema_params):
+            save_dict["ema_"+str(ema_rate)] = self._master_params_to_state_dict(params)
         torch.save(save_dict, str(Path(self.args.save_path)/f"ckpt_{self.step:06d}.pt"))
         if delete_old:
             possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
@@ -132,13 +149,15 @@ class DiffusionModelTrainer:
     
     def get_kwargs(self, batch):
         x,info = batch
+        x = x.to(self.device)
         model_kwargs = {}
         return x,model_kwargs,info
     
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
-        output = self.diffusion.train_loss_step(self.model,x,model_kwargs=model_kwargs)
+        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
+        metrics = get_batch_metrics(output,self.cgd.ab)
         
         loss = output["loss"]
         
@@ -151,26 +170,29 @@ class DiffusionModelTrainer:
             self.optimize_fp16()
         else:
             self.optimize_normal()
-        self.log_train_step(output)
+        self.log_kv_step(loss.item())
     
     def evaluate_loop(self):
         with torch.no_grad():
             for vali_i in range(self.args.num_vali_batches):
-                batch = next(self.vali_dl)
-                self.run_eval_step(batch)
+                self.run_eval_step(next(self.vali_dl))
     
     def run_eval_step(self, batch):
-        x,model_kwargs = self.get_kwargs(batch)
-        output = self.diffusion.train_loss_step(self.model,x,model_kwargs=model_kwargs)
+        x,model_kwargs,info = self.get_kwargs(batch)
+        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
         self.log_eval_step(output)
-
-    def log_train_loss(self,output):
+        
+    def log_eval_step(self,output):
+        prefix = "vali_"
+        self.log_kv({prefix+"loss": output["loss"].item()})
+        
+    def log_train_step(self,output):
         self.log_kv({"loss": output["loss"].item()})
         self.log_kv_step(output["loss"].item())
     
     def _update_lr(self):
-        frac_warmup = np.clip(self.step / self.args.lr_warmup_steps, 0.0, 1.0)
-        frac_decay = np.clip((self.step - self.args.max_iter + self.args.lr_decay_steps) /self.args.lr_decay_steps, 0.0, 1.0)
+        frac_warmup = np.clip(self.step / (self.args.lr_warmup_steps+1e-14), 0.0, 1.0)
+        frac_decay = np.clip((self.step - self.args.max_iter + self.args.lr_decay_steps) / (self.args.lr_decay_steps+1e-14), 0.0, 1.0)
         decay_func_dict = {"linear": lambda x: 1-x,
                            "cosine": lambda x: 0.5 * (1.0 + np.cos(np.pi * x))}
         warmup_mult = decay_func_dict[self.args.lr_warmup_type](1-frac_warmup)
@@ -181,7 +203,7 @@ class DiffusionModelTrainer:
             param_group["lr"] = lr_new
                 
     def optimize_fp16(self):
-        if any(not torch.isfinite(p.grad) for p in self.model_params):
+        if any(not torch.isfinite(p.grad).all() for p in self.model_params):
             self.log_loss_scale -= 1
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
             return
@@ -191,8 +213,8 @@ class DiffusionModelTrainer:
         self._log_grad_norm()
         self._update_lr()
         self.opt.step()
-        for rate, params in zip(self.ema_rate.split(","), self.ema_params):
-            update_ema(params, self.master_params, rate=rate)
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            update_ema(params, unflatten_master_params(self.model_params, self.master_params), rate=rate)
         master_params_to_model_params(self.model_params, self.master_params)
         self.log_loss_scale += self.args.fp16_scale_growth
 
@@ -200,14 +222,14 @@ class DiffusionModelTrainer:
         self._log_grad_norm()
         self._update_lr()
         self.opt.step()
-        for rate, params in zip(self.ema_rate.split(","), self.ema_params):
+        for rate, params in zip(self.ema_rate, self.ema_params):
             update_ema(params, self.master_params, rate=rate)
 
     def _log_grad_norm(self):
         sqsum = 0.0
         for p in self.master_params:
             sqsum += (p.grad ** 2).sum().item()
-        self.log_kv({"grad_norm", np.sqrt(sqsum)})
+        self.log_kv({"grad_norm": np.sqrt(sqsum)})
         
     def train_loop(self):
         self.log("Starting training loop...")
@@ -229,10 +251,10 @@ class DiffusionModelTrainer:
                 self.evaluate_loop()
             
             if self.step % self.args.update_foward_pass_plot_interval == 0:
-                raise NotImplementedError
+                pass#raise NotImplementedError
             
             if self.step % self.args.update_loss_plot_interval == 0:
-                raise NotImplementedError
+                pass#raise NotImplementedError
                 #self.update_loss_plot()
                 
             self.step += 1
@@ -297,9 +319,7 @@ class DiffusionModelTrainer:
 
     def _master_params_to_state_dict(self, master_params):
         if self.args.use_fp16:
-            master_params = unflatten_master_params(
-                list(self.model.parameters()), master_params
-            )
+            master_params = unflatten_master_params(self.model_params, master_params)
         state_dict = self.model.state_dict()
         for i, (name, _value) in enumerate(self.model.named_parameters()):
             assert name in state_dict
@@ -320,16 +340,11 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
-        from datasets import CatBallDataset, custom_collate_with_info
-        model = None
-        diffusion = None
-        train_ds = CatBallDataset(num_balls=list(range(10)))
-        vali_ds = CatBallDataset(num_balls=list(range(10)))
-        train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=0,collate_fn=custom_collate_with_info))
-        vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, batch_size=16, shuffle=True, num_workers=0,collate_fn=custom_collate_with_info))
+        from utils import SmartParser
+        args = SmartParser().get_args()
         args.model_name = "test"
         args.save_path = "./saves/test/"
-        trainer = DiffusionModelTrainer(model=model,diffusion=diffusion,train_dl=train_dl,vali_dl=vali_dl,args=args)
+        trainer = DiffusionModelTrainer(args)
         trainer.train_loop()
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
