@@ -60,7 +60,7 @@ class AnalogBits(object):
         if self.shuffle:
             x = self.get_perm(inv=False)[x]
         #convert to binary
-        x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits).astype(np.float32)*2-1
+        x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits,bitorder="little").astype(np.float32)*2-1
         if was_torch:
             x = torch.from_numpy(x).to(device)
         return x
@@ -78,7 +78,7 @@ class AnalogBits(object):
         #convert to ints if necessary
         if x.dtype in [np.float32,np.float64]:
             x = (x>0).astype(np.uint8)
-        x = np.packbits(x,axis=self.bit_dim)
+        x = np.packbits(x,axis=self.bit_dim,bitorder="little")
         if self.shuffle:
             x = self.get_perm(inv=True)[x]
         if was_torch:

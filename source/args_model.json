@@ -1,7 +1,7 @@
 {
     "test": {
         "max_iter": 10,
-        "train_batch_size": "4",
+        "train_batch_size": 4,
         "save_interval": 5,
         "eval_interval": 5,
         "log_vali_interval": 2,

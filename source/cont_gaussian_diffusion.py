@@ -180,6 +180,7 @@ class ContinuousGaussianDiffusion():
         elif self.sampler_type==SamplerType.low_discrepency:
             t0 = torch.rand()/bs
             t = (torch.arange(bs)/bs+t0).to(x.device)
+            t = t[torch.randperm(bs)]
             
         if eps is None:
             eps = torch.randn_like(x)

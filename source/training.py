@@ -17,13 +17,14 @@ from fp16_util import (
     unflatten_master_params,
     zero_grad,
 )
+from plot_utils import plot_forward_pass,make_loss_plot
 from datasets import CatBallDataset, custom_collate_with_info
 from datasets import AnalogBits
 from nn import update_ema
 from unet import create_unet_from_args
 from cont_gaussian_diffusion import create_diffusion_from_args
 #from .sampling_util import DiffusionSampler,plot_forward_pass
-from utils import dump_kvs,get_batch_metrics
+from utils import dump_kvs,get_batch_metrics,write_args
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
@@ -34,6 +35,8 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 class DiffusionModelTrainer:
     def __init__(self,args):
         self.args = args
+        
+        write_args(args, Path(args.save_path)/"args.json")
         
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
@@ -61,7 +64,7 @@ class DiffusionModelTrainer:
         
         if Path(self.args.save_path).exists():
             possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
-            if len(possible_ckpts)==0:
+            if len(possible_ckpts)==0 or args.model_name=="test":
                 #nuke old folder if no ckpts are found
                 new_training = True
                 rmtree(self.args.save_path)
@@ -79,6 +82,10 @@ class DiffusionModelTrainer:
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
         
+        if self.args.use_fp16:
+            self.master_params = make_master_params(self.model_params)
+            self.model.convert_to_fp16()
+        
         betas = [float(x) for x in self.args.betas.split(",")]
         self.opt = AdamW(self.master_params, lr=self.args.lr, weight_decay=self.args.weight_decay,
                          betas=betas)
@@ -86,9 +93,7 @@ class DiffusionModelTrainer:
         self.ema_rate = [float(x) for x in self.args.ema_rate.split(",")]
         self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rate]
         
-        if self.args.use_fp16:
-            self.master_params = make_master_params(self.model_params)
-            self.model.convert_to_fp16()
+        assert len(self.master_params) == len(self.ema_params[0])
             
         
         if new_training:
@@ -110,7 +115,7 @@ class DiffusionModelTrainer:
             
             for i, ema_rate in enumerate(self.ema_rate):
                 if "ema_"+str(ema_rate) in ckpt.keys():
-                    self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+ema_rate])
+                    self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
 
     def save_state_dict(self,ema_idx=None,delete_old=False,miou=None):
         if delete_old:
@@ -157,7 +162,7 @@ class DiffusionModelTrainer:
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        metrics = get_batch_metrics(output,self.cgd.ab)
+        
         
         loss = output["loss"]
         
@@ -170,25 +175,35 @@ class DiffusionModelTrainer:
             self.optimize_fp16()
         else:
             self.optimize_normal()
+        #logging
         self.log_kv_step(loss.item())
+        metrics = get_batch_metrics(output)
+        self.log_train_step(output,metrics)
+        
+        return output,metrics
     
     def evaluate_loop(self):
         with torch.no_grad():
             for vali_i in range(self.args.num_vali_batches):
                 self.run_eval_step(next(self.vali_dl))
-    
+        self.log_kv({"step": self.step})
+        self.dump_kvs()
+        
     def run_eval_step(self, batch):
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        self.log_eval_step(output)
+        metrics = get_batch_metrics(output)
+        self.log_eval_step(output,metrics)
         
-    def log_eval_step(self,output):
-        prefix = "vali_"
+    def log_eval_step(self,output,metrics,prefix="vali_"):
         self.log_kv({prefix+"loss": output["loss"].item()})
+        self.log_kv_step(output["loss"].item())
+        self.log_kv({prefix+k:v for k,v in metrics.items()})
         
-    def log_train_step(self,output):
+    def log_train_step(self,output,metrics):
         self.log_kv({"loss": output["loss"].item()})
         self.log_kv_step(output["loss"].item())
+        self.log_kv(metrics)
     
     def _update_lr(self):
         frac_warmup = np.clip(self.step / (self.args.lr_warmup_steps+1e-14), 0.0, 1.0)
@@ -214,7 +229,7 @@ class DiffusionModelTrainer:
         self._update_lr()
         self.opt.step()
         for rate, params in zip(self.ema_rate, self.ema_params):
-            update_ema(params, unflatten_master_params(self.model_params, self.master_params), rate=rate)
+            update_ema(params, self.master_params, rate=rate)
         master_params_to_model_params(self.model_params, self.master_params)
         self.log_loss_scale += self.args.fp16_scale_growth
 
@@ -240,7 +255,7 @@ class DiffusionModelTrainer:
             
             batch = next(self.train_dl)
             
-            self.run_train_step(batch)
+            output,metrics = self.run_train_step(batch)
             
             pbar.update(1)
                 
@@ -251,11 +266,10 @@ class DiffusionModelTrainer:
                 self.evaluate_loop()
             
             if self.step % self.args.update_foward_pass_plot_interval == 0:
-                pass#raise NotImplementedError
+                plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
             if self.step % self.args.update_loss_plot_interval == 0:
-                pass#raise NotImplementedError
-                #self.update_loss_plot()
+                make_loss_plot(self.args.save_path)
                 
             self.step += 1
             
@@ -306,6 +320,7 @@ class DiffusionModelTrainer:
         for k,v in self.kvs_buffer.items():
             if isinstance(v,list):
                 self.kvs_buffer[k] = np.mean(v)
+        self.fancy_print_kvs(self.kvs_buffer)
         dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_buffer)
         self.kvs_buffer = {}
         
@@ -313,6 +328,31 @@ class DiffusionModelTrainer:
             for row in self.kvs_step_buffer:
                 f.write(",".join([str(v) for v in row]) + "\n")
         self.kvs_step_buffer = []
+    
+    def fancy_print_kvs(self, kvs, atmost_digits=5):
+        #prints kvs in a nice format like
+        # |########|#######|
+        # |key1    |value1 |
+        #      ...
+        # |keyN    |valueN |
+        # |########|#######|
+        values_print = []
+        keys_print = []
+        for k,v in self.kvs_buffer.items():
+            if isinstance(v,float):
+                v = f"{v:.{atmost_digits}g}"
+            else:
+                v = str(v)
+            values_print.append(v)
+            keys_print.append(k) 
+        max_key_len = max([len(k) for k in keys_print])
+        max_value_len = max([len(v) for v in values_print])
+        print_str = ""
+        print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
+        for k,v in zip(keys_print,values_print):
+            print_str += "|" + k + " "*(max_key_len-len(k)+1) + "|" + v + " "*(max_value_len-len(v)+1) + "|\n"
+        print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
+        self.log(print_str)
         
     def get_logdir(self):
         return os.path.abspath(os.path.join(self.args.logs_folder,self.args.model_name_long))

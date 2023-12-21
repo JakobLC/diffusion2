@@ -31,7 +31,6 @@ def fast_agnostic_classification_metric(pred, target, weighed_by_area=True, targ
     
     c = target_splitting_coef
     return c*metric_pred + (1-c)*metric_target
-    
 
 def slow_agnostic_classification_metric(pred, target, target_splitting_coef=0.5):
     pred = pred.flatten()
@@ -40,20 +39,52 @@ def slow_agnostic_classification_metric(pred, target, target_splitting_coef=0.5)
     pred_in_same_group = (pred.unsqueeze(1) == pred.unsqueeze(0)).float()
     target_in_same_group = (target.unsqueeze(1) == target.unsqueeze(0)).float()
 
-    p_same_given_same = (pred_in_same_group * target_in_same_group).sum() / target_in_same_group.sum()
-    p_diff_given_diff = ((1-pred_in_same_group) * (1-target_in_same_group)).sum() / (1-target_in_same_group).sum()
+    N_all = np.prod(target_in_same_group.shape)
+    N_same = target_in_same_group.sum()
+    N_diff = N_all - N_same
+    if N_same>0:    
+        p_same_given_same = (pred_in_same_group * target_in_same_group).sum() / N_same
+    else:
+        p_same_given_same = 1
+    if N_diff>0:
+        p_diff_given_diff = ((1-pred_in_same_group) * (1-target_in_same_group)).sum() / N_diff
+    else:
+        p_diff_given_diff = 1
     c = target_splitting_coef
     return c*(1-p_same_given_same) + (1-c)*(1-p_diff_given_diff)
 
-def multiclass_iou(pred, target, weighed_by_area=True, ignore_nonpresent=True, check_for_batched=True):
-    if check_for_batched:
-        if len(pred.shape)>2:
-            if pred.shape[0]>1:
-                iou = 0
-                for i in range(pred.shape[0]):
-                    ious_i = multiclass_iou(pred[i],target[i],weighed_by_area=weighed_by_area,ignore_nonpresent=ignore_nonpresent,check_for_batched=False)
-                    iou += ious_i
-                return iou/pred.shape[0]
+def sacm_batched(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
+    assert len(pred.shape)==len(target.shape)==4, "sacm_batched expects 4D tensors"
+    sacm_list = []
+    for i in range(pred.shape[0]):
+        sacm_i = slow_agnostic_classification_metric(pred[i],target[i],
+                                                     weighed_by_area=weighed_by_area,
+                                                     target_splitting_coef=target_splitting_coef)
+        sacm_list.append(sacm_i)
+    return sacm_list
+
+def facm_batched(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
+    assert len(pred.shape)==len(target.shape)==4, "facm_batched expects 4D tensors"
+    facm_list = []
+    for i in range(pred.shape[0]):
+        facm_i = fast_agnostic_classification_metric(pred[i],target[i],
+                                                     weighed_by_area=weighed_by_area,
+                                                     target_splitting_coef=target_splitting_coef)
+        facm_list.append(facm_i)
+    return facm_list
+
+def multiclass_iou_batched(pred, target, weighed_by_area=True, ignore_nonpresent=True):
+    assert len(pred.shape)==len(target.shape)==4, "multiclass_iou_batched expects 4D tensors"
+    iou_list = []
+    for i in range(pred.shape[0]):
+        ious_i = multiclass_iou(pred[i],target[i],
+                                weighed_by_area=weighed_by_area,
+                                ignore_nonpresent=ignore_nonpresent)
+        iou_list.append(ious_i)
+    return iou_list
+
+def multiclass_iou(pred, target, weighed_by_area=True, ignore_nonpresent=True):
+
     pred = pred.clone().detach().flatten()
     target = target.clone().detach().flatten()
     if ignore_nonpresent:
@@ -81,20 +112,20 @@ def mse_loss(pred_x, x, batch_dim=0):
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
 
-def get_batch_metrics(output,ab):
-    pred_x_thresh = ab.bit2int(output["pred_x"]).cpu()
-    target_x_thresh = ab.bit2int(output["x"]).cpu()
-    iou = multiclass_iou(pred_x_thresh, target_x_thresh)
-    facm = fast_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-    sacm = slow_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-    mse_x = mse_loss(output["pred_x"], output["x"]).mean().item()
-    mse_eps = mse_loss(output["pred_eps"], output["eps"]).mean().item()
-    metrics = {"iou": iou,
-               "facm": facm,
-               "sacm": sacm,
-               "mse_x": mse_x,
+def get_batch_metrics(output,ab=None):
+    mse_x = mse_loss(output["pred_x"], output["x"]).tolist()
+    mse_eps = mse_loss(output["pred_eps"], output["eps"]).tolist()
+    metrics = {"mse_x": mse_x,
                "mse_eps": mse_eps}
-               
+    if ab is not None:
+        pred_x_thresh = ab.bit2int(output["pred_x"]).cpu()
+        target_x_thresh = ab.bit2int(output["x"]).cpu()
+        iou = multiclass_iou_batched(pred_x_thresh, target_x_thresh)
+        facm = facm_batched(pred_x_thresh, target_x_thresh)
+        sacm = sacm_batched(pred_x_thresh, target_x_thresh)
+        metrics["facm"] = facm
+        metrics["sacm"] = sacm
+        metrics["iou"] = iou
     return metrics
 
 def model_and_diffusion_defaults(idx=0,ordered_dict=False):
@@ -228,6 +259,8 @@ def model_specific_args(args):
 
 def write_args(args, save_path, match_keys=True):
     if isinstance(save_path,str):
+        if not save_path.endswith(".json"):
+            save_path += ".json"
         save_path = Path(save_path)
     ref_args = model_and_diffusion_defaults(idx=0,ordered_dict=True)
     args_dict = args.__dict__
