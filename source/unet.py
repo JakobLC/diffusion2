@@ -516,6 +516,12 @@ class UNetModel(nn.Module):
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
         for k,v in kwargs.items():
             assert k in self.input_dict.keys(), k+" is not an available kwarg for the model. legal inputs: "+str(self.input_dict.keys())
+            if isinstance(v,list):
+                if any([isinstance(item,torch.Tensor) for item in v]):
+                    v = torch.stack(v,dim=1)
+                else:
+                    continue #TODO
+            assert isinstance(v,torch.Tensor), k+" must be a tensor or list of objects (None or tensor) to be concatenated as a tensor"
             if len(self.input_dict[k])>0:
                 assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
                 assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."

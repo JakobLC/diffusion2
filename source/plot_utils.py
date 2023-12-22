@@ -9,7 +9,7 @@ import matplotlib.cm as cm
 import os
 import glob
 
-def make_loss_plot(save_path,save=True,show=False,fontsize = 14,figsize=(10,8),remove_old=False):
+def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
     filename = os.path.join(save_path,"progress.csv")
     #filename_steps = os.path.join(folder_name,"progress_steps.csv")
     data = np.genfromtxt(filename, delimiter=",")[1:]

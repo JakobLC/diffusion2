@@ -29,14 +29,18 @@ from utils import dump_kvs,get_batch_metrics,write_args
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
 
+#TODO
+# save inter
+# save raw samples
+# save grid
+# forced xstart
+
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
 class DiffusionModelTrainer:
     def __init__(self,args):
         self.args = args
-        
-        write_args(args, Path(args.save_path)/"args.json")
         
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
@@ -47,10 +51,12 @@ class DiffusionModelTrainer:
         self.train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, 
                                                                            batch_size=args.train_batch_size, 
                                                                            shuffle=True,
+                                                                           drop_last=True,
                                                                            collate_fn=custom_collate_with_info))
         self.vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, 
                                                                           batch_size=eval_batch_size, 
-                                                                          shuffle=True, 
+                                                                          shuffle=True,
+                                                                          drop_last=True,
                                                                           collate_fn=custom_collate_with_info))
                                     
         if torch.cuda.is_available():
@@ -62,9 +68,12 @@ class DiffusionModelTrainer:
         self.kvs_buffer = {}
         self.kvs_step_buffer = []
         
+        _ = self.check_save_path()
+        
         if Path(self.args.save_path).exists():
             possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
-            if len(possible_ckpts)==0 or args.model_name=="test":
+            is_test_folder = Path(self.args.save_path).stem=="test"
+            if len(possible_ckpts)==0 or is_test_folder:
                 #nuke old folder if no ckpts are found
                 new_training = True
                 rmtree(self.args.save_path)
@@ -98,6 +107,7 @@ class DiffusionModelTrainer:
         
         if new_training:
             self.log("Starting new training run.")
+            write_args(args, Path(args.save_path)/"args.json")
             self.step = 1
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
             self.best_miou = 0.0
@@ -186,7 +196,6 @@ class DiffusionModelTrainer:
         with torch.no_grad():
             for vali_i in range(self.args.num_vali_batches):
                 self.run_eval_step(next(self.vali_dl))
-        self.log_kv({"step": self.step})
         self.dump_kvs()
         
     def run_eval_step(self, batch):
@@ -311,12 +320,17 @@ class DiffusionModelTrainer:
     def log_kv_step(self, *values):
         """
         Saves values in a buffer to be saved to a file later.
-        No reduction is applied to the values. Only 1 value can be 
-        used per training step.
+        No reduction is applied to the values.
         """
         self.kvs_step_buffer.append(values)
         
     def dump_kvs(self, filename="progress.csv"):
+        """
+        Saves the kvs buffer and prints it, aswell as the kvs 
+        step buffer to a file and then clears the buffers.
+        """
+        self.log_kv({"step": self.step})
+        self.log_kv({"loss_scale": self.log_loss_scale})
         for k,v in self.kvs_buffer.items():
             if isinstance(v,list):
                 self.kvs_buffer[k] = np.mean(v)
@@ -330,15 +344,16 @@ class DiffusionModelTrainer:
         self.kvs_step_buffer = []
     
     def fancy_print_kvs(self, kvs, atmost_digits=5):
-        #prints kvs in a nice format like
-        # |########|#######|
-        # |key1    |value1 |
-        #      ...
-        # |keyN    |valueN |
-        # |########|#######|
+        """prints kvs in a nice format like
+         |#########|########|
+         | key1    | value1 |
+              ...
+         | keyN    | valueN |
+         |#########|########|
+        """
         values_print = []
         keys_print = []
-        for k,v in self.kvs_buffer.items():
+        for k,v in kvs.items():
             if isinstance(v,float):
                 v = f"{v:.{atmost_digits}g}"
             else:
@@ -350,14 +365,13 @@ class DiffusionModelTrainer:
         print_str = ""
         print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
         for k,v in zip(keys_print,values_print):
-            print_str += "|" + k + " "*(max_key_len-len(k)+1) + "|" + v + " "*(max_value_len-len(v)+1) + "|\n"
+            print_str += "| " + k + " "*(max_key_len-len(k)+1) + "| " + v + " "*(max_value_len-len(v)+1) + "|\n"
         print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
         self.log(print_str)
-        
-    def get_logdir(self):
-        return os.path.abspath(os.path.join(self.args.logs_folder,self.args.model_name_long))
 
     def _master_params_to_state_dict(self, master_params):
+        """converts a list of params (flattened list if fp16) 
+        to a state dict based on the model's state dict"""
         if self.args.use_fp16:
             master_params = unflatten_master_params(self.model_params, master_params)
         state_dict = self.model.state_dict()
@@ -367,11 +381,30 @@ class DiffusionModelTrainer:
         return state_dict
 
     def _state_dict_to_master_params(self, state_dict):
+        """converts a state dict to a list of params based on the model's state dict"""
         params = [state_dict[name] for name, _ in self.model.named_parameters()]
         if self.args.use_fp16:
             return make_master_params(params)
         else:
             return params
+
+    def check_save_path(self):
+        """Check if the save path is a subfolder of the saves folder. 
+        This is important since the training loop will delete the save folder 
+        under some conditions."""
+        saves_folder = Path(__file__).parent.parent/"saves"
+        save_path = Path(os.path.abspath(self.args.save_path))
+        out = False
+        num_parents = len(save_path.parents)
+        parent = save_path.parent
+        for _ in range(num_parents):
+            is_saves_folder = parent==saves_folder
+            if is_saves_folder:
+                out = True
+                break
+            parent = parent.parent
+        assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
+        return out
 
 def main():
     import argparse

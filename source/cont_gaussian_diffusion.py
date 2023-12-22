@@ -284,7 +284,7 @@ class ContinuousGaussianDiffusion():
             return w
         
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
-                    guidance_weight=0.0):
+                    guidance_weight=0.0, self_cond=False):
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -309,11 +309,15 @@ class ContinuousGaussianDiffusion():
             pred_x, pred_eps = self.get_predictions(model(x_t, t_cond, **model_kwargs),
                                                     x_t,alpha_t,sigma_t,clip_x,guidance_weight,model_output_guidance)
             
+            if self_cond:
+                model_kwargs['self_cond'] = x_t
+            
             x_t = body_fun(i, pred_x, pred_eps, x_t)
             
-            #update model_kwargs TODO
+            
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
+        
         return x_t
 
     def to_t_cond(self, t):
