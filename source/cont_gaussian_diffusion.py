@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from datasets import AnalogBits
 from utils import normal_kl,mse_loss
-import nn
 
 def add_(coefs,x,batch_dim=0,flat=False):
     """broadcast and add coefs to x"""
@@ -121,7 +120,7 @@ class SamplerType(enum.Enum):
     """How to sample timesteps for training"""
     uniform = enum.auto()
     low_discrepency = enum.auto()
-
+    uniform_low_discrepency = enum.auto()
 class ContinuousGaussianDiffusion():
     def __init__(self, 
                  analog_bits,
@@ -173,6 +172,7 @@ class ContinuousGaussianDiffusion():
     def train_loss_step(self, model, x, model_kwargs={}, eps=None):
         """compute one training step and return the loss"""
         if self.ab is not None:
+            assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must have size 1, got {x.shape[self.ab.bit_dim]}"
             x = self.ab.int2bit(x)
         bs = x.shape[0]
         if self.sampler_type==SamplerType.uniform:
@@ -181,7 +181,8 @@ class ContinuousGaussianDiffusion():
             t0 = torch.rand()/bs
             t = (torch.arange(bs)/bs+t0).to(x.device)
             t = t[torch.randperm(bs)]
-            
+        elif self.sampler_type==SamplerType.uniform_low_discrepency:
+            t = ((torch.arange(bs)[torch.randperm(bs)]+torch.rand(bs))/bs).to(x.device)
         if eps is None:
             eps = torch.randn_like(x)
         
@@ -253,14 +254,14 @@ class ContinuousGaussianDiffusion():
         else:
             return x_s_pred
 
-    def ddpm_step(self, i, pred_x, x_t, num_steps, clip_x):
-        t = ((i + 1.) / num_steps).to(pred_x.dtype)
-        s = (i / num_steps).to(pred_x.dtype)
+    def ddpm_step(self, i, pred_x, x_t, num_steps):
+        t = torch.tensor((i + 1.) / num_steps).to(pred_x.dtype)
+        s = torch.tensor(i / num_steps).to(pred_x.dtype)
         x_s_dist = self.p_distribution(
-            x_t=pred_x,
+            x_t=x_t,
+            pred_x=pred_x,
             logsnr_t=self.logsnr(t),
-            logsnr_s=self.logsnr(s),
-            clip_x=clip_x)
+            logsnr_s=self.logsnr(s))
         if i==0:
             return x_s_dist['pred_x']
         else:
@@ -293,28 +294,38 @@ class ContinuousGaussianDiffusion():
             raise NotImplementedError(sampler_type)
         
         guidance_weight = self.transform_guidance_weight(guidance_weight,x_init)
+        if self.ab is not None:
+            assert x_init.shape[self.ab.bit_dim]==self.ab.num_bits, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_bits}, got {x_init.shape[self.ab.bit_dim]}"
         
         x_t = x_init
+        
         for i in range(num_steps-1, -1, -1):
+            #info_str = f"i={i}, "
             t = torch.tensor((i + 1.) / num_steps)
             alpha_t, sigma_t = self.alpha(t), self.sigma(t)
             t_cond = self.to_t_cond(t).to(x_t.dtype).to(x_t.device)
-            
             
             if guidance_weight is not None:
                 model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs if k in self.guidance_kwargs})
             else:
                 model_output_guidance = None
-                
-            pred_x, pred_eps = self.get_predictions(model(x_t, t_cond, **model_kwargs),
-                                                    x_t,alpha_t,sigma_t,clip_x,guidance_weight,model_output_guidance)
             
+            model_output = model(x_t, t_cond, **model_kwargs)
+            #info_str += f"shape={model_output.shape}, mean={model_output.mean().item():.5f}, std={model_output.std().item():.5f}, "
+            pred_x, pred_eps = self.get_predictions(output=model_output,
+                                                    x_t=x_t,
+                                                    alpha_t=alpha_t,
+                                                    sigma_t=sigma_t,
+                                                    clip_x=clip_x,
+                                                    guidance_weight=guidance_weight,
+                                                    model_output_guidance=model_output_guidance)
+            #info_str += f"E(pred_x)={pred_x.mean().item():.5f}, E(pred_eps)= {pred_eps.mean().item():.5f}, E(x_t)={x_t.mean().item():.5f}"
             if self_cond:
                 model_kwargs['self_cond'] = x_t
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
             
-            
+            #print(info_str)
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
         
@@ -332,7 +343,7 @@ class ContinuousGaussianDiffusion():
         assert x.shape == x_t.shape
         assert logsnr_t.shape == logsnr_s.shape == (x_t.shape[0],)
         q_dist = self.q_distribution(x=x,x_t=x_t,logsnr_t=logsnr_t,logsnr_s=logsnr_s,x_logvar='small')
-        p_dist = self.p_distribution(x_t=x_t, logsnr_t=logsnr_t,logsnr_s=logsnr_s,model_output=model_output)
+        p_dist = self.p_distribution(x_t=x_t, logsnr_t=logsnr_t,logsnr_s=logsnr_s)
         kl = normal_kl(
             mean1=q_dist['mean'], logvar1=q_dist['logvar'],
             mean2=p_dist['mean'], logvar2=p_dist['logvar'])
@@ -340,10 +351,15 @@ class ContinuousGaussianDiffusion():
     
     def p_distribution(self, x_t, pred_x, logsnr_t, logsnr_s):
         """computes p(x_s | x_t)."""
-        assert logsnr_t.shape == logsnr_s.shape == (x_t.shape[0],)
+        if self.var_type==VarType.small:
+            x_logvar = "small"
+        else: 
+            assert self.var_type==VarType.large
+            x_logvar = "large"
+            
         out = self.q_distribution(
             x_t=x_t, logsnr_t=logsnr_t, logsnr_s=logsnr_s,
-            x=pred_x, x_logvar=self.var_type)
+            x=pred_x, x_logvar=x_logvar)
         out['pred_x'] = pred_x
         return out
     
@@ -355,16 +371,16 @@ class ContinuousGaussianDiffusion():
         one_minus_r = -torch.expm1(logsnr_t - logsnr_s)  # 1-SNR(t)/SNR(s)
         log_one_minus_r = torch.log1p(-torch.exp(logsnr_s - logsnr_t))  # log(1-SNR(t)/SNR(s))
 
-        mean = r * alpha_st * x_t + one_minus_r * alpha_s * x
+        mean = mult_(r * alpha_st, x_t) + mult_(one_minus_r * alpha_s, x)
         
         if x_logvar == 'small':
             # same as setting x_logvar to -infinity
             var = one_minus_r * torch.sigmoid(-logsnr_s)
-            logvar = log_one_minus_r + nn.LogSigmoid()(-logsnr_s)
+            logvar = log_one_minus_r + torch.nn.LogSigmoid()(-logsnr_s)
         elif x_logvar == 'large':
             # same as setting x_logvar to nn.LogSigmoid()(-logsnr_t)
             var = one_minus_r * torch.sigmoid(-logsnr_t)
-            logvar = log_one_minus_r + nn.LogSigmoid()(-logsnr_t)
+            logvar = log_one_minus_r + torch.nn.LogSigmoid()(-logsnr_t)
         else:        
             raise NotImplementedError(x_logvar)
         return {'mean': mean, 'std': torch.sqrt(var), 'var': var, 'logvar': logvar}

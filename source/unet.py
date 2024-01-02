@@ -501,7 +501,8 @@ class UNetModel(nn.Module):
             cat_in = torch.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
         h = h.type(sample.dtype)
-        return self.out(h)
+        h = self.out(h)
+        return h
     
     def prepare_inputs(self, sample, timesteps, labels=None, **kwargs):
         """

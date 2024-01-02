@@ -115,12 +115,13 @@ class DiffusionModelTrainer:
             self.log_kv_step("loss")
         else:
             self.log("Resuming training run.")
-            self.step = ckpt["step"]
+            self.step = ckpt["step"]+1
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_miou = ckpt["best_miou"]
             self.fixed_batch = ckpt["fixed_batch"]
             self.opt.load_state_dict(ckpt["optimizer"])
             self.master_params = self._state_dict_to_master_params(ckpt["model"])
+            self.model.load_state_dict(ckpt["model"])
             self.model_params = list(self.model.parameters())
             
             for i, ema_rate in enumerate(self.ema_rate):
@@ -172,7 +173,6 @@ class DiffusionModelTrainer:
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        
         
         loss = output["loss"]
         
@@ -392,7 +392,7 @@ class DiffusionModelTrainer:
         """Check if the save path is a subfolder of the saves folder. 
         This is important since the training loop will delete the save folder 
         under some conditions."""
-        saves_folder = Path(__file__).parent.parent/"saves"
+        saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
         save_path = Path(os.path.abspath(self.args.save_path))
         out = False
         num_parents = len(save_path.parents)
@@ -413,10 +413,21 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
+        print("UNIT TEST 0: train from scratch")
         from utils import SmartParser
         args = SmartParser().get_args()
         args.model_name = "test"
         args.save_path = "./saves/test/"
+        trainer = DiffusionModelTrainer(args)
+        trainer.train_loop()
+    elif args.unit_test==1:
+        print("UNIT TEST 1: continued training")
+        from utils import SmartParser
+        args = SmartParser().get_args(do_parse_args=False)
+        args.model_name = "test_trained"
+        args.save_path = "./saves/test_trained/"
+        args.max_iter = 5002
+        args.update_foward_pass_plot_interval = 2
         trainer = DiffusionModelTrainer(args)
         trainer.train_loop()
     else:

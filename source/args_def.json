@@ -7,7 +7,7 @@
         "eval_num_steps": [100,                     "Number of timesteps used for evaluation during training. positive integer. DEFAULT: 100. DEFAULT: 100"], 
         "clip_denoised": [true,                     "Should the denoised image be clipped to the input range? TYPE: boolean. DEFAULT: true. DEFAULT: true"],
         "sigma_small": [false,                      "Should the small sigma be used? TYPE: boolean. DEFAULT: false. DEFAULT: false"],
-        "schedule_sampler": ["uniform",             "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','loss_aware']. DEFAULT: uniform."],
+        "schedule_sampler": ["uniform",             "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_discrepency']. DEFAULT: uniform."],
         "input_scale": [1.0,                        "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"],
         "gamma_clip_min": [1e-9,                    "Minimum value for gamma (to avoid singularities). TYPE: float. DEFAULT: 1e-9"]
     },

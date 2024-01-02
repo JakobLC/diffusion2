@@ -112,21 +112,20 @@ def mse_loss(pred_x, x, batch_dim=0):
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
 
-def get_metrics(pred_x,x,ab=None):
-    assert isinstance(pred_x,torch.Tensor)
-    assert isinstance(x,torch.Tensor)
-    assert len(pred_x.shape)==len(x.shape)==3
-    mse_x = mse_loss(pred_x, x)
-    metrics = {"mse_x": mse_x}
-    if ab is not None:
-        pred_x_thresh = ab.bit2int(pred_x).cpu()
-        target_x_thresh = ab.bit2int(x).cpu()
-        iou = multiclass_iou(pred_x_thresh, target_x_thresh)
-        facm = fast_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-        sacm = slow_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-        metrics["facm"] = facm
-        metrics["sacm"] = sacm
-        metrics["iou"] = iou
+def get_segment_metrics(pred_x_thresh,target_x_thresh):
+    assert isinstance(pred_x_thresh,torch.Tensor)
+    assert isinstance(target_x_thresh,torch.Tensor)
+    assert len(pred_x_thresh.shape)==len(target_x_thresh.shape)==3
+    assert pred_x_thresh.shape[0]==target_x_thresh.shape[0]==1
+    metrics = {}
+    iou = multiclass_iou(pred_x_thresh, target_x_thresh)
+    facm = fast_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
+    sacm = slow_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
+    metrics["facm"] = facm
+    metrics["sacm"] = sacm
+    metrics["iou"] = iou
+        
+    return metrics
 
 def get_batch_metrics(output,ab=None):
     mse_x = mse_loss(output["pred_x"], output["x"]).tolist()

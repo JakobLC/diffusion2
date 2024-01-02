@@ -8,6 +8,8 @@ import nice_colors as nc
 import matplotlib.cm as cm
 import os
 import glob
+from pathlib import Path
+
 
 def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
     filename = os.path.join(save_path,"progress.csv")
@@ -104,29 +106,24 @@ def analog_bits_on_image(x,im,ab):
     x = ab.bit2int(x.unsqueeze(0)).cpu().detach().numpy().squeeze(0)
     return mask_overlay_smooth(im,x)
 
-def mean_dim0(x):
+def mean_dim0(x,*args):
     assert isinstance(x,torch.Tensor), "mean_dim2 expects a torch.Tensor"
     return (x*0.5+0.5).clamp(0,1).mean(0).cpu().detach().numpy()
 
-def error_image(x):
-    """x = (mean_dim0(x)*255).astype(np.uint8)
-    print(x.mean(),x.min(),x.max())
-    x = cm.RdBu(x)[:,:,:3]/255
-    print(x.mean(),x.min(),x.max())
-    assert 1<0"""
-    return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]/255
+def error_image(x,*args):
+    return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
 
 def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=False):
     bs = len(output["x"])
     image_size = output["x"].shape[2]
-    im = np.zeros((image_size,image_size,3))+0.5
     if bs>max_images:
         bs = max_images
         for k,v in output.items():
             if isinstance(v,torch.Tensor):
                 output[k] = v[:max_images]
-    nb_3 = lambda x: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    aboi = lambda x: analog_bits_on_image(x,im,ab)
+    im = np.zeros((bs,image_size,image_size,3))+0.5
+    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
     not_nb3 = not ab.num_bits==3
     
     show_keys = ["x_t","pred_x","x","err_x","pred_eps","eps"]
@@ -140,7 +137,7 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=False)
     images = []
     for k in show_keys:
         if k in output.keys():
-            images.append([map_dict[k](output[k][i]) for i in range(bs)])
+            images.append([map_dict[k](output[k][i],i) for i in range(bs)])
     text = sum([[k]+[""]*(bs-1) for k in show_keys],[])
     err_idx = text.index("err_x")
     for i in range(bs):
@@ -159,47 +156,108 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=False)
         if len(old_plot_files)>0:
             for old_filename in old_plot_files:
                 os.remove(old_filename)
+
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
+    show_keys = ["x_init","target_bit","pred_bit"]
+    k0 = show_keys[0]
+    bs = len(output[k0])
+    image_size = output[k0].shape[-1]
+    if bs>max_images:
+        bs = max_images
+    #output["err_x"] = output["pred_bit"]-output["target_bit"]
     
+    for k in show_keys:
+        assert k in output.keys(), f"key {k} not in output.keys()"
+        assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
+        assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
+        assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
+        output[k] = output[k][:bs]
+        
+    im = np.zeros((bs,image_size,image_size,3))+0.5
+    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
+    aboi = aboi if (not ab.num_bits==3) else nb_3
     
-"""    image_size = image.shape[2]
-    batch_size = image.shape[0]
-    if batch_size>max_images:
-        batch_size = max_images
-        image = image[:max_images]
-        mask = mask[:max_images]
-        for k,v in losses.items() or torch.is_tensor(v):
-            if isinstance(v,list):
-                losses[k] = v[:max_images]
-                
-    text = ["image","gt","eps","x_t","pred_xstart","pred_eps","err"]
-    if "bbox" in losses.keys():
-        text.append("bbox")
-    if "points" in losses.keys():
-        text.append("points")
+    map_dict = {"target_bit": aboi,
+                "pred_bit": aboi,
+                "x_init": aboi}
     
-    images = [image,mask]+[losses[k] for k in text[2:]]
-    postprocess = lambda x: (x*0.5+0.5).clamp(0,1)
-    images = [np_map(postprocess(im)) for im in images]
-    images[6] = [cm.RdBu(err[:,:,0])[:,:,:3] for err in images[6]]
-    images = sum([[im[i] for i in range(len(im))] for im in images],[])
-    text = sum([[t]+[""]*(batch_size-1) for t in text],[])
-    if "labels" in losses.keys() and label_to_dataset is not None:
-        for i in range(batch_size):
-            text[i] += "\n"+label_to_dataset[int(losses['labels'][i])]
-    for i in range(batch_size):
-        text[i+batch_size*3] += f"\nt={int(losses['t'][i]):d}"
-    if losses["model_loss_domain"]=="eps":
-        for i in range(batch_size):
-            text[i+batch_size*5] += f"\nmse={losses['mse'][i].item():.4f}"
-    elif losses["model_loss_domain"]=="xstart":
-        for i in range(batch_size):
-            text[i+batch_size*4] += f"\nmse={losses['mse'][i].item():.4f}"
+    images = []
+    text = []
+    for k in show_keys:
+        if k in output.keys():
+            if k=="pred_bit":
+                for j in range(output[k].shape[1]):
+                    images.extend([map_dict[k](output[k][i][j],i) for i in range(bs)])
+                    text.extend([f"\n{measure}={output[measure][i][j]:.4f}" for i in range(bs)])
+            else:
+                text.extend([k]+[""]*(bs-1))
+                images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
     jlc.montage_save(save_name=filename,
                     show_fig=False,
                     arr=images,
                     padding=1,
-                    n_col=batch_size,
+                    n_col=bs,
                     text=text,
                     text_color="red",
                     pixel_mult=max(1,128//image_size),
-                    text_size=12)"""
+                    text_size=12)
+    if remove_old:
+        clean_up(filename)
+
+def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
+    show_keys = ["x_t","pred_x","x","err_x","pred_eps","eps"]
+    k0 = show_keys[0]
+    bs = len(output[k0])
+    image_size = output[k0].shape[-1]
+    if bs>max_images:
+        bs = max_images
+    output["err_x"] = output["pred_x"]-output["x"]
+    
+    for k in show_keys:
+        assert k in output.keys(), f"key {k} not in output.keys()"
+        assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
+        assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
+        assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
+        output[k] = output[k][:bs]
+        
+    im = np.zeros((bs,image_size,image_size,3))+0.5
+    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
+    aboi = aboi if (not ab.num_bits==3) else nb_3
+    md0 = mean_dim0 if (not ab.num_bits==3) else nb_3
+    map_dict = {"x_t": aboi,
+                "pred_x": aboi,
+                "x": aboi,
+                "err_x": error_image,
+                "pred_eps": md0,
+                "eps": md0}
+    
+    images = []
+    for k in show_keys:
+        if k in output.keys():
+            images.append([map_dict[k](output[k][i],i) for i in range(bs)])
+    text = sum([[k]+[""]*(bs-1) for k in show_keys],[])
+    err_idx = text.index("err_x")
+    for i in range(bs):
+        text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.4f}"
+    jlc.montage_save(save_name=filename,
+                    show_fig=False,
+                    arr=images,
+                    padding=1,
+                    n_col=bs,
+                    text=text,
+                    text_color="red",
+                    pixel_mult=max(1,128//image_size),
+                    text_size=12)
+    if remove_old:
+        clean_up(filename)
+        
+def clean_up(filename):
+    safe_filename = Path(filename)
+    glob_str = "_".join(safe_filename.name.split("_")[:-1])+"_*"+safe_filename.suffix
+    old_filenames = list(safe_filename.parent.glob(glob_str))
+    for old_filename in old_filenames:
+        if old_filename!=safe_filename:
+            os.remove(old_filename)
+    
