@@ -3,6 +3,7 @@ import torch
 import scipy.ndimage as nd
 import numpy as np
 import torch
+from scipy.ndimage import gaussian_filter
 ROOT = "C:/Users/Janus/Desktop/diff/diffusion2/diffusion2/datasets.py"
 sys.path.append(ROOT)
 
@@ -107,6 +108,13 @@ class CatBallDataset(torch.utils.data.Dataset):
         self.x,self.y = np.meshgrid(range(self.size),range(self.size))
         self.seed_translation = seed_translation
         
+    def get_image(self,item,noise_coef=0.1,std=0.05):
+        noise = np.random.randn(*item.shape)
+        foreground = (item>0).astype(float)
+        image = (1-noise_coef)*foreground+noise_coef*noise
+        image = gaussian_filter(image,sigma=std*self.size)
+        return torch.from_numpy(image).unsqueeze(0)
+    
     def __len__(self):
         return self.dataset_len
 
@@ -128,6 +136,7 @@ class CatBallDataset(torch.utils.data.Dataset):
             CX.append(cx)
             CY.append(cy)
         info = {"r": R,"cx": CX,"cy": CY, "nb": nb}
+        info["image"] = self.get_image(item)
         item = torch.from_numpy(item).unsqueeze(0)
         return item,info
 
@@ -141,3 +150,24 @@ def custom_collate_with_info(original_batch):
         else:
             normal_batch.append(torch.stack(list_of_items,axis=0))
     return *normal_batch,info
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--unit_test", type=int, default=0)
+    args = parser.parse_args()
+    if args.unit_test==0:
+        print("UNIT TEST 0: display batch")
+        import jlc
+        import matplotlib.pyplot as plt
+        dataloader = torch.utils.data.DataLoader(CatBallDataset(size=64,dataset_len=10),batch_size=10,shuffle=False,collate_fn=custom_collate_with_info)
+        x,info = next(iter(dataloader))
+        im = torch.stack([info_i["image"] for info_i in info],dim=0)
+        images = torch.cat((x,im),dim=0).clamp(0,1)
+        jlc.montage(images)
+        plt.show()
+    else:
+        raise ValueError(f"Unknown unit test index: {args.unit_test}")
+        
+if __name__=="__main__":
+    main()

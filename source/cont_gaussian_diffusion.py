@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from datasets import AnalogBits
 from utils import normal_kl,mse_loss
+import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):
     """broadcast and add coefs to x"""
@@ -82,6 +83,16 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
     gamma_wrapped = lambda t: gamma_input_scaled((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)).clamp_min(clip_min)
     return gamma_wrapped
 
+def inter_save_map(x,save_i_idx):
+    if torch.is_tensor(x):
+        if x.numel()==1:
+            return torch.tensor(x.item())
+        else:
+            return x[save_i_idx].cpu()
+    else:
+        assert isinstance(x,(float,int)), f"x={x}"
+        return torch.tensor(x)
+    
 def type_from_maybe_str(s,class_type):
     if isinstance(s,class_type):
         return s
@@ -285,7 +296,7 @@ class ContinuousGaussianDiffusion():
             return w
         
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
-                    guidance_weight=0.0, self_cond=False):
+                    guidance_weight=0.0, self_cond=False, progress_bar=False, save_i_steps=[], save_i_idx=[]):
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -297,10 +308,21 @@ class ContinuousGaussianDiffusion():
         if self.ab is not None:
             assert x_init.shape[self.ab.bit_dim]==self.ab.num_bits, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_bits}, got {x_init.shape[self.ab.bit_dim]}"
         
+        if progress_bar:
+            trange = tqdm.tqdm(range(num_steps-1, -1, -1), desc="Batch progress.")
+        else:
+            trange = range(num_steps-1, -1, -1)
+            
+        sample_output = {}
+        if len(save_i_steps)>0 and len(save_i_idx)>0:
+            intermediate_save = True
+            inter_keys = ["x_t","pred_x","pred_eps","model_output","i","t"]
+            sample_output["inter"] = {k: [] for k in inter_keys}
+        else:
+            intermediate_save = False
         x_t = x_init
         
-        for i in range(num_steps-1, -1, -1):
-            #info_str = f"i={i}, "
+        for i in trange:
             t = torch.tensor((i + 1.) / num_steps)
             alpha_t, sigma_t = self.alpha(t), self.sigma(t)
             t_cond = self.to_t_cond(t).to(x_t.dtype).to(x_t.device)
@@ -311,7 +333,6 @@ class ContinuousGaussianDiffusion():
                 model_output_guidance = None
             
             model_output = model(x_t, t_cond, **model_kwargs)
-            #info_str += f"shape={model_output.shape}, mean={model_output.mean().item():.5f}, std={model_output.std().item():.5f}, "
             pred_x, pred_eps = self.get_predictions(output=model_output,
                                                     x_t=x_t,
                                                     alpha_t=alpha_t,
@@ -319,17 +340,23 @@ class ContinuousGaussianDiffusion():
                                                     clip_x=clip_x,
                                                     guidance_weight=guidance_weight,
                                                     model_output_guidance=model_output_guidance)
-            #info_str += f"E(pred_x)={pred_x.mean().item():.5f}, E(pred_eps)= {pred_eps.mean().item():.5f}, E(x_t)={x_t.mean().item():.5f}"
+            if intermediate_save:
+                if i in save_i_steps:
+                    for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,i,t]):
+                        sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
+            
             if self_cond:
                 model_kwargs['self_cond'] = x_t
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
-            
-            #print(info_str)
+        if len(save_i_steps)>0:
+            for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,model_output_guidance,i,t]):
+                sample_output["inter"][key] = torch.stack(sample_output["inter"][key],dim=0)
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
         
-        return x_t
+        sample_output["pred"] = x_t
+        return sample_output
 
     def to_t_cond(self, t):
         if not torch.is_tensor(t):

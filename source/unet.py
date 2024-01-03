@@ -518,11 +518,19 @@ class UNetModel(nn.Module):
         for k,v in kwargs.items():
             assert k in self.input_dict.keys(), k+" is not an available kwarg for the model. legal inputs: "+str(self.input_dict.keys())
             if isinstance(v,list):
-                if any([isinstance(item,torch.Tensor) for item in v]):
-                    v = torch.stack(v,dim=1)
+                if all([item is None for item in v]):
+                    v = None
                 else:
-                    continue #TODO
-            assert isinstance(v,torch.Tensor), k+" must be a tensor or list of objects (None or tensor) to be concatenated as a tensor"
+                    shape_v = [bs,len(self.input_dict[k]),self.image_size,self.image_size]
+                    v = torch.zeros(shape_v,device=sample.device)
+                    for item_i,item in enumerate(v):
+                        if item is not None:
+                            assert isinstance(item,torch.Tensor), k+" must be a tensor or list of objects (None or tensor) to be concatenated as a tensor"
+                            assert len(item.shape) == 3, "Expected 3 dimensions for input "+k+", got: "+str(len(item.shape))+" instead."
+                            assert item.shape[1] == item.shape[2] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(item.shape[1:])+" instead."
+                            assert item.shape[0] == len(self.input_dict[k]), f"Expected first dimension in list of items to be number of channels, which for key={k} is {len(self.input_dict[k])}, got: {item.shape[0]} instead."
+                            v[item_i] = item
+            assert torch.is_tensor(v) or v is None, k+" must be a tensor or list of objects (None or tensor) to be concatenated as a tensor"
             if len(self.input_dict[k])>0:
                 assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
                 assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
@@ -533,7 +541,7 @@ class UNetModel(nn.Module):
                 
                 h[:,self.input_dict[k],:,:] = v.type(self.inner_dtype)
             else:
-                assert v is None, k+" is not an available kwarg for the model. legal inputs: "+str(self.input_dict.keys())
+                assert v is None, k+" is not an available kwarg for the model. legal inputs: "+str([k for k in self.input_dict.keys() if len(self.input_dict[k])>0])
             
         if (labels is not None):
             assert self.num_classes is not None, "num_classes must be specified if labels are provided"
@@ -585,7 +593,7 @@ def create_unet_from_args(args):
         out_channels *= 2
     unet = UNetModel(image_size=args["image_size"],
                     out_channels=out_channels,
-                    image_channels=0 if args["cat_ball_data"] else 3,
+                    image_channels=1 if args["cat_ball_data"] else 3,
                     num_res_blocks=args["num_res_blocks"],
                     attention_resolutions=args["attention_resolutions"],
                     dropout=args["dropout"],
@@ -594,8 +602,8 @@ def create_unet_from_args(args):
                     num_heads=args["num_heads"],
                     num_heads_upsample=args["num_heads_upsample"],
                     weak_signals=args["weak_signals"],
-                    self_cond=args["self_conditioning"],
-                    cond=args["conditioning_type"]!="none")
+                    self_cond=args["self_cond"],
+                    cond=args["cond_type"]!="none")
     return unet
 
 def main():

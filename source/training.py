@@ -19,22 +19,21 @@ from fp16_util import (
 )
 from plot_utils import plot_forward_pass,make_loss_plot
 from datasets import CatBallDataset, custom_collate_with_info
-from datasets import AnalogBits
 from nn import update_ema
 from unet import create_unet_from_args
 from cont_gaussian_diffusion import create_diffusion_from_args
-#from .sampling_util import DiffusionSampler,plot_forward_pass
 from utils import dump_kvs,get_batch_metrics,write_args
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
 
 #TODO
-# save inter
-# save raw samples
-# save grid
 # forced xstart
-
+# prepare_inputs as preprocessing step outside loop
+# make seeding better in the sampler (one seed to define a whole diffusion process instead of 1000)
+# implement all points in arguments
+# debug save intermediate
+# debug save raw samples
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -166,13 +165,41 @@ class DiffusionModelTrainer:
     def get_kwargs(self, batch):
         x,info = batch
         x = x.to(self.device)
-        model_kwargs = {}
+        model_kwargs = {"image": [],
+                        "bbox": [],
+                        "points": [],
+                        "cond": []}
+        bs = x.shape[0]
+        for i in range(bs):
+            if np.random.rand()<self.args.image_prob:
+                model_kwargs["image"].append(info[i]["image"])
+            else:
+                model_kwargs["image"].append(None)
+            if self.args.weak_signals:
+                if np.random.rand()<self.args.weak_bbox_prob:
+                    raise NotImplementedError("bbox not implemented")
+                else:
+                    model_kwargs["bbox"].append(None)
+                    
+                if np.random.rand()<self.args.weak_points_prob:
+                    raise NotImplementedError("points not implemented")
+                else:
+                    model_kwargs["points"].append(None)
+            if self.args.cond_type!="none":
+                if np.random.rand()<self.args.cond_prob:
+                    raise NotImplementedError("cond not implemented")
+                    #model_kwargs["cond"] = info["get_cond"]()
+                else:
+                    model_kwargs["cond"].append(None)    
+                
         return x,model_kwargs,info
     
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
+        
+        output = {**output,**model_kwargs}
         
         loss = output["loss"]
         
@@ -416,8 +443,8 @@ def main():
         print("UNIT TEST 0: train from scratch")
         from utils import SmartParser
         args = SmartParser().get_args()
-        args.model_name = "test"
-        args.save_path = "./saves/test/"
+        args.model_name = "test2"
+        args.save_path = "./saves/test2/"
         trainer = DiffusionModelTrainer(args)
         trainer.train_loop()
     elif args.unit_test==1:

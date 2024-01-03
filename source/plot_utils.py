@@ -50,11 +50,7 @@ def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),rem
         save_name = os.path.join(save_path, f"loss_plot_{int(x[-1]):06d}.png")
         fig.savefig(save_name)
     if remove_old:
-        old_plot_files = glob.glob(os.path.join(save_path, f"loss_plot_*.png"))
-        if len(old_plot_files)>0:
-            for old_filename in old_plot_files:
-                if old_filename!=save_name:
-                    os.remove(old_filename)
+        clean_up(save_path)
     plt.close(fig)
 
 def gaussian_filter_xy(x,y,sigma):
@@ -113,49 +109,59 @@ def mean_dim0(x,*args):
 def error_image(x,*args):
     return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=False):
-    bs = len(output["x"])
-    image_size = output["x"].shape[2]
-    if bs>max_images:
-        bs = max_images
-        for k,v in output.items():
-            if isinstance(v,torch.Tensor):
-                output[k] = v[:max_images]
-    im = np.zeros((bs,image_size,image_size,3))+0.5
+
+
+def plot_inter(filename,sample_output,show_idx,ab,remove_old=False):
+    t = sample_output["inter"]["t"]    
+    num_timesteps = len(t)
+    image_size = sample_output["pred"].shape[-1]
+    batch_size = sample_output["pred"].shape[0]
+    if not os.path.exists(filename):
+        os.makedirs(filename)
+    im = np.zeros((batch_size,image_size,image_size,3))+0.5
     nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
     not_nb3 = not ab.num_bits==3
     
-    show_keys = ["x_t","pred_x","x","err_x","pred_eps","eps"]
+    show_keys = ["x","x_t","pred_x","pred_eps"]
     map_dict = {"x_t": aboi if not_nb3 else nb_3,
                 "pred_x": aboi if not_nb3 else nb_3,
                 "x": aboi if not_nb3 else nb_3,
-                "err_x": error_image,
-                "pred_eps": mean_dim0 if not_nb3 else nb_3,
-                "eps": mean_dim0 if not_nb3 else nb_3}
-    output["err_x"] = output["pred_x"]-output["x"]
-    images = []
-    for k in show_keys:
-        if k in output.keys():
-            images.append([map_dict[k](output[k][i],i) for i in range(bs)])
-    text = sum([[k]+[""]*(bs-1) for k in show_keys],[])
-    err_idx = text.index("err_x")
-    for i in range(bs):
-        text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.4f}"
-    jlc.montage_save(save_name=filename,
-                    show_fig=False,
-                    arr=images,
-                    padding=1,
-                    n_col=bs,
-                    text=text,
-                    text_color="red",
-                    pixel_mult=max(1,128//image_size),
-                    text_size=12)
+                "pred_eps": mean_dim0 if not_nb3 else nb_3}
+    zero_image = np.zeros((image_size,image_size,3))
+    
+    for i in range(batch_size):
+        images = []
+        text = []
+        for k in show_keys[1:]:
+            if k=="x_t":
+                images.append(map_dict[k](sample_output["inter"]["x"][show_idx][i],i))
+            else:
+                images.append(zero_image)
+            for j in range(num_timesteps):
+                if k in sample_output["inter"].keys():
+                    images.append(map_dict[k](sample_output["inter"][k][j][i],i))
+                    if k=="x_t":
+                        if j==0:
+                            text.append(f"t={t[j]:.2f}")
+                        else:
+                            text.append(f"{t[j]:.2f}")
+                    else:
+                        text.append("")
+        filename = os.path.join(filename,f"intermediate_{i:03d}.png")
+        jlc.montage_save(save_name=filename,
+                        show_fig=False,
+                        arr=images,
+                        padding=1,
+                        n_col=num_timesteps+1,
+                        text=text,
+                        text_color="red",
+                        pixel_mult=max(1,128//image_size),
+                        text_size=12)
+                        
     if remove_old:
-        old_plot_files = glob.glob(filename.replace("progress.csv", f"forward_pass_*.png"))
-        if len(old_plot_files)>0:
-            for old_filename in old_plot_files:
-                os.remove(old_filename)
+        #clean_up(filename)
+        raise NotImplementedError("clean_up not implemented for intermediate steps")    
 
 def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
     show_keys = ["x_init","target_bit","pred_bit"]
@@ -206,7 +212,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
         clean_up(filename)
 
 def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
-    show_keys = ["x_t","pred_x","x","err_x","pred_eps","eps"]
+    show_keys = ["image","x_t","pred_x","x","err_x","pred_eps","eps"]
     k0 = show_keys[0]
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
@@ -222,11 +228,13 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
         output[k] = output[k][:bs]
         
     im = np.zeros((bs,image_size,image_size,3))+0.5
+    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
     aboi = aboi if (not ab.num_bits==3) else nb_3
     md0 = mean_dim0 if (not ab.num_bits==3) else nb_3
-    map_dict = {"x_t": aboi,
+    map_dict = {"image": normal_image,
+                "x_t": aboi,
                 "pred_x": aboi,
                 "x": aboi,
                 "err_x": error_image,
@@ -254,6 +262,15 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
         clean_up(filename)
         
 def clean_up(filename):
+    """
+    Removes all files in the same folder as filename that have 
+    the same name and format except for the last part of the name
+    seperated by an underscore. For example, if filename is
+    "folder_name/loss_plot_000000.png", then this function will
+    remove all files in folder_name that have the same name and
+    format except for the last part of the name seperated by an
+    underscore. For example, "folder_name/loss_plot_000001.png"
+    """
     safe_filename = Path(filename)
     glob_str = "_".join(safe_filename.name.split("_")[:-1])+"_*"+safe_filename.suffix
     old_filenames = list(safe_filename.parent.glob(glob_str))

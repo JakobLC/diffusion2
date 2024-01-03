@@ -191,8 +191,8 @@ class SmartParser():
         args = self.parse_types(args)
         for k,v in modified_args.items():
             assert k in args.__dict__.keys(), f"key {k} not found in args.__dict__.keys()={args.__dict__.keys()}"
-            args.__dict__[k] = v
             assert not isinstance(v,list), f"list not supported in modified_args to avoid recursion."
+            args.__dict__[k] = v
         if any([isinstance(v,list) for v in args.__dict__.values()]):
             modified_args_list = []
             num_modified_args = 1
