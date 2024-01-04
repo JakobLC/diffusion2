@@ -9,7 +9,8 @@ import matplotlib.cm as cm
 import os
 import glob
 from pathlib import Path
-
+from PIL import Image
+import copy
 
 def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
     filename = os.path.join(save_path,"progress.csv")
@@ -46,11 +47,11 @@ def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),rem
         plt.xlabel("steps")
     if show:
         plt.show()
+    save_name = os.path.join(save_path, f"loss_plot_{int(x[-1]):06d}.png")
     if save:
-        save_name = os.path.join(save_path, f"loss_plot_{int(x[-1]):06d}.png")
         fig.savefig(save_name)
     if remove_old:
-        clean_up(save_path)
+        clean_up(save_name)
     plt.close(fig)
 
 def gaussian_filter_xy(x,y,sigma):
@@ -102,40 +103,51 @@ def analog_bits_on_image(x,im,ab):
     x = ab.bit2int(x.unsqueeze(0)).cpu().detach().numpy().squeeze(0)
     return mask_overlay_smooth(im,x)
 
-def mean_dim0(x,*args):
+def mean_dim0(x):
     assert isinstance(x,torch.Tensor), "mean_dim2 expects a torch.Tensor"
     return (x*0.5+0.5).clamp(0,1).mean(0).cpu().detach().numpy()
 
-def error_image(x,*args):
+def error_image(x):
     return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
 
-
-
-def plot_inter(filename,sample_output,show_idx,ab,remove_old=False):
+def plot_inter(foldername,sample_output,model_kwargs,show_idx,ab,remove_old=False):
     t = sample_output["inter"]["t"]    
     num_timesteps = len(t)
     image_size = sample_output["pred"].shape[-1]
     batch_size = sample_output["pred"].shape[0]
-    if not os.path.exists(filename):
-        os.makedirs(filename)
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
     nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
     not_nb3 = not ab.num_bits==3
     
-    show_keys = ["x","x_t","pred_x","pred_eps"]
+    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    
     map_dict = {"x_t": aboi if not_nb3 else nb_3,
                 "pred_x": aboi if not_nb3 else nb_3,
                 "x": aboi if not_nb3 else nb_3,
-                "pred_eps": mean_dim0 if not_nb3 else nb_3}
+                "pred_eps": (lambda x,i: mean_dim0(x)) if not_nb3 else nb_3,
+                "image": normal_image}
     zero_image = np.zeros((image_size,image_size,3))
     
+    concat_images = foldername.endswith(".png")
+    if concat_images:
+        concat_filename = copy.copy(foldername)
+        foldername = os.path.dirname(foldername)
+        
+    if not os.path.exists(foldername):
+        os.makedirs(foldername)
+    
+    filenames = []
     for i in range(batch_size):
         images = []
         text = []
-        for k in show_keys[1:]:
+        for k in ["x_t","pred_x","pred_eps"]:
             if k=="x_t":
-                images.append(map_dict[k](sample_output["inter"]["x"][show_idx][i],i))
+                if "x" in sample_output.keys():
+                    images.append(map_dict["x"](sample_output["x"][i],i))
+            elif k=="pred_x":
+                if "image" in sample_output.keys():
+                    images.append(map_dict["image"](model_kwargs["image"][i],i))
             else:
                 images.append(zero_image)
             for j in range(num_timesteps):
@@ -148,7 +160,8 @@ def plot_inter(filename,sample_output,show_idx,ab,remove_old=False):
                             text.append(f"{t[j]:.2f}")
                     else:
                         text.append("")
-        filename = os.path.join(filename,f"intermediate_{i:03d}.png")
+        filename = os.path.join(foldername,f"intermediate_{i:03d}.png")
+        filenames.append(filename)
         jlc.montage_save(save_name=filename,
                         show_fig=False,
                         arr=images,
@@ -158,10 +171,21 @@ def plot_inter(filename,sample_output,show_idx,ab,remove_old=False):
                         text_color="red",
                         pixel_mult=max(1,128//image_size),
                         text_size=12)
-                        
-    if remove_old:
-        #clean_up(filename)
-        raise NotImplementedError("clean_up not implemented for intermediate steps")    
+    if concat_images:
+        images = []
+        for filename in filenames:
+            im = np.array(Image.open(filename))
+            images.append(im)
+        images = np.concatenate(images,axis=0)
+        images = Image.fromarray(images)
+        images.save(concat_filename)
+        for filename in filenames:
+            os.remove(filename)
+        if remove_old:
+            clean_up(concat_filename)
+    else:
+        if remove_old:
+            raise NotImplementedError("remove_old=True only implemented for concat_images=True")
 
 def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
     show_keys = ["x_init","target_bit","pred_bit"]
@@ -199,6 +223,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
             else:
                 text.extend([k]+[""]*(bs-1))
                 images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
+    if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
                     show_fig=False,
                     arr=images,
@@ -232,12 +258,12 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
     nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
     aboi = aboi if (not ab.num_bits==3) else nb_3
-    md0 = mean_dim0 if (not ab.num_bits==3) else nb_3
+    md0 = (lambda x,i: mean_dim0(x)) if (not ab.num_bits==3) else nb_3
     map_dict = {"image": normal_image,
                 "x_t": aboi,
                 "pred_x": aboi,
                 "x": aboi,
-                "err_x": error_image,
+                "err_x": lambda x,i: error_image(x),
                 "pred_eps": md0,
                 "eps": md0}
     
@@ -249,6 +275,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
     err_idx = text.index("err_x")
     for i in range(bs):
         text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.4f}"
+    if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
                     show_fig=False,
                     arr=images,

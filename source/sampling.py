@@ -22,19 +22,19 @@ def get_default_sampler_options():
                         progress_bar=True,
                         sampler_type="ddpm",
                         progress_bar_timestep=False,
-                        return_sample=False,
                         save_plot_grid_path=None,#TODO
                         save_plot_inter_path=None,#TODO
                         save_raw_samples_path=None,#TODO
                         save_raw_inter=False,#TODO
                         num_inter_steps=10,
                         num_inter_samples=0,
+                        concat_inter_plots=False,
                         inter_votes_per_sample=1,
                         )
     return Namespace(**dict_options)
 
 class DiffusionSampler(object):
-    def __init__(self, diffusion, model, dataloader, output_folder=None, step=0, 
+    def __init__(self, diffusion, model, dataloader, step=0, 
                  opts=get_default_sampler_options(),do_agg=True):
         super().__init__()
         self.cgd = diffusion
@@ -42,7 +42,6 @@ class DiffusionSampler(object):
         self.model = model
         self.dataloader = dataloader
         self.opts = opts
-        self.output_folder = output_folder
         self.step = step
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -70,13 +69,8 @@ class DiffusionSampler(object):
         else:
             was_training = False
         self.reset(store_opts=True)
-        if self.output_folder is not None:
-            os.makedirs(self.output_folder, exist_ok=True)
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
-        
-        if self.output_folder is None:
-            assert len(self.sample_function)==0,"output_folder must be specified if sample_function is not empty."
-        
+            
         if self.opts.save_raw_samples_path is not None:
             os.makedirs(self.opts.save_raw_samples_path,exist_ok=True)
         self.queue = None
@@ -105,44 +99,46 @@ class DiffusionSampler(object):
                                             save_i_steps=self.save_i_steps,
                                             save_i_idx=[bq["save_inter_steps"] for bq in batch_queue]
                                             )
-                self.run_on_single_batch(sample_output,batch_queue,batch_ite)
+                self.run_on_single_batch(sample_output,batch_queue,x_init,x_true_bit,model_kwargs,batch_ite)
                 for i in range(sample_output["pred"].shape[0]):
                     votes.append(sample_output["pred"][i])
                     if batch_queue[i]["vote"]==self.opts.num_votes-1:
-                        metrics = self.run_on_full_votes(votes,x_init[i],x_true[i],x_true_bit[i],info[i])
+                        model_kwargs_i = {k: model_kwargs[k][i] for k in model_kwargs.keys() if model_kwargs[k] is not None}
+                        metrics = self.run_on_full_votes(votes,x_true[i],x_true_bit[i],info[i],model_kwargs_i,x_init[i])
                         votes = []
                         metric_list.append(metrics)
-
-            metric_list = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
-            mean_metrics = {k: np.mean(metric_list[k]) for k in metric_list.keys()} 
-            self.run_on_finished(metric_list)
-            
-        if self.opts.return_sample:
-            samples = self.samples
-        else:
-            samples = None
+        
+        metric_list = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
+        mean_metrics = {k: np.mean(metric_list[k]) for k in metric_list.keys()} 
+        
+        output = self.get_output_dict(metric_list, mean_metrics, self.samples)
+        self.run_on_finished(metric_list,output)
         self.reset(restore_opts=True)
         if was_training:
             self.model.train()
-            
-        output = self.get_output_dict(metric_list, mean_metrics, samples)
         return output
     
     def get_output_dict(self,metric_list, mean_metrics, samples):
         output = {}
         for k in metric_list.keys():
             output[k] = metric_list[k]
-        for k in samples[0]:
-            output[k] = [s[k] for s in samples]
-            if torch.is_tensor(output[k][0]):
-                output[k] = torch.stack(output[k],dim=0)
+        if samples is not None:
+            for k in samples[0].keys():
+                output[k] = [s[k] for s in samples]
+                if torch.is_tensor(output[k][0]):
+                    output[k] = torch.stack(output[k],dim=0)
         return output
             
-    def run_on_single_batch(self,sample_output,bq,x_init,batch_ite):        
+    def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite):
+        sample_output["x"] = x_true_bit      
         if self.opts.save_plot_inter_path is not None:
-            os.makedirs(self.opts.save_plot_inter_path,exist_ok=True)
             show_idx = np.where([bq[i]["save_inter_steps"]>0 for i in range(len(bq))])[0]
-            plot_inter(filename=self.opts.save_plot_inter_path,sample_output=sample_output,show_idx=show_idx,ab=self.cgd.ab,remove_old=False)
+            plot_inter(foldername=self.opts.save_plot_inter_path,
+                       sample_output=sample_output,
+                       model_kwargs=model_kwargs,
+                       show_idx=show_idx,
+                       ab=self.cgd.ab,
+                       remove_old=self.opts.save_plot_inter_path.endswith(".png"))
         if self.opts.save_raw_samples_path is not None:
             if not hasattr(self,"raw_samples"):
                 self.raw_samples = []
@@ -151,12 +147,12 @@ class DiffusionSampler(object):
             if not self.opts.save_raw_inter:
                 if "inter" in sample_output.keys():
                     del sample_output["inter"]
-                    
             sample_output["x_init"] = x_init
             sample_output["batch_queue"] = bq
+            sample_output["model_kwargs"] = model_kwargs
             torch.save(sample_output,os.path.join(self.opts.save_raw_samples_path,f"raw_sample_batch{batch_ite:3d}.pt"))
         
-    def run_on_full_votes(self,votes,x_true,x_true_bit,info,inter):
+    def run_on_full_votes(self,votes,x_true,x_true_bit,info,model_kwargs,x_init):
         x_true = x_true.cpu()
         x_true_bit = x_true_bit.cpu()
         votes = torch.stack(votes,dim=0).cpu()
@@ -164,9 +160,10 @@ class DiffusionSampler(object):
         self.samples.append({"pred_bit": votes,
                              "pred_int": votes_int,
                              "target_bit": x_true_bit,
-                             "target_int": x_true, 
+                             "target_int": x_true,
+                             "x_init": x_init,
                              "info": info,
-                             "inter": inter.pop(0)})
+                             "model_kwargs": model_kwargs})
         metrics = defaultdict(list)
         for i in range(len(votes)):            
             metrics_i = get_segment_metrics(votes_int[i],x_true)
@@ -174,9 +171,12 @@ class DiffusionSampler(object):
                 metrics[k].append(metrics_i[k])
         return metrics
     
-    def run_on_finished(self,metric_list):
-        pass
-    
+    def run_on_finished(self,metric_list,output):
+        if self.opts.save_plot_grid_path is not None:
+            assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
+            filename = self.opts.save_plot_grid_path
+            plot_grid(filename,output,self.cgd.ab,max_images=32,remove_old=True)
+        
     def get_kwargs(self,batch):
         x,info = batch
         x = x.to(self.device)
@@ -248,11 +248,10 @@ def main():
         sampler = DiffusionSampler(diffusion=trainer.cgd,
                                    model=trainer.model,
                                    dataloader=trainer.vali_dl,
-                                   output_folder=args.save_path,
                                    step=trainer.step,
                                    do_agg=False)
         sampler.opts.num_samples = 4
-        output = sampler.sample(return_sample=True,num_timesteps=10)
+        output = sampler.sample(num_timesteps=10)
         images = []
         key_show = "pred_bit"
         im = output[key_show]
@@ -282,12 +281,11 @@ def main():
         sampler = DiffusionSampler(diffusion=trainer.cgd,
                                    model=trainer.model,
                                    dataloader=trainer.vali_dl,
-                                   output_folder=args.save_path,
                                    step=trainer.step,
                                    do_agg=False)
         sampler.opts.num_samples = 2
         sampler.opts.num_votes = 3
-        output = sampler.sample(return_sample=True,num_timesteps=10)
+        output = sampler.sample(num_timesteps=10)
         filename = os.path.join(args.save_path,"test_123.png")
         plot_grid(filename,output,trainer.cgd.ab,max_images=32,remove_old=False)
     if args.unit_test==2:
@@ -302,7 +300,6 @@ def main():
         sampler = DiffusionSampler(diffusion=trainer.cgd,
                                    model=trainer.model,
                                    dataloader=trainer.vali_dl,
-                                   output_folder=args.save_path,
                                    step=trainer.step,
                                    do_agg=False)
         sampler.opts.num_samples = 2
@@ -311,7 +308,7 @@ def main():
         sampler.opts.num_inter_steps = 10
         sampler.opts.save_plot_inter_path = os.path.join(args.save_path,"inter")
         
-        output = sampler.sample(return_sample=True,num_timesteps=10)
+        output = sampler.sample(num_timesteps=10)
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

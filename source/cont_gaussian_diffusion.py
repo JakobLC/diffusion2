@@ -89,6 +89,8 @@ def inter_save_map(x,save_i_idx):
             return torch.tensor(x.item())
         else:
             return x[save_i_idx].cpu()
+    elif x is None:
+        return None
     else:
         assert isinstance(x,(float,int)), f"x={x}"
         return torch.tensor(x)
@@ -316,7 +318,7 @@ class ContinuousGaussianDiffusion():
         sample_output = {}
         if len(save_i_steps)>0 and len(save_i_idx)>0:
             intermediate_save = True
-            inter_keys = ["x_t","pred_x","pred_eps","model_output","i","t"]
+            inter_keys = ["x_t","pred_x","pred_eps","model_output","model_output_guidance","i","t"]
             sample_output["inter"] = {k: [] for k in inter_keys}
         else:
             intermediate_save = False
@@ -342,16 +344,13 @@ class ContinuousGaussianDiffusion():
                                                     model_output_guidance=model_output_guidance)
             if intermediate_save:
                 if i in save_i_steps:
-                    for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,i,t]):
+                    for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,model_output_guidance,i,t]):
                         sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
             
             if self_cond:
                 model_kwargs['self_cond'] = x_t
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
-        if len(save_i_steps)>0:
-            for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,model_output_guidance,i,t]):
-                sample_output["inter"][key] = torch.stack(sample_output["inter"][key],dim=0)
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
         

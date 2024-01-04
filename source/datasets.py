@@ -113,7 +113,7 @@ class CatBallDataset(torch.utils.data.Dataset):
         foreground = (item>0).astype(float)
         image = (1-noise_coef)*foreground+noise_coef*noise
         image = gaussian_filter(image,sigma=std*self.size)
-        return torch.from_numpy(image).unsqueeze(0)
+        return image*2-1
     
     def __len__(self):
         return self.dataset_len
@@ -136,7 +136,7 @@ class CatBallDataset(torch.utils.data.Dataset):
             CX.append(cx)
             CY.append(cy)
         info = {"r": R,"cx": CX,"cy": CY, "nb": nb}
-        info["image"] = self.get_image(item)
+        info["image"] = torch.from_numpy(self.get_image(item)).unsqueeze(0)
         item = torch.from_numpy(item).unsqueeze(0)
         return item,info
 

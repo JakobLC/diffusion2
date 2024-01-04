@@ -17,10 +17,11 @@ from fp16_util import (
     unflatten_master_params,
     zero_grad,
 )
+from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
 from datasets import CatBallDataset, custom_collate_with_info
 from nn import update_ema
-from unet import create_unet_from_args
+from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
 from utils import dump_kvs,get_batch_metrics,write_args
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
@@ -67,7 +68,7 @@ class DiffusionModelTrainer:
         self.kvs_buffer = {}
         self.kvs_step_buffer = []
         
-        _ = self.check_save_path()
+        self.args.save_path = self.check_save_path()
         
         if Path(self.args.save_path).exists():
             possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
@@ -103,7 +104,6 @@ class DiffusionModelTrainer:
         
         assert len(self.master_params) == len(self.ema_params[0])
             
-        
         if new_training:
             self.log("Starting new training run.")
             write_args(args, Path(args.save_path)/"args.json")
@@ -191,7 +191,8 @@ class DiffusionModelTrainer:
                     #model_kwargs["cond"] = info["get_cond"]()
                 else:
                     model_kwargs["cond"].append(None)    
-                
+        to_dev = lambda x: x.to(self.device) if x is not None else None
+        model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         return x,model_kwargs,info
     
     def run_train_step(self, batch):
@@ -294,9 +295,6 @@ class DiffusionModelTrainer:
             output,metrics = self.run_train_step(batch)
             
             pbar.update(1)
-                
-            if self.step % self.args.save_interval == 0:
-                self.save_train_ckpt()
 
             if self.step % self.args.log_vali_interval == 0:
                 self.evaluate_loop()
@@ -306,17 +304,25 @@ class DiffusionModelTrainer:
             
             if self.step % self.args.update_loss_plot_interval == 0:
                 make_loss_plot(self.args.save_path)
+            
+            if self.step % self.args.eval_interval == 0:
+                self.generate_samples()
+            
+            if self.step % self.args.save_interval == 0:
+                self.save_train_ckpt()
                 
             self.step += 1
             
         self.log("Training loop finished.")
         
         
-    def log(self, msg, filename="log.txt"):
+    def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
         with open(str(filepath), "a" if filepath.exists() else "w") as f:
             f.write(msg + "\n")
+        if also_print:
+            print(msg)
     
     def log_kv(self, d):
         """
@@ -389,7 +395,7 @@ class DiffusionModelTrainer:
             keys_print.append(k) 
         max_key_len = max([len(k) for k in keys_print])
         max_value_len = max([len(v) for v in values_print])
-        print_str = ""
+        print_str = "\n"
         print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
         for k,v in zip(keys_print,values_print):
             print_str += "| " + k + " "*(max_key_len-len(k)+1) + "| " + v + " "*(max_value_len-len(v)+1) + "|\n"
@@ -431,8 +437,31 @@ class DiffusionModelTrainer:
                 break
             parent = parent.parent
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
-        return out
-
+        return str(save_path)
+    
+        
+    
+    def generate_samples(self):
+        
+        self.model.eval()
+        sampler = DiffusionSampler(diffusion=self.cgd,
+                                   model=self.model,
+                                   dataloader=self.vali_dl,
+                                   step=self.step,
+                                   do_agg=False)
+        output_folder = os.path.join(self.args.save_path,"samples")
+        if "grid" in self.args.sample_function.split(","):
+            sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.step:06d}.png")
+        if "inter" in self.args.sample_function.split(","):
+            sampler.opts.save_plot_inter_path = os.path.join(output_folder,f"plot_inter_{self.step:06d}.png")
+        sampler.opts.num_samples = self.args.num_save_samples
+        sampler.opts.num_votes = self.args.num_votes
+        sampler.opts.num_inter_samples = self.args.num_save_samples
+        sampler.opts.num_timesteps = self.args.eval_num_steps
+        sampler.sample()
+        if self.args.save_train_samples:
+            pass#raise NotImplementedError("save_train_samples not implemented") TODO
+        
 def main():
     import argparse
     

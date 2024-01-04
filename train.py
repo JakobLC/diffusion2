@@ -1,7 +1,7 @@
 
 
 import sys, os
-sys.path.append('./source/')
+sys.path.append('.\\source\\')
 from source.utils import SmartParser
 from source.training import DiffusionModelTrainer
 import datetime
@@ -10,8 +10,6 @@ import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 def main(**modified_args):    
-    
-    
     args = SmartParser().get_args(modified_args)    
     if isinstance(args,tuple):
         args, modified_args_list = args
