@@ -110,11 +110,27 @@ def mean_dim0(x):
 def error_image(x):
     return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
 
-def plot_inter(foldername,sample_output,model_kwargs,show_idx,ab,remove_old=False):
-    t = sample_output["inter"]["t"]    
+def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_old=False):
+    t = sample_output["inter"]["t"]
     num_timesteps = len(t)
+    
+    if save_i_idx is None:
+        batch_size = sample_output["pred"].shape[0]
+        save_i_idx = np.arange(batch_size)
+    else:
+        batch_size = len(save_i_idx)
+        #transform to idx instead of boolean
+        if isinstance(save_i_idx[0],bool):
+            save_i_idx = np.arange(batch_size)[save_i_idx]
+        else:
+            assert isinstance(save_i_idx[0],int), f"expected save_i_idx to be a list of ints or bools, found {type(save_i_idx[0])}"
+            
+    for k in sample_output.keys():
+        if k!="inter":
+            assert len(sample_output[k])==batch_size, f"expected sample_output[{k}].shape[0] to be {batch_size}, found {sample_output[k].shape[0]}"
+    
     image_size = sample_output["pred"].shape[-1]
-    batch_size = sample_output["pred"].shape[0]
+    
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
     nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
@@ -133,33 +149,23 @@ def plot_inter(foldername,sample_output,model_kwargs,show_idx,ab,remove_old=Fals
     if concat_images:
         concat_filename = copy.copy(foldername)
         foldername = os.path.dirname(foldername)
-        
+    
+    
     if not os.path.exists(foldername):
         os.makedirs(foldername)
-    
     filenames = []
     for i in range(batch_size):
-        images = []
+        ii = save_i_idx[i]
+        images = [map_dict["x"](sample_output["x"][ii],i),
+                  map_dict["image"](model_kwargs["image"][ii],i),
+                  zero_image]
         text = []
         for k in ["x_t","pred_x","pred_eps"]:
-            if k=="x_t":
-                if "x" in sample_output.keys():
-                    images.append(map_dict["x"](sample_output["x"][i],i))
-            elif k=="pred_x":
-                if "image" in sample_output.keys():
-                    images.append(map_dict["image"](model_kwargs["image"][i],i))
-            else:
-                images.append(zero_image)
             for j in range(num_timesteps):
                 if k in sample_output["inter"].keys():
                     images.append(map_dict[k](sample_output["inter"][k][j][i],i))
-                    if k=="x_t":
-                        if j==0:
-                            text.append(f"t={t[j]:.2f}")
-                        else:
-                            text.append(f"{t[j]:.2f}")
-                    else:
-                        text.append("")
+                    text_j = ("t=" if j==0 else "")+f"{t[j]:.2f}" if k=="x_t" else ""
+                    text.append(text_j)
         filename = os.path.join(foldername,f"intermediate_{i:03d}.png")
         filenames.append(filename)
         jlc.montage_save(save_name=filename,
@@ -212,14 +218,17 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
                 "pred_bit": aboi,
                 "x_init": aboi}
     
+    num_votes = output["pred_bit"].shape[1]
     images = []
     text = []
     for k in show_keys:
         if k in output.keys():
             if k=="pred_bit":
-                for j in range(output[k].shape[1]):
+                for j in range(num_votes):
                     images.extend([map_dict[k](output[k][i][j],i) for i in range(bs)])
-                    text.extend([f"\n{measure}={output[measure][i][j]:.4f}" for i in range(bs)])
+                    text1 = [k]+[""]*(bs-1)
+                    text2 = [f"\n{measure}={output[measure][i][j]:.4f}" for i in range(bs)]
+                    text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
                 text.extend([k]+[""]*(bs-1))
                 images.extend([map_dict[k](output[k][i],i) for i in range(bs)])

@@ -87,6 +87,7 @@ class DiffusionSampler(object):
             for batch_ite in progress_bar:
                 x_true, model_kwargs, info, batch_queue = self.form_next_batch()
                 x_true_bit = self.cgd.ab.int2bit(x_true)
+                
                 x_init = torch.randn_like(x_true_bit)
                 sample_output = self.cgd.sample_loop(model=self.model, 
                                             x_init=x_init, 
@@ -132,12 +133,12 @@ class DiffusionSampler(object):
     def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite):
         sample_output["x"] = x_true_bit      
         if self.opts.save_plot_inter_path is not None:
-            show_idx = np.where([bq[i]["save_inter_steps"]>0 for i in range(len(bq))])[0]
+            save_i_idx = [bq_i["save_inter_steps"] for bq_i in bq]
             plot_inter(foldername=self.opts.save_plot_inter_path,
                        sample_output=sample_output,
                        model_kwargs=model_kwargs,
-                       show_idx=show_idx,
                        ab=self.cgd.ab,
+                       save_i_idx=save_i_idx,
                        remove_old=self.opts.save_plot_inter_path.endswith(".png"))
         if self.opts.save_raw_samples_path is not None:
             if not hasattr(self,"raw_samples"):
@@ -198,7 +199,7 @@ class DiffusionSampler(object):
                 for j in range(self.opts.num_votes):
                     save_inter_steps = (i<self.opts.num_inter_samples) and (j<self.opts.inter_votes_per_sample)
                     self.queue.append({"sample":i,"vote":j,"save_inter_steps": save_inter_steps})
-
+        
         bs = min(self.opts.eval_batch_size,len(self.queue))
         if self.source_idx >= self.bss:
             self.source_batch = self.get_kwargs(next(self.dataloader))

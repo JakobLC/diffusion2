@@ -316,12 +316,11 @@ class ContinuousGaussianDiffusion():
             trange = range(num_steps-1, -1, -1)
             
         sample_output = {}
-        if len(save_i_steps)>0 and len(save_i_idx)>0:
-            intermediate_save = True
+        intermediate_save = len(save_i_steps)>0 and len(save_i_idx)>0
+        if intermediate_save:
             inter_keys = ["x_t","pred_x","pred_eps","model_output","model_output_guidance","i","t"]
             sample_output["inter"] = {k: [] for k in inter_keys}
-        else:
-            intermediate_save = False
+            
         x_t = x_init
         
         for i in trange:
@@ -344,7 +343,7 @@ class ContinuousGaussianDiffusion():
                                                     model_output_guidance=model_output_guidance)
             if intermediate_save:
                 if i in save_i_steps:
-                    for key,value in zip(inter_keys,[pred_x,pred_eps,model_output,model_output_guidance,i,t]):
+                    for key,value in zip(inter_keys,[x_t,pred_x,pred_eps,model_output,model_output_guidance,i,t]):
                         sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
             
             if self_cond:

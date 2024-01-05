@@ -458,6 +458,7 @@ class DiffusionModelTrainer:
         sampler.opts.num_votes = self.args.num_votes
         sampler.opts.num_inter_samples = self.args.num_save_samples
         sampler.opts.num_timesteps = self.args.eval_num_steps
+        sampler.opts.eval_batch_size = self.args.eval_batch_size if self.args.eval_batch_size>0 else self.args.train_batch_size
         sampler.sample()
         if self.args.save_train_samples:
             pass#raise NotImplementedError("save_train_samples not implemented") TODO
