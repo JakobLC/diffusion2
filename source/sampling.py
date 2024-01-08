@@ -206,7 +206,7 @@ class DiffusionSampler(object):
             self.bss = self.source_batch[0].shape[0]
             self.source_idx = 0
         batch_x = []
-        batch_kwargs = defaultdict(list)
+        batch_kwargs = {}
         batch_info = []
         batch_queue = []
         for i in range(bs):

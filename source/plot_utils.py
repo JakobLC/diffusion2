@@ -110,6 +110,13 @@ def mean_dim0(x):
 def error_image(x):
     return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
 
+def contains_key(key,dictionary,ignore_none=True):
+    has_key = key in dictionary.keys()
+    if has_key:
+        if ignore_none:
+            has_key = dictionary[key] is not None
+    return has_key
+
 def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_old=False):
     t = sample_output["inter"]["t"]
     num_timesteps = len(t)
@@ -118,17 +125,16 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
         batch_size = sample_output["pred"].shape[0]
         save_i_idx = np.arange(batch_size)
     else:
+        assert isinstance(save_i_idx,list), f"expected save_i_idx to be a list of ints or bools, found {type(save_i_idx)}"
+        assert len(save_i_idx)>0, f"expected save_i_idx to be a list of ints or bools, found {save_i_idx}"
+        assert isinstance(save_i_idx[0],(bool,int)), f"expected save_i_idx to be a list of ints or bools, found {type(save_i_idx[0])}"
         batch_size = len(save_i_idx)
-        #transform to idx instead of boolean
         if isinstance(save_i_idx[0],bool):
             save_i_idx = np.arange(batch_size)[save_i_idx]
-        else:
-            assert isinstance(save_i_idx[0],int), f"expected save_i_idx to be a list of ints or bools, found {type(save_i_idx[0])}"
-            
-    for k in sample_output.keys():
-        if k!="inter":
-            assert len(sample_output[k])==batch_size, f"expected sample_output[{k}].shape[0] to be {batch_size}, found {sample_output[k].shape[0]}"
-    
+        batch_size = len(save_i_idx)
+    print("bs: ",batch_size)
+    print("save_i_idx: ",save_i_idx)
+
     image_size = sample_output["pred"].shape[-1]
     
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
@@ -139,6 +145,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
     normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     
     map_dict = {"x_t": aboi if not_nb3 else nb_3,
+                "pred": aboi if not_nb3 else nb_3,
                 "pred_x": aboi if not_nb3 else nb_3,
                 "x": aboi if not_nb3 else nb_3,
                 "pred_eps": (lambda x,i: mean_dim0(x)) if not_nb3 else nb_3,
@@ -156,18 +163,20 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
     filenames = []
     for i in range(batch_size):
         ii = save_i_idx[i]
-        images = [map_dict["x"](sample_output["x"][ii],i),
-                  map_dict["image"](model_kwargs["image"][ii],i),
-                  zero_image]
-        text = []
-        for k in ["x_t","pred_x","pred_eps"]:
+        images = [[map_dict["x"](sample_output["x"][ii],i)],
+                  [map_dict["pred"](sample_output["pred"][ii],i)],
+                  [map_dict["image"](model_kwargs["image"][ii],i)] if contains_key("image",model_kwargs) else [zero_image]]
+        text = [["x"],["final pred_x"],["image"]]
+        for k_i,k in enumerate(["x_t","pred_x","pred_eps"]):
             for j in range(num_timesteps):
                 if k in sample_output["inter"].keys():
-                    images.append(map_dict[k](sample_output["inter"][k][j][i],i))
-                    text_j = ("t=" if j==0 else "")+f"{t[j]:.2f}" if k=="x_t" else ""
-                    text.append(text_j)
+                    images[k_i].append(map_dict[k](sample_output["inter"][k][j][i],i))
+                    text_j = ("t=" if j==0 else "")+f"{t[j]:.2f}" if k_i==0 else ""
+                    text[k_i].append(text_j)
         filename = os.path.join(foldername,f"intermediate_{i:03d}.png")
         filenames.append(filename)
+        images = sum(images,[])
+        text = sum(text,[])
         jlc.montage_save(save_name=filename,
                         show_fig=False,
                         arr=images,
@@ -315,3 +324,97 @@ def clean_up(filename):
         if old_filename!=safe_filename:
             os.remove(old_filename)
     
+
+def add_text_axis_to_image(filename,
+                           n_horz=None,n_vert=None,
+                           top=[],bottom=[],left=[],right=[],
+                           bg_color=[1,1,1],
+                           text_color=[0,0,0],
+                           fontsize=14,
+                           scale=1,
+                           new_file=False):
+    """
+    Function to take an image filename and add text to the top, 
+    bottom, left, and right of the image. The text is rendered
+    using matplotlib and up to 4 temporary files are created to
+    render the text. The temporary files are removed after the
+    original file has been modified.
+
+    Parameters
+    ----------
+    filename : str
+        The filename of the image to modify.
+    n_horz : int, optional
+        The number of horizontal text labels to add. The default
+        is None (max(len(top),len(bottom))).
+    n_vert : int, optional
+        The number of vertical text labels to add. The default
+        is None (max(len(left),len(right))).
+    top : list, optional
+        The list of strings to add to the top of the image. The
+        default is [].
+    bottom : list, optional
+        The list of strings to add to the bottom of the image. The
+        default is [].
+    left : list, optional
+        The list of strings to add to the left of the image. The
+        default is [].
+    right : list, optional
+        The list of strings to add to the right of the image. The
+        default is [].
+    bg_color : list, optional
+        The background color of the text. The default is [1,1,1]
+        (white).
+    text_color : list, optional
+        The text color. The default is [0,0,0] (black).
+    fontsize : int, optional
+        The fontsize of the text. The default is 14.
+    scale : float, optional
+        The scale multiplier for the text compared to the original 
+        image. Recommended scale>1 for images with few pixels to 
+        make the text easily readable. The original image is
+        upscaled with nearest neighbour interpolation such that 
+        text and image fit eachother. The default is 1.
+    """
+    
+    if n_horz is None:
+        n_horz = max(len(top),len(bottom))
+    if n_vert is None:
+        n_vert = max(len(left),len(right))
+    if horz_w==0==vert_h and not new_file:
+        return
+    assert scale>=1, "scale must be >=1"
+    im = np.array(Image.open(filename))
+    h,w = im.shape[:2]
+    for pos in ["top","bottom","left","right"]:
+        if pos in ["top","bottom"]:
+            fig_width = int(w*scale)
+        else:
+            fig_heigth = int(h*scale)    
+        #create plot where only axis text is visible
+
+
+
+    
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--unit_test", type=int, default=0)
+    args = parser.parse_args()
+    if args.unit_test==0:
+        print("UNIT TEST 0: add_text_axis_to_image")
+        test_filename = "./saves/test2/forward_pass_000010.png"
+        add_text_axis_to_image(test_filename,
+                               n_horz=4,
+                               n_vert=7,
+                               top=["top1","","top2"],
+                               bottom=["bottom1","bottom2"],
+                               left=["left1","left2"],
+                               right=["right1","right2"])
+    else:
+        raise ValueError(f"Unknown unit test index: {args.unit_test}")
+        
+if __name__=="__main__":
+    main()

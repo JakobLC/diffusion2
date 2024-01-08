@@ -4,8 +4,6 @@ import scipy.ndimage as nd
 import numpy as np
 import torch
 from scipy.ndimage import gaussian_filter
-ROOT = "C:/Users/Janus/Desktop/diff/diffusion2/diffusion2/datasets.py"
-sys.path.append(ROOT)
 
 class AnalogBits(object):
     def __init__(self,num_bits=8,

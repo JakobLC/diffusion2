@@ -60,9 +60,11 @@ class DiffusionModelTrainer:
                                                                           collate_fn=custom_collate_with_info))
                                     
         if torch.cuda.is_available():
+            self.log("CUDA available. Using GPU.")
             self.device = torch.device("cuda")
         else:
             self.log("WARNING: CUDA not available. Using CPU.")
+            raise NotImplementedError("CPU not implemented")
             self.device = torch.device("cpu")
             
         self.kvs_buffer = {}
@@ -319,8 +321,15 @@ class DiffusionModelTrainer:
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
-        with open(str(filepath), "a" if filepath.exists() else "w") as f:
-            f.write(msg + "\n")
+        
+        
+        if filepath.exists():
+            with open(str(filepath), "a") as f:
+                f.write(msg + "\n")
+        else:
+            os.makedirs(filepath.parent, exist_ok=True)
+            with open(str(filepath), "w") as f:
+                f.write(msg + "\n")
         if also_print:
             print(msg)
     

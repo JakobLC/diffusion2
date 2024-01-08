@@ -1,7 +1,8 @@
 
 
 import sys, os
-sys.path.append('.\\source\\')
+sys.path.append(os.path.abspath('./source/'))
+
 from source.utils import SmartParser
 from source.training import DiffusionModelTrainer
 import datetime
@@ -16,7 +17,6 @@ def main(**modified_args):
         for modified_args in modified_args_list:
             main(**modified_args)
         return
-    
     if args.model_name.startswith("test"):
         save_path = "./saves/" + args.model_name
     else:
