@@ -9,7 +9,7 @@ import copy
 from collections import defaultdict
 import os
 import tqdm
-from plot_utils import plot_grid,plot_inter
+from plot_utils import plot_grid,plot_inter,concat_inter_plots
 #from cont_gaussian_diffusion import DummyDiffusion
 
 def get_default_sampler_options():
@@ -22,13 +22,13 @@ def get_default_sampler_options():
                         progress_bar=True,
                         sampler_type="ddpm",
                         progress_bar_timestep=False,
-                        save_plot_grid_path=None,#TODO
-                        save_plot_inter_path=None,#TODO
+                        save_plot_grid_path=None,
+                        save_plot_inter_path=None,
                         save_raw_samples_path=None,#TODO
+                        save_concat_plot_inter_path=None,
                         save_raw_inter=False,#TODO
                         num_inter_steps=10,
                         num_inter_samples=0,
-                        concat_inter_plots=False,
                         inter_votes_per_sample=1,
                         )
     return Namespace(**dict_options)
@@ -139,7 +139,7 @@ class DiffusionSampler(object):
                        model_kwargs=model_kwargs,
                        ab=self.cgd.ab,
                        save_i_idx=save_i_idx,
-                       remove_old=self.opts.save_plot_inter_path.endswith(".png"))
+                       plot_text=self.opts.save_concat_plot_inter_path is None)
         if self.opts.save_raw_samples_path is not None:
             if not hasattr(self,"raw_samples"):
                 self.raw_samples = []
@@ -177,7 +177,11 @@ class DiffusionSampler(object):
             assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
             filename = self.opts.save_plot_grid_path
             plot_grid(filename,output,self.cgd.ab,max_images=32,remove_old=True)
-        
+        if self.opts.save_concat_plot_inter_path is not None:
+            assert self.opts.save_concat_plot_inter_path.endswith(".png"), f"filename: {filename}"
+            concat_inter_plots(foldername = self.opts.save_plot_inter_path,
+                               concat_filename = self.opts.save_concat_plot_inter_path,
+                               num_timesteps = self.opts.num_timesteps)
     def get_kwargs(self,batch):
         x,info = batch
         x = x.to(self.device)

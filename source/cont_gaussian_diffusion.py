@@ -259,9 +259,9 @@ class ContinuousGaussianDiffusion():
         
     def ddim_step(self, i, pred_x, pred_eps, num_steps):
         logsnr_s = self.logsnr(torch.tensor(i / num_steps))
-        stdv_s = torch.sqrt(torch.sigmoid(-logsnr_s))
+        sigma_s = torch.sqrt(torch.sigmoid(-logsnr_s))
         alpha_s = torch.sqrt(torch.sigmoid(logsnr_s))
-        x_s_pred = alpha_s * pred_x + stdv_s * pred_eps
+        x_s_pred = alpha_s * pred_x + sigma_s * pred_eps
         if i==0:
             return pred_x
         else:

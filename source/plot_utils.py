@@ -11,15 +11,21 @@ import glob
 from pathlib import Path
 from PIL import Image
 import copy
+import matplotlib
+from tempfile import NamedTemporaryFile
+import warnings
+import cv2
 
 def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
     filename = os.path.join(save_path,"progress.csv")
+    with open(filename,"r") as f:
+        column_names = f.readline()[:-1].split(",")
     #filename_steps = os.path.join(folder_name,"progress_steps.csv")
     data = np.genfromtxt(filename, delimiter=",")[1:]
     if len(data.shape)==1:
         data = np.expand_dims(data,0)
     data = data[~np.any(np.isinf(data),axis=1)]
-    column_names = open(filename).readline().strip().split(",")
+    
     plot_columns = [["loss","vali_loss"],["mse_x","vali_mse_x"],["mse_eps","vali_mse_eps"]]
     n = len(plot_columns)
     
@@ -51,7 +57,7 @@ def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),rem
     if save:
         fig.savefig(save_name)
     if remove_old:
-        clean_up(save_name)
+        clean_up(save_name)    
     plt.close(fig)
 
 def gaussian_filter_xy(x,y,sigma):
@@ -117,7 +123,28 @@ def contains_key(key,dictionary,ignore_none=True):
             has_key = dictionary[key] is not None
     return has_key
 
-def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_old=False):
+def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=True,remove_old=True):
+    images = []
+    filenames = sorted([str(f) for f in list(Path(foldername).glob("intermediate_*.png"))])
+    batch_size = len(filenames)
+    for filename in filenames:
+        im = np.array(Image.open(filename))
+        images.append(im)
+    images = np.concatenate(images,axis=0)
+    images = Image.fromarray(images)
+    images.save(concat_filename)
+    left = ["x","final pred_x","image"]*batch_size
+    right = ["x_t","pred_x","pred_eps"]*batch_size
+    t_vec = np.array(range(num_timesteps, 0, -1))/num_timesteps
+    top = bottom = ["t="]+[f"{t_vec[j]:.2f}" for j in range(num_timesteps)]
+    add_text_axis_to_image(concat_filename,left=left,top=top,right=right,bottom=bottom,xtick_kwargs={"fontsize":20})
+    if remove_children:
+        for filename in filenames:
+            os.remove(filename)
+    if remove_old:
+        clean_up(concat_filename)
+
+def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_text=False):
     t = sample_output["inter"]["t"]
     num_timesteps = len(t)
     
@@ -132,9 +159,6 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
         if isinstance(save_i_idx[0],bool):
             save_i_idx = np.arange(batch_size)[save_i_idx]
         batch_size = len(save_i_idx)
-    print("bs: ",batch_size)
-    print("save_i_idx: ",save_i_idx)
-
     image_size = sample_output["pred"].shape[-1]
     
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
@@ -152,31 +176,27 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
                 "image": normal_image}
     zero_image = np.zeros((image_size,image_size,3))
     
-    concat_images = foldername.endswith(".png")
-    if concat_images:
-        concat_filename = copy.copy(foldername)
-        foldername = os.path.dirname(foldername)
-    
-    
     if not os.path.exists(foldername):
         os.makedirs(foldername)
     filenames = []
+    num_inter_exists = len(glob.glob(os.path.join(foldername,"intermediate_*.png")))
     for i in range(batch_size):
         ii = save_i_idx[i]
         images = [[map_dict["x"](sample_output["x"][ii],i)],
                   [map_dict["pred"](sample_output["pred"][ii],i)],
                   [map_dict["image"](model_kwargs["image"][ii],i)] if contains_key("image",model_kwargs) else [zero_image]]
+
         text = [["x"],["final pred_x"],["image"]]
         for k_i,k in enumerate(["x_t","pred_x","pred_eps"]):
             for j in range(num_timesteps):
                 if k in sample_output["inter"].keys():
                     images[k_i].append(map_dict[k](sample_output["inter"][k][j][i],i))
-                    text_j = ("t=" if j==0 else "")+f"{t[j]:.2f}" if k_i==0 else ""
+                    text_j = ("    t=" if j==0 else "")+f"{t[j]:.2f}" if k_i==0 else ""
                     text[k_i].append(text_j)
-        filename = os.path.join(foldername,f"intermediate_{i:03d}.png")
+        filename = os.path.join(foldername,f"intermediate_{i+num_inter_exists:03d}.png")
         filenames.append(filename)
         images = sum(images,[])
-        text = sum(text,[])
+        text = sum(text,[]) if plot_text else []
         jlc.montage_save(save_name=filename,
                         show_fig=False,
                         arr=images,
@@ -186,21 +206,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,remove_o
                         text_color="red",
                         pixel_mult=max(1,128//image_size),
                         text_size=12)
-    if concat_images:
-        images = []
-        for filename in filenames:
-            im = np.array(Image.open(filename))
-            images.append(im)
-        images = np.concatenate(images,axis=0)
-        images = Image.fromarray(images)
-        images.save(concat_filename)
-        for filename in filenames:
-            os.remove(filename)
-        if remove_old:
-            clean_up(concat_filename)
-    else:
-        if remove_old:
-            raise NotImplementedError("remove_old=True only implemented for concat_images=True")
+    
 
 def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
     show_keys = ["x_init","target_bit","pred_bit"]
@@ -323,16 +329,68 @@ def clean_up(filename):
     for old_filename in old_filenames:
         if old_filename!=safe_filename:
             os.remove(old_filename)
-    
+
+def render_axis_ticks(image_width=1000,
+                      num_uniform_spaced=None,
+                      bg_color="white",
+                      xtick_kwargs={"labels": np.arange(5)},
+                      tick_params={}):
+    old_backend = matplotlib.rcParams['backend']
+    old_dpi = matplotlib.rcParams['figure.dpi']
+    dpi = 100
+    if num_uniform_spaced is None:
+        num_uniform_spaced = len(xtick_kwargs["labels"])
+    n = num_uniform_spaced
+     
+    matplotlib.rcParams['figure.dpi'] = dpi
+    matplotlib.use('Agg')
+    try:        
+        fig = plt.figure(figsize=(image_width/dpi, 1e-15), facecolor=bg_color)
+        ax = plt.Axes(fig, [0., 0., 1., 1.])
+        ax.set_facecolor(bg_color)
+        ax.set_frame_on(False)
+        ax.tick_params(**tick_params)
+        fig.add_axes(ax)
+        
+        plt.yticks([])
+        plt.xlim(0, n)
+        x_pos = np.linspace(0.5,n-0.5,n)
+        if not "ticks" in xtick_kwargs:
+            xtick_kwargs["ticks"] = x_pos[:len(xtick_kwargs["labels"])]
+        else:
+            if xtick_kwargs["ticks"] is None:
+                xtick_kwargs["ticks"] = x_pos[:len(xtick_kwargs["labels"])]
+        plt.xticks(**xtick_kwargs)
+        
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            fig.show()
+
+        with NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            temp_filename = temp_file.name
+            fig.savefig(temp_filename, format='png', bbox_inches='tight', pad_inches=0)
+        im = np.array(Image.open(temp_filename))
+        if not im.shape[1]==image_width:
+            #reshape with cv2 linear interpolation
+            warnings.warn("Image width is not as expected, likely due to too large text labels. Reshaping with cv2 linear interpolation.")
+            im = cv2.resize(im, (image_width, im.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+        matplotlib.use(old_backend)
+        matplotlib.rcParams['figure.dpi'] = old_dpi
+    except:
+        matplotlib.use(old_backend)
+        matplotlib.rcParams['figure.dpi'] = old_dpi
+        raise
+    return im
 
 def add_text_axis_to_image(filename,
+                           new_filename = None,
                            n_horz=None,n_vert=None,
                            top=[],bottom=[],left=[],right=[],
-                           bg_color=[1,1,1],
-                           text_color=[0,0,0],
-                           fontsize=14,
-                           scale=1,
-                           new_file=False):
+                           bg_color="white",
+                           xtick_kwargs={},
+                           new_file=False,
+                           buffer_pixels=4,
+                           add_spaces=True):
     """
     Function to take an image filename and add text to the top, 
     bottom, left, and right of the image. The text is rendered
@@ -365,35 +423,75 @@ def add_text_axis_to_image(filename,
     bg_color : list, optional
         The background color of the text. The default is [1,1,1]
         (white).
-    text_color : list, optional
-        The text color. The default is [0,0,0] (black).
-    fontsize : int, optional
-        The fontsize of the text. The default is 14.
-    scale : float, optional
-        The scale multiplier for the text compared to the original 
-        image. Recommended scale>1 for images with few pixels to 
-        make the text easily readable. The original image is
-        upscaled with nearest neighbour interpolation such that 
-        text and image fit eachother. The default is 1.
+    xtick_kwargs : dict, optional
+        The keyword arguments to pass to matplotlib.pyplot.xticks.
+        The default is {}.
+    new_file : bool, optional
+        If True, then a new file is created with the text axis
+        added. If False, then the original file is modified. The
+        default is False.
     """
-    
     if n_horz is None:
         n_horz = max(len(top),len(bottom))
     if n_vert is None:
         n_vert = max(len(left),len(right))
-    if horz_w==0==vert_h and not new_file:
-        return
-    assert scale>=1, "scale must be >=1"
     im = np.array(Image.open(filename))
-    h,w = im.shape[:2]
+    h,w,c = im.shape
+    xtick_kwargs_per_pos = {"top":    {"rotation": 0,  "labels": top},
+                            "bottom": {"rotation": 0,  "labels": bottom},
+                            "left":   {"rotation": 90, "labels": left},
+                            "right":  {"rotation": 90, "labels": right}}
+    tick_params_per_pos = {"top":    {"top":True, "labeltop":True, "bottom":False, "labelbottom":False},
+                           "bottom": {},
+                           "left":   {},
+                           "right":  {"top":True, "labeltop":True, "bottom":False, "labelbottom":False}}
+    pos_renders = {}
+    pos_sizes = {}
     for pos in ["top","bottom","left","right"]:
-        if pos in ["top","bottom"]:
-            fig_width = int(w*scale)
-        else:
-            fig_heigth = int(h*scale)    
-        #create plot where only axis text is visible
+        xk = dict(**xtick_kwargs_per_pos[pos],**xtick_kwargs)
+        if add_spaces:
+            xk["labels"] = [" "+l+" " for l in xk["labels"]]
+        if not "ticks" in xk.keys():
+            n = n_horz if pos in ["top","bottom"] else n_vert
 
-
+            if len(xk["labels"])<n:
+                xk["labels"] += [""]*(n-len(xk["labels"]))
+            elif len(xk["labels"])>n:
+                xk["labels"] = xk["labels"][:n]
+            else:
+                assert len(xk["labels"])==n
+        pos_renders[pos] = render_axis_ticks(image_width=w if pos in ["top","bottom"] else h,
+                                             num_uniform_spaced=n,
+                                             bg_color=bg_color,
+                                             xtick_kwargs=xk,
+                                             tick_params=tick_params_per_pos[pos])
+        pos_sizes[pos] = pos_renders[pos].shape[0]
+    empty_render_to_get_bg_color = render_axis_ticks(23,bg_color=bg_color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})
+    bg_color_3d = empty_render_to_get_bg_color[12,12,:c]
+    bp = buffer_pixels
+    im2 = np.zeros((h+pos_sizes["top"]+pos_sizes["bottom"]+bp*2,
+                    w+pos_sizes["left"]+pos_sizes["right"]+bp*2,
+                    c),dtype=np.uint8)
+    im2 += bg_color_3d
+    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,
+        bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = im
+    #make sure we have uint8
+    pos_renders = {k: np.clip(v,0,255) for k,v in pos_renders.items()}
+    im2[bp:bp+pos_sizes["top"],bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["top"]
+    im2[bp+pos_sizes["top"]+h:-bp,bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["bottom"]
+    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp:bp+pos_sizes["left"]] = np.rot90(pos_renders["left"],k=3)
+    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp+pos_sizes["left"]+w:-bp] = np.rot90(pos_renders["right"],k=3)
+    if new_file:
+        if new_filename is None:
+            suffix = filename.split(".")[-1]
+            new_filename = filename[:-len(suffix)-1]+"_w_text."+suffix
+            for i in range(1000):
+                if not os.path.exists(new_filename):
+                    break
+                new_filename = filename[:-len(suffix)-1]+"_w_text("+str(i)+")."+suffix
+        filename = new_filename
+    Image.fromarray(im2).save(filename)
+    return im2
 
     
 
@@ -409,10 +507,11 @@ def main():
         add_text_axis_to_image(test_filename,
                                n_horz=4,
                                n_vert=7,
-                               top=["top1","","top2"],
+                               top=["abc","","abc"],
                                bottom=["bottom1","bottom2"],
                                left=["left1","left2"],
-                               right=["right1","right2"])
+                               right=["right1","right2"],
+                               new_file=True)
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

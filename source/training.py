@@ -462,7 +462,8 @@ class DiffusionModelTrainer:
         if "grid" in self.args.sample_function.split(","):
             sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.step:06d}.png")
         if "inter" in self.args.sample_function.split(","):
-            sampler.opts.save_plot_inter_path = os.path.join(output_folder,f"plot_inter_{self.step:06d}.png")
+            sampler.opts.save_plot_inter_path = os.path.join(output_folder)
+            sampler.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter_{self.step:06d}.png")
         sampler.opts.num_samples = self.args.num_save_samples
         sampler.opts.num_votes = self.args.num_votes
         sampler.opts.num_inter_samples = self.args.num_save_samples
