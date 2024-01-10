@@ -49,7 +49,7 @@ class AnalogBits(object):
     def int2bit(self,x):
         if isinstance(x,torch.Tensor):
             device = x.device
-            x = x.cpu().numpy()
+            x = x.cpu().detach().numpy()
             was_torch = True
         else:
             was_torch = False
@@ -92,7 +92,7 @@ class CatBallDataset(torch.utils.data.Dataset):
                  dataset_len : int = 1000,
                  background_is_zero : bool = True,
                  num_balls : list = list(range(1,10)),
-                 max_classes : int = 8,
+                 max_classes : int = 7,
                  seed_translation : int = 0):
         assert dtype in ["float","double","uint8"]
         self.dtype = dtype

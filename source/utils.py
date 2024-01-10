@@ -8,140 +8,113 @@ import copy
 import argparse
 import json
 from collections import OrderedDict
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix
+from scipy.optimize import linear_sum_assignment
 
-def get_costs_area_per_class(A, B):
-    areas = []
-    costs = []
-    for uq in torch.unique(A):
-        mask = A==uq
-        uq_dist, counts = torch.unique(B[mask],return_counts=True)
-        area = mask.sum()
-        cost = 1-max(counts)/area
-        
-        costs.append(cost)
-        areas.append(area)
-    return costs, areas
+def get_all_metrics(output,ignore_idx=0,ab=None):
+    assert isinstance(output,dict), "output must be an output dict"
+    assert "pred_x" in output.keys(), "output must have a pred_x key"
+    assert "x" in output.keys(), "output must have an x key"
+    metrics = {**get_segment_metrics(output["pred_x"],output["x"],ignore_idx=ignore_idx,ab=ab),
+               **get_mse_metrics(output)}
+    return metrics
 
-def fast_agnostic_classification_metric(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
-    costs, areas = get_costs_area_per_class(target, pred)
-    metric_pred = 1-np.average(costs,weights=areas if weighed_by_area else None)
-    
-    costs, areas = get_costs_area_per_class(pred, target)
-    metric_target = 1-np.average(costs,weights=areas if weighed_by_area else None)
-    
-    c = target_splitting_coef
-    return c*metric_pred + (1-c)*metric_target
+def get_mse_metrics(output):
+    metrics = {}
+    if ("pred_x" in output.keys()) and ("x" in output.keys()):
+        metrics["mse_x"] = mse_loss(output["pred_x"],output["x"]).tolist()
+    if ("pred_eps" in output.keys()) and ("eps" in output.keys()):
+        metrics["mse_eps"] = mse_loss(output["pred_eps"],output["eps"]).tolist()
+    return metrics
 
-def slow_agnostic_classification_metric(pred, target, target_splitting_coef=0.5):
-    pred = pred.flatten()
+def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None):
+    assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
+    assert isinstance(target,torch.Tensor), "target must be a torch tensor"
+    if len(pred.shape)==len(target.shape)==3:
+        was_single = True
+        pred = pred.unsqueeze(0)
+        target = target.unsqueeze(0)
+    else:
+        was_single = False
+    if not pred.shape[1]==target.shape[1]==1:
+        if ab is None:
+            raise ValueError("ab must be specified if pred and target are not 1-channel. Use Analog bits to get a 1-channel output.")
+        pred = ab.bit2int(pred)
+        target = ab.bit2int(target)
+    assert len(pred.shape)==len(target.shape)==4, "batched_metrics expects 3D or 4D torch tensors"
+    bs = pred.shape[0]
+    if not isinstance(metrics,list):
+        metrics = [metrics]
+    metric_dict = {"iou": standard_iou,
+                   "hiou": hungarian_iou,
+                   "ari": adjusted_rand_score,
+                   "mi": adjusted_mutual_info_score}
+    #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
+    out = {metric: [] for metric in metrics}
+    for i in range(bs):
+        pred_i,target_i = metric_preprocess(pred[i],target[i])
+        for metric in metrics:
+            out[metric].append(metric_dict[metric](pred_i,target_i))
+    if was_single:
+        for metric in metrics:
+            out[metric] = out[metric][0]
+    return out
+
+def handle_empty(metric_func):
+    def wrapped(target,pred,*args,**kwargs):
+        if len(target)==0 and len(pred)==0:
+            return 1.0
+        elif len(target)==0 or len(pred)==0:
+            return 0.0
+        else:
+            return metric_func(target,pred,*args,**kwargs)
+    return wrapped
+
+def metric_preprocess(target,pred):
+    assert isinstance(target,np.ndarray) or isinstance(target,torch.Tensor), "target must be a torch tensor or numpy array"
+    assert isinstance(pred,np.ndarray) or isinstance(pred,torch.Tensor), "pred must be a torch tensor or numpy array"
+    if isinstance(target,torch.Tensor):
+        target = target.cpu().detach().numpy()
+    if isinstance(pred,torch.Tensor):
+        pred = pred.cpu().detach().numpy()
     target = target.flatten()
+    pred = pred.flatten()
+    return target,pred
 
-    pred_in_same_group = (pred.unsqueeze(1) == pred.unsqueeze(0)).float()
-    target_in_same_group = (target.unsqueeze(1) == target.unsqueeze(0)).float()
-
-    N_all = np.prod(target_in_same_group.shape)
-    N_same = target_in_same_group.sum()
-    N_diff = N_all - N_same
-    if N_same>0:    
-        p_same_given_same = (pred_in_same_group * target_in_same_group).sum() / N_same
+def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
+    uq_target,target = np.unique(target,return_inverse=True)
+    uq_pred,pred = np.unique(pred,return_inverse=True)
+    intersection = confusion_matrix(target, pred)
+    conf_rowsum = np.sum(intersection, axis=1, keepdims=True)
+    conf_colsum = np.sum(intersection, axis=0, keepdims=True)
+    union = conf_rowsum + conf_colsum - intersection
+    iou_hungarian_mat = intersection / union
+    assignment = linear_sum_assignment(iou_hungarian_mat, maximize=True)
+    val = iou_hungarian_mat[assignment].sum()/min(len(uq_target),len(uq_pred))
+    if return_assignment:
+        return val, assignment
     else:
-        p_same_given_same = 1
-    if N_diff>0:
-        p_diff_given_diff = ((1-pred_in_same_group) * (1-target_in_same_group)).sum() / N_diff
-    else:
-        p_diff_given_diff = 1
-    c = target_splitting_coef
-    return c*(1-p_same_given_same) + (1-c)*(1-p_diff_given_diff)
-
-def sacm_batched(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
-    assert len(pred.shape)==len(target.shape)==4, "sacm_batched expects 4D tensors"
-    sacm_list = []
-    for i in range(pred.shape[0]):
-        sacm_i = slow_agnostic_classification_metric(pred[i],target[i],
-                                                     weighed_by_area=weighed_by_area,
-                                                     target_splitting_coef=target_splitting_coef)
-        sacm_list.append(sacm_i)
-    return sacm_list
-
-def facm_batched(pred, target, weighed_by_area=True, target_splitting_coef=0.5):
-    assert len(pred.shape)==len(target.shape)==4, "facm_batched expects 4D tensors"
-    facm_list = []
-    for i in range(pred.shape[0]):
-        facm_i = fast_agnostic_classification_metric(pred[i],target[i],
-                                                     weighed_by_area=weighed_by_area,
-                                                     target_splitting_coef=target_splitting_coef)
-        facm_list.append(facm_i)
-    return facm_list
-
-def multiclass_iou_batched(pred, target, weighed_by_area=True, ignore_nonpresent=True):
-    assert len(pred.shape)==len(target.shape)==4, "multiclass_iou_batched expects 4D tensors"
-    iou_list = []
-    for i in range(pred.shape[0]):
-        ious_i = multiclass_iou(pred[i],target[i],
-                                weighed_by_area=weighed_by_area,
-                                ignore_nonpresent=ignore_nonpresent)
-        iou_list.append(ious_i)
-    return iou_list
-
-def multiclass_iou(pred, target, weighed_by_area=True, ignore_nonpresent=True):
-
-    pred = pred.clone().detach().flatten()
-    target = target.clone().detach().flatten()
-    if ignore_nonpresent:
-        unique_classes = torch.unique(target)
-    else:
-        unique_classes = torch.unique(torch.cat([pred,target]))
-    ious = []
-    areas = []
-    for uq in unique_classes:
-        
-        target_uq = (target==uq).float()
-        pred_uq = (pred==uq).float()
-        
-        intersection = (target_uq * pred_uq).sum()
-        union = target_uq.sum() + pred_uq.sum() - intersection
-        iou = (intersection / union).item()
-        
-        ious.append(iou)
-        areas.append(target_uq.sum().item())
-        
-    return np.average(ious,weights=areas if weighed_by_area else None)
+        return val
+    
+def standard_iou(target,pred,ignore_idx=0,reduce_classes=True):
+    num_classes = max(target.max(),pred.max())+1
+    if num_classes==1:
+        return 1.0
+    intersection = np.histogram(target[pred==target], bins=np.arange(num_classes + 1))[0]
+    area_pred = np.histogram(pred, bins=np.arange(num_classes + 1))[0]
+    area_target = np.histogram(target, bins=np.arange(num_classes + 1))[0]
+    union = area_pred + area_target - intersection
+    if ignore_idx is not None:
+        union[ignore_idx] = 0
+    iou = intersection[union>0] / union[union>0]
+    if reduce_classes:
+        iou = np.mean(iou)
+    return iou
 
 def mse_loss(pred_x, x, batch_dim=0):
     """mean squared error loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
-
-def get_segment_metrics(pred_x_thresh,target_x_thresh):
-    assert isinstance(pred_x_thresh,torch.Tensor)
-    assert isinstance(target_x_thresh,torch.Tensor)
-    assert len(pred_x_thresh.shape)==len(target_x_thresh.shape)==3
-    assert pred_x_thresh.shape[0]==target_x_thresh.shape[0]==1
-    metrics = {}
-    iou = multiclass_iou(pred_x_thresh, target_x_thresh)
-    facm = fast_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-    sacm = slow_agnostic_classification_metric(pred_x_thresh, target_x_thresh)
-    metrics["facm"] = facm
-    metrics["sacm"] = sacm
-    metrics["iou"] = iou
-        
-    return metrics
-
-def get_batch_metrics(output,ab=None):
-    mse_x = mse_loss(output["pred_x"], output["x"]).tolist()
-    mse_eps = mse_loss(output["pred_eps"], output["eps"]).tolist()
-    metrics = {"mse_x": mse_x,
-               "mse_eps": mse_eps}
-    if ab is not None:
-        pred_x_thresh = ab.bit2int(output["pred_x"]).cpu()
-        target_x_thresh = ab.bit2int(output["x"]).cpu()
-        iou = multiclass_iou_batched(pred_x_thresh, target_x_thresh)
-        facm = facm_batched(pred_x_thresh, target_x_thresh)
-        sacm = sacm_batched(pred_x_thresh, target_x_thresh)
-        metrics["facm"] = facm
-        metrics["sacm"] = sacm
-        metrics["iou"] = iou
-    return metrics
 
 def model_and_diffusion_defaults(idx=0,ordered_dict=False):
     default_path = Path(__file__).parent/"args_def.json"
@@ -294,7 +267,7 @@ def write_args(args, save_path, match_keys=True):
 def str2bool(v):
     if isinstance(v, bool):
         return v
-    elif isinstance(v, [int,float]):
+    elif isinstance(v, (int,float)):
         return bool(v)
     elif isinstance(v, str):
         if v.lower() in ["yes", "true", "t", "y", "1"]:
@@ -503,3 +476,74 @@ def num_of_params(model,print_numbers=True):
             +"\n"+str(n_total)+" total parameters")
         print(s)
     return n_trainable,n_not_trainable,n_total
+
+import numpy as np
+
+def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
+            label_map=dict(), reduce_zero_label=False):
+    total_intersect, total_union, _, _ = np.zeros((num_classes,)), np.zeros((num_classes,)), np.zeros((num_classes,)), np.zeros((num_classes,))
+    
+    for i in range(len(results)):
+        pred_label, label = results[i], gt_seg_maps[i]
+
+        if label_map:
+            label[label == label_map[0]] = label_map[1]
+
+        if reduce_zero_label:
+            label[label == 0] = 255
+            label -= 1
+            label[label == 254] = 255
+
+        mask = (label != ignore_index)
+        pred_label = pred_label[mask]
+        label = label[mask]
+
+        intersect = pred_label[pred_label == label]
+        area_intersect, _ = np.histogram(intersect, bins=np.arange(num_classes + 1))
+        area_pred_label, _ = np.histogram(pred_label, bins=np.arange(num_classes + 1))
+        area_label, _ = np.histogram(label, bins=np.arange(num_classes + 1))
+        area_union = area_pred_label + area_label - area_intersect
+
+        total_intersect += area_intersect
+        total_union += area_union
+
+    iou = total_intersect / total_union
+    all_acc = total_intersect.sum() / total_union.sum()
+
+    return all_acc, iou
+
+
+
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--unit_test", type=int, default=0)
+    args = parser.parse_args()
+    if args.unit_test==0:
+        print("UNIT TEST 0: test measures")
+        target = torch.randint(0,8,size=(1,1,1,100))
+        metrics = ["iou","hiou","ari","mi"]
+        metrics_per_t = {k: [] for k in metrics}
+        err_ratio = list(range(100))
+        for t in err_ratio:
+            
+            pred = torch.randint_like(target,0,8)
+            pred[:,:,:,:t] = target[:,:,:,:t]
+            m = batched_metrics(pred.clone(),target.clone(),metrics=metrics,ignore_idx=0)
+            for k in metrics:
+                metrics_per_t[k].append(m[k])
+        import matplotlib.pyplot as plt, jlc
+        plt.figure()
+        for k,v in metrics_per_t.items():
+            plt.plot(err_ratio,v,label=k)
+        plt.legend()
+        jlc.zoom()
+        plt.show()
+
+    else:
+        raise ValueError(f"Unknown unit test index: {args.unit_test}")
+        
+if __name__=="__main__":
+    main()

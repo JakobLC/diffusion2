@@ -371,7 +371,7 @@ class UNetModel(nn.Module):
                            "image": image_channels,
                            "bbox": int(weak_signals),
                            "points": int(weak_signals),
-                           "self_cond": out_channels+image_channels if self_cond else 0,
+                           "self_cond": out_channels if self_cond else 0,
                            "cond": out_channels+image_channels if cond else 0,
                            }
         self.in_channels = 0
@@ -640,7 +640,7 @@ def main():
         kwargs = {"image": torch.randn(bs,3,imsize,imsize).cuda(),
                   "bbox": torch.randn(bs,1,imsize,imsize).cuda(),
                   "points": torch.randn(bs,1,imsize,imsize).cuda(),
-                  "self_cond": torch.randn(bs,4,imsize,imsize).cuda(),
+                  "self_cond": torch.randn(bs,3,imsize,imsize).cuda(),
                   "cond": torch.randn(bs,4,imsize,imsize).cuda(),
                   }
         print("sample.shape:",sample.shape)

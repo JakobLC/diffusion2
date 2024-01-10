@@ -10,6 +10,14 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
+
+#TODO
+# implement all points in arguments
+# forced xstart
+# add image to plot_grid
+# implement hungarian iou ignore idx
+# make seeding better in the sampler (one seed to define a whole diffusion process instead of 1000)
+
 def main(**modified_args):    
     args = SmartParser().get_args(modified_args)    
     if isinstance(args,tuple):

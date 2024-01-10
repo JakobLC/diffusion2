@@ -23,18 +23,11 @@ from datasets import CatBallDataset, custom_collate_with_info
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import dump_kvs,get_batch_metrics,write_args
+from utils import dump_kvs,get_all_metrics,write_args
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
 
-#TODO
-# forced xstart
-# prepare_inputs as preprocessing step outside loop
-# make seeding better in the sampler (one seed to define a whole diffusion process instead of 1000)
-# implement all points in arguments
-# debug save intermediate
-# debug save raw samples
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -192,16 +185,35 @@ class DiffusionModelTrainer:
                     raise NotImplementedError("cond not implemented")
                     #model_kwargs["cond"] = info["get_cond"]()
                 else:
-                    model_kwargs["cond"].append(None)    
+                    model_kwargs["cond"].append(None)
+
         to_dev = lambda x: x.to(self.device) if x is not None else None
         model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         return x,model_kwargs,info
     
+    def get_self_cond(self,info):
+        if (not self.args.self_cond) or (self.args.self_cond_prob==0):
+            self_cond = False
+        else:
+            if self.args.self_cond_batched:
+                if self.args.self_cond_prob>=np.random.rand():
+                    self_cond = True
+                else:
+                    self_cond = False
+            else:
+                self_cond = []
+                for _ in range(len(info)):
+                    self_cond.append(self.args.self_cond_prob>=np.random.rand())
+        return self_cond
+
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
-        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        
+
+        self_cond = self.get_self_cond(info)
+
+        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs,self_cond=self_cond)
+
         output = {**output,**model_kwargs}
         
         loss = output["loss"]
@@ -217,7 +229,7 @@ class DiffusionModelTrainer:
             self.optimize_normal()
         #logging
         self.log_kv_step(loss.item())
-        metrics = get_batch_metrics(output)
+        metrics = get_all_metrics(output,ab=self.cgd.ab)
         self.log_train_step(output,metrics)
         
         return output,metrics
@@ -231,7 +243,7 @@ class DiffusionModelTrainer:
     def run_eval_step(self, batch):
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        metrics = get_batch_metrics(output)
+        metrics = get_all_metrics(output,ab=self.cgd.ab)
         self.log_eval_step(output,metrics)
         
     def log_eval_step(self,output,metrics,prefix="vali_"):
@@ -295,7 +307,6 @@ class DiffusionModelTrainer:
             batch = next(self.train_dl)
             
             output,metrics = self.run_train_step(batch)
-            
             pbar.update(1)
 
             if self.step % self.args.log_vali_interval == 0:
@@ -448,16 +459,14 @@ class DiffusionModelTrainer:
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
         return str(save_path)
     
-        
     
     def generate_samples(self):
-        
-        self.model.eval()
         sampler = DiffusionSampler(diffusion=self.cgd,
                                    model=self.model,
                                    dataloader=self.vali_dl,
                                    step=self.step,
-                                   do_agg=False)
+                                   do_agg=False,
+                                   trainer=self)
         output_folder = os.path.join(self.args.save_path,"samples")
         if "grid" in self.args.sample_function.split(","):
             sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.step:06d}.png")
@@ -469,6 +478,8 @@ class DiffusionModelTrainer:
         sampler.opts.num_inter_samples = self.args.num_save_samples
         sampler.opts.num_timesteps = self.args.eval_num_steps
         sampler.opts.eval_batch_size = self.args.eval_batch_size if self.args.eval_batch_size>0 else self.args.train_batch_size
+        sampler.opts.clip_denoised = self.args.clip_denoised
+        sampler.opts.self_cond = self.args.self_cond
         sampler.sample()
         if self.args.save_train_samples:
             pass#raise NotImplementedError("save_train_samples not implemented") TODO

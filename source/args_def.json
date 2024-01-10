@@ -2,7 +2,7 @@
     "model_name": ["test",                          "Name of the model. TYPE: string. DEFAULT: 'test'"],
     "save_path": ["",                               "Path to save the model. TYPE: str. DEFAULT: ''"],
     "diffusion": {
-        "no_diffusion": [false,                     "Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false"],
+        "no_diffusion": [false,                     "TODO, not implemented. Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false"],
         "noise_schedule": ["linear",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: linear"],
         "eval_num_steps": [100,                     "Number of timesteps used for evaluation during training. positive integer. DEFAULT: 100. DEFAULT: 100"], 
         "clip_denoised": [true,                     "Should the denoised image be clipped to the input range? TYPE: boolean. DEFAULT: true. DEFAULT: true"],
@@ -23,11 +23,11 @@
         "image_size": [128,                         "Image resolution. TYPE: positive integer. DEFAULT: 128"],
         "deeper_net": [true,                        "Should a deeper net be used? TYPE: boolean. DEFAULT: true"],
         "weak_signals": [false,                     "Should weak signals (bbox,points) be used? TYPE: boolean. DEFAULT: false"],
-        "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets']. DEFAULT: 'none'"],
-        "self_cond": [false,                "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"],
-        "max_num_classes": [8,                      "Maximum number of classes. TYPE: positive integer or 0 (no maximum). DEFAULT: 0"],
-        "cond_type": ["none",               "Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"],
-        "time_cond_type": ["t",                     "Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"]
+        "class_type": ["none",                      "TODO, not implemented. Which class type to use? TYPE: One of ['none','datasets']. DEFAULT: 'none'"],
+        "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"],
+        "max_num_classes": [8,                      "Maximum number of class labels. TYPE: positive integer or 0 (no maximum). DEFAULT: 0"],
+        "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"],
+        "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"]
     }, 
     "meta": {
         "save_ckpt_steps": ["-1,",                  "Save checkpoint when reaching step number in training. TYPE: comma separated list of integers or -1 (no saving). DEFAULT: '-1,'"],
@@ -62,7 +62,8 @@
         "image_prob": [0.9,                         "Probability of image being given as input. TYPE: float. DEFAULT: 0.9"],
         "weak_bbox_prob" :  [0.25,                  "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25"],
         "weak_points_prob" :  [0.25,                "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25"],
-        "self_cond_prob": [0.25,                    "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25"],
+        "self_cond_prob": [0.5,                     "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25"],
+        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false"],
         "cond_prob": [0.25,                         "Probability of conditioning being used. TYPE: float. DEFAULT: 0.25"],
         "max_iter": [100000,                        "Maximum number of training iterations. TYPE: positive integer. DEFAULT: 100000"],
         "datasets": ["non-medical,",                "Which datasets to use? TYPE: comma separated list of strings. DEFAULT: 'non-medical,'"],
@@ -72,8 +73,8 @@
         "weight_decay": [0.0,                       "Weight decay. TYPE: float. DEFAULT: 0.0"],
         "lr_warmup_steps": [0,                      "Number of warmup steps for learning rate. TYPE: positive integer or 0 (no warmup). DEFAULT: 0"],
         "lr_warmup_type": ["linear",                "Which warmup type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
-        "lr_decay_steps": [0,                      "Number of decaying steps for learning rate. TYPE: positive integer or 0 (no decaying). DEFAULT: 0"], 
-        "lr_decay_type": ["linear",                 "Which decaying type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
+        "lr_decay_steps": [0,                       "Which decaying type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
+        "lr_decay_type": ["cosine",                 "Which decaying type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'cosine'"],
         "use_fp16": [true,                          "Should fp16 be used for memory reduction? TYPE: boolean. DEFAULT: true"],
         "fp16_scale_growth": [0.001,                "Growth constant for fp16 loss scale when NANs are not encountered. TYPE: float. DEFAULT: 0.001"],
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'"]

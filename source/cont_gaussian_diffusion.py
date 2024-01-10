@@ -147,7 +147,7 @@ class ContinuousGaussianDiffusion():
                  clip_min=1e-9):
         """class to handle the diffusion process"""
         self.ab = analog_bits
-        self.gamma = get_named_gamma_schedule(schedule_name,input_scale,clip_min=clip_min)
+        self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,clip_min=clip_min)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
         self.var_type = type_from_maybe_str(var_type,VarType)
@@ -182,20 +182,31 @@ class ContinuousGaussianDiffusion():
             weights = torch.ones_like(snr)
         return weights
     
-    def train_loss_step(self, model, x, model_kwargs={}, eps=None):
+    def sample_t(self,bs):
+        if self.sampler_type==SamplerType.uniform:
+            t = torch.rand(bs)
+        elif self.sampler_type==SamplerType.low_discrepency:
+            t0 = torch.rand()/bs
+            t = (torch.arange(bs)/bs+t0)
+            t = t[torch.randperm(bs)]
+        elif self.sampler_type==SamplerType.uniform_low_discrepency:
+            t = ((torch.arange(bs)[torch.randperm(bs)]+torch.rand(bs))/bs)
+        else:
+            raise NotImplementedError(self.sampler_type)
+        return t
+    
+    def train_loss_step(self, model, x, model_kwargs={}, eps=None, t=None, self_cond=False):
         """compute one training step and return the loss"""
+        if isinstance(self_cond,bool):
+            self_cond = [self_cond for _ in range(len(x))]
+        assert isinstance(self_cond,list)
+        self_cond = torch.tensor(self_cond).view(-1,1,1,1).to(x.device)
+
         if self.ab is not None:
             assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must have size 1, got {x.shape[self.ab.bit_dim]}"
             x = self.ab.int2bit(x)
-        bs = x.shape[0]
-        if self.sampler_type==SamplerType.uniform:
-            t = torch.rand(bs).to(x.device)
-        elif self.sampler_type==SamplerType.low_discrepency:
-            t0 = torch.rand()/bs
-            t = (torch.arange(bs)/bs+t0).to(x.device)
-            t = t[torch.randperm(bs)]
-        elif self.sampler_type==SamplerType.uniform_low_discrepency:
-            t = ((torch.arange(bs)[torch.randperm(bs)]+torch.rand(bs))/bs).to(x.device)
+        if t is None:
+            t = self.sample_t(x.shape[0]).to(x.device)
         if eps is None:
             eps = torch.randn_like(x)
         
@@ -203,6 +214,15 @@ class ContinuousGaussianDiffusion():
         alpha_t = self.alpha(t)
         sigma_t = self.sigma(t)
         x_t = mult_(alpha_t,x) + mult_(sigma_t,eps)
+        
+        if any(self_cond):
+            with torch.no_grad():
+                output = model(x_t, t, **model_kwargs)
+                pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
+                model_kwargs['self_cond'] = pred_x*self_cond #not the most effeciency way to do this, but easy to implement TODO
+        else:
+            model_kwargs['self_cond'] = None
+
         output = model(x_t, t, **model_kwargs)
         
         pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
@@ -216,7 +236,8 @@ class ContinuousGaussianDiffusion():
                 "pred_eps": pred_eps,
                 "x_t": x_t,
                 "eps": eps,
-                "raw_model_output": output}
+                "raw_model_output": output,
+                "self_cond": model_kwargs['self_cond']}
         return out
     
     def get_x_from_eps(self,eps,x_t,alpha_t,sigma_t):
@@ -347,7 +368,7 @@ class ContinuousGaussianDiffusion():
                         sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
             
             if self_cond:
-                model_kwargs['self_cond'] = x_t
+                model_kwargs['self_cond'] = pred_x
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
 

@@ -2,7 +2,6 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from utils import get_batch_metrics
 import jlc
 import nice_colors as nc
 import matplotlib.cm as cm
@@ -208,8 +207,11 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                         text_size=12)
     
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou',text_inside=False):
     show_keys = ["x_init","target_bit","pred_bit"]
+    if "self_cond" in output.keys():
+        if output["self_cond"] is not None:
+            show_keys.append("self_cond")
     k0 = show_keys[0]
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
@@ -231,7 +233,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
     
     map_dict = {"target_bit": aboi,
                 "pred_bit": aboi,
-                "x_init": aboi}
+                "x_init": aboi,
+                "self_cond": aboi}
     
     num_votes = output["pred_bit"].shape[1]
     images = []
@@ -241,11 +244,11 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
             if k=="pred_bit":
                 for j in range(num_votes):
                     images.extend([map_dict[k](output[k][i][j],i) for i in range(bs)])
-                    text1 = [k]+[""]*(bs-1)
+                    text1 = [k if text_inside else ""]+[""]*(bs-1)
                     text2 = [f"\n{measure}={output[measure][i][j]:.4f}" for i in range(bs)]
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
-                text.extend([k]+[""]*(bs-1))
+                text.extend([k if text_inside else ""]+[""]*(bs-1))
                 images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
@@ -256,12 +259,21 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou'):
                     n_col=bs,
                     text=text,
                     text_color="red",
-                    pixel_mult=max(1,128//image_size),
+                    pixel_mult=max(1,64//image_size),
                     text_size=12)
+    if not text_inside:
+        sample_names = ["s#"+str(i) for i in range(bs)]
+        idx = show_keys.index("pred_bit")
+        show_keys2 = show_keys[:idx]+["pred_bit\n#"+str(i) for i in range(num_votes)]+show_keys[idx+1:]
+        add_text_axis_to_image(filename,
+                               top=sample_names,
+                               bottom=sample_names,
+                               left=show_keys2,
+                               right=show_keys2)
     if remove_old:
         clean_up(filename)
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
+def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False):
     show_keys = ["image","x_t","pred_x","x","err_x","pred_eps","eps"]
     k0 = show_keys[0]
     bs = len(output[k0])
@@ -269,7 +281,12 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
     if bs>max_images:
         bs = max_images
     output["err_x"] = output["pred_x"]-output["x"]
-    
+    if "mse_x" not in metrics.keys():
+        metrics["mse_x"] = torch.mean(output["err_x"]**2,dim=[1,2,3]).tolist()
+    if "self_cond" in output.keys():
+        if output["self_cond"] is not None:
+            show_keys.append("self_cond")
+
     for k in show_keys:
         assert k in output.keys(), f"key {k} not in output.keys()"
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
@@ -289,14 +306,15 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
                 "x": aboi,
                 "err_x": lambda x,i: error_image(x),
                 "pred_eps": md0,
-                "eps": md0}
+                "eps": md0,
+                "self_cond": aboi}
     
     images = []
     for k in show_keys:
         if k in output.keys():
             images.append([map_dict[k](output[k][i],i) for i in range(bs)])
-    text = sum([[k]+[""]*(bs-1) for k in show_keys],[])
-    err_idx = text.index("err_x")
+    text = sum([[k if text_inside else ""]+[""]*(bs-1) for k in show_keys],[])
+    err_idx = show_keys.index("err_x")*bs
     for i in range(bs):
         text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.4f}"
     if not os.path.exists(os.path.dirname(filename)):
@@ -310,6 +328,13 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True):
                     text_color="red",
                     pixel_mult=max(1,128//image_size),
                     text_size=12)
+    if not text_inside:
+        sample_names = ["s#"+str(i) for i in range(bs)]
+        add_text_axis_to_image(filename,
+                               top=sample_names,
+                               bottom=sample_names,
+                               left=show_keys,
+                               right=show_keys)
     if remove_old:
         clean_up(filename)
         
