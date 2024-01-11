@@ -45,7 +45,7 @@
         "update_loss_plot_interval": [200,          "Update loss plot every n steps. TYPE: positive integer. DEFAULT: 200"],
         "update_foward_pass_plot_interval": [200,   "Update forward pass plot every n steps. TYPE: positive integer. DEFAULT: 200"], 
         "num_vali_batches": [8,                     "Number of batches to use for validation each vali_interval. TYPE: positive integer or 0 (no validation). DEFAULT: 8"],
-        "save_train_samples": [true,                "Should training samples be saved? TYPE: boolean. DEFAULT: true"],
+        "generate_train_samples": [true,            "Should training samples be generated? TYPE: boolean. DEFAULT: true"],
         "run_without_test": [false,                 "Should all evaluation be skipped? TYPE: boolean. DEFAULT: false"],
         "resume_ckpt_name": ["",                    "Path to checkpoint to resume from. Tries to match the last part of the model_name - returns error on multiple matches. TYPE: string (empty for no resume). DEFAULT: ''"], 
         "model_str": ["model*",                     "Model string to use for saving. TYPE: string. DEFAULT: 'model*'"],

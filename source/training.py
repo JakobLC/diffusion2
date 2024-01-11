@@ -37,9 +37,11 @@ class DiffusionModelTrainer:
         
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
-        
-        train_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=1000,size=args.image_size)
-        vali_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=100,seed_translation=1000,size=args.image_size)
+        if self.args.cat_ball_data:
+            train_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=10000,size=args.image_size)
+            vali_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
+        else:
+            raise NotImplementedError("Only cat ball data is implemented")
         eval_batch_size = args.eval_batch_size if args.eval_batch_size>0 else args.train_batch_size
         self.train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, 
                                                                            batch_size=args.train_batch_size, 
@@ -61,6 +63,7 @@ class DiffusionModelTrainer:
             self.device = torch.device("cpu")
             
         self.kvs_buffer = {}
+        self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []
         
         self.args.save_path = self.check_save_path()
@@ -315,12 +318,15 @@ class DiffusionModelTrainer:
             if self.step % self.args.update_foward_pass_plot_interval == 0:
                 plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
+            if self.step % self.args.eval_interval == 0:
+                self.generate_samples(vali=True)
+                if self.args.generate_train_samples:
+                    self.generate_samples(vali=False)
+                self.dump_kvs_gen()
+            
             if self.step % self.args.update_loss_plot_interval == 0:
                 make_loss_plot(self.args.save_path)
-            
-            if self.step % self.args.eval_interval == 0:
-                self.generate_samples()
-            
+
             if self.step % self.args.save_interval == 0:
                 self.save_train_ckpt()
                 
@@ -376,8 +382,17 @@ class DiffusionModelTrainer:
         No reduction is applied to the values.
         """
         self.kvs_step_buffer.append(values)
-        
-    def dump_kvs(self, filename="progress.csv"):
+    
+    def dump_kvs_gen(self, filename="logging_gen.csv"):
+        self.kvs_gen_buffer["step"] = self.step
+        for k,v in self.kvs_gen_buffer.items():
+            if isinstance(v,list):
+                self.kvs_gen_buffer[k] = np.mean(v)
+        self.fancy_print_kvs(self.kvs_gen_buffer,s="Ø")
+        dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_gen_buffer)
+        self.kvs_gen_buffer = {}
+
+    def dump_kvs(self, filename="logging.csv"):
         """
         Saves the kvs buffer and prints it, aswell as the kvs 
         step buffer to a file and then clears the buffers.
@@ -391,12 +406,12 @@ class DiffusionModelTrainer:
         dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_buffer)
         self.kvs_buffer = {}
         
-        with open(str(Path(self.args.save_path)/"progress_step.csv"), "a") as f:
+        with open(str(Path(self.args.save_path)/"logging_step.csv"), "a") as f:
             for row in self.kvs_step_buffer:
                 f.write(",".join([str(v) for v in row]) + "\n")
         self.kvs_step_buffer = []
     
-    def fancy_print_kvs(self, kvs, atmost_digits=5):
+    def fancy_print_kvs(self, kvs, atmost_digits=5, s="#"):
         """prints kvs in a nice format like
          |#########|########|
          | key1    | value1 |
@@ -416,10 +431,10 @@ class DiffusionModelTrainer:
         max_key_len = max([len(k) for k in keys_print])
         max_value_len = max([len(v) for v in values_print])
         print_str = "\n"
-        print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
+        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
         for k,v in zip(keys_print,values_print):
             print_str += "| " + k + " "*(max_key_len-len(k)+1) + "| " + v + " "*(max_value_len-len(v)+1) + "|\n"
-        print_str += "|" + "#"*(max_key_len+2) + "|" + "#"*(max_value_len+2) + "|\n"
+        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
         self.log(print_str)
 
     def _master_params_to_state_dict(self, master_params):
@@ -460,19 +475,20 @@ class DiffusionModelTrainer:
         return str(save_path)
     
     
-    def generate_samples(self):
+    def generate_samples(self, vali=True, max_reduction_measures=["hiou","ari"]):
         sampler = DiffusionSampler(diffusion=self.cgd,
                                    model=self.model,
-                                   dataloader=self.vali_dl,
+                                   dataloader=self.vali_dl if vali else self.train_dl,
                                    step=self.step,
                                    do_agg=False,
                                    trainer=self)
+        valitrain = "_vali_" if vali else "_train_"
         output_folder = os.path.join(self.args.save_path,"samples")
         if "grid" in self.args.sample_function.split(","):
-            sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.step:06d}.png")
+            sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid{valitrain}{self.step:06d}.png")
         if "inter" in self.args.sample_function.split(","):
             sampler.opts.save_plot_inter_path = os.path.join(output_folder)
-            sampler.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter_{self.step:06d}.png")
+            sampler.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter{valitrain}{self.step:06d}.png")
         sampler.opts.num_samples = self.args.num_save_samples
         sampler.opts.num_votes = self.args.num_votes
         sampler.opts.num_inter_samples = self.args.num_save_samples
@@ -480,10 +496,17 @@ class DiffusionModelTrainer:
         sampler.opts.eval_batch_size = self.args.eval_batch_size if self.args.eval_batch_size>0 else self.args.train_batch_size
         sampler.opts.clip_denoised = self.args.clip_denoised
         sampler.opts.self_cond = self.args.self_cond
-        sampler.sample()
-        if self.args.save_train_samples:
-            pass#raise NotImplementedError("save_train_samples not implemented") TODO
-        
+        sampler.opts.return_metrics = True
+        sampler.opts.return_samples = False
+        metric_dict = sampler.sample()
+        prefix = "vali_" if vali else ""
+        metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}
+        for m in max_reduction_measures:
+            metric_kvs[prefix+m] = np.max([max(v).item() for v in metric_dict[m]])
+        print(metric_kvs)
+        assert 1<0
+        self.kvs_gen_buffer.update(metric_kvs)
+
 def main():
     import argparse
     

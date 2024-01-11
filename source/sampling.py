@@ -31,7 +31,9 @@ def get_default_sampler_options():
                         num_inter_samples=0,
                         inter_votes_per_sample=1,
                         kwargs_mode="train",
-                        self_cond=False
+                        self_cond=False,
+                        return_metrics=True,
+                        return_samples=True,
                         )
     return Namespace(**dict_options)
 
@@ -114,26 +116,36 @@ class DiffusionSampler(object):
                         votes = []
                         metric_list.append(metrics)
         
-        metric_list = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
-        mean_metrics = {k: np.mean(metric_list[k]) for k in metric_list.keys()} 
-        
-        output = self.get_output_dict(metric_list, mean_metrics, self.samples)
-        self.run_on_finished(metric_list,output)
+        sample_output, metric_ouput = self.get_output_dict(metric_list, self.samples)
+        self.run_on_finished(output={**sample_output,**metric_ouput})
         self.reset(restore_opts=True)
         if was_training:
             self.model.train()
-        return output
+        if self.opts.return_metrics and self.opts.return_samples:
+            return {**sample_output,**metric_ouput}
+        elif self.opts.return_metrics:
+            return metric_ouput
+        elif self.opts.return_samples:
+            return sample_output
+        else:
+            return None
     
-    def get_output_dict(self,metric_list, mean_metrics, samples):
-        output = {}
-        for k in metric_list.keys():
-            output[k] = metric_list[k]
+    def get_output_dict(self, metric_list, samples):
+        sample_output = {}
+        metric_ouput = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
         if samples is not None:
             for k in samples[0].keys():
-                output[k] = [s[k] for s in samples]
-                if torch.is_tensor(output[k][0]):
-                    output[k] = torch.stack(output[k],dim=0)
-        return output
+                if k=="info":
+                    continue
+                if isinstance(samples[0][k],dict):
+                    for sub_k in samples[0][k].keys():
+                        if not torch.is_tensor(samples[0][k][sub_k]):
+                            raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
+                        sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
+                elif torch.is_tensor(samples[0][k]):
+                    sample_output[k] = torch.stack([s[k] for s in samples],dim=0)
+        
+        return sample_output, metric_ouput
             
     def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite):
         sample_output["x"] = x_true_bit      
@@ -177,7 +189,7 @@ class DiffusionSampler(object):
                 metrics[k].append(metrics_i[k])
         return metrics
     
-    def run_on_finished(self,metric_list,output):
+    def run_on_finished(self,output):
         if self.opts.save_plot_grid_path is not None:
             assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
             filename = self.opts.save_plot_grid_path
@@ -187,6 +199,8 @@ class DiffusionSampler(object):
             concat_inter_plots(foldername = self.opts.save_plot_inter_path,
                                concat_filename = self.opts.save_concat_plot_inter_path,
                                num_timesteps = self.opts.num_inter_steps)
+        
+
     def get_kwargs(self,batch):
         if self.opts.kwargs_mode=="train":
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."

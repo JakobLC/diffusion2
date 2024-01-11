@@ -15,35 +15,70 @@ from tempfile import NamedTemporaryFile
 import warnings
 import cv2
 
+
 def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
-    filename = os.path.join(save_path,"progress.csv")
-    with open(filename,"r") as f:
-        column_names = f.readline()[:-1].split(",")
-    #filename_steps = os.path.join(folder_name,"progress_steps.csv")
-    data = np.genfromtxt(filename, delimiter=",")[1:]
-    if len(data.shape)==1:
-        data = np.expand_dims(data,0)
-    data = data[~np.any(np.isinf(data),axis=1)]
-    
-    plot_columns = [["loss","vali_loss"],["mse_x","vali_mse_x"],["mse_eps","vali_mse_eps"]]
+    filename = os.path.join(save_path,"logging.csv")
+    filename_gen = os.path.join(save_path,"logging_gen.csv")
+    filename_steps = os.path.join(save_path,"logging_steps.csv")
+    filenames = [filename_gen,filename_steps,filename]
+    #helpers
+    gli = lambda s: [s.startswith(p) for p in ["gen_","steps_",""]].index(True)
+    gls = lambda s: ["gen_","steps_",""][gli(s)]
+
+    all_logging = {}
+    for i in range(len(filenames)):
+        fn = filenames[i]
+        if not os.path.exists(fn):
+            continue
+        with open(fn,"r") as f:
+            column_names = f.readline()[:-1].split(",")
+        data = np.genfromtxt(fn, delimiter=",")[1:]
+        if data.size==0:
+            continue
+        if len(data.shape)==1:
+            data = np.expand_dims(data,0)
+        inf_mask = np.logical_and(~np.any(np.isinf(data),axis=1),~np.all(np.isnan(data),axis=1))
+        data = data[inf_mask]
+        assert ~np.any(np.isnan(data[:,column_names.index("step")])), f"found nan in steps for {fn}. Not allowed."
+        
+        if filename_steps==fn:
+            column_names.append("steps_steps")
+            data = data.reshape(data.size,len(column_names)-1)
+            data = np.concatenate([data,np.arange(len(data)).reshape(data.shape)],axis=1)
+        for j,k in enumerate(column_names):
+            all_logging[["gen_","steps_",""][i]+k] = data[:,j]
+
+    plot_columns = [["loss","vali_loss"],
+                    ["mse_x","vali_mse_x"],
+                    ["mse_eps","vali_mse_eps"],
+                    ["hiou","vali_hiou"],
+                    ["gen_hiou","gen_vali_hiou"],
+                    ["steps_loss"]]
+    plot_columns_new = []
+    #remove non-existent columns
+    for i in range(len(plot_columns)):
+        plot_columns_i = []
+        for s in plot_columns[i]:
+            if s in all_logging.keys():
+                plot_columns_i.append(s)
+        if len(plot_columns_i)>0:
+            plot_columns_new.append(plot_columns_i)
+    plot_columns = plot_columns_new
     n = len(plot_columns)
     
-    x = data[:,column_names.index("step")]
-    if np.any(np.isnan(x)):
-        print("WARNING: nans found in steps in progress.csv, skipping plotting")
-        return
     fig = plt.figure(figsize=figsize)
     for i in range(n):
         plt.subplot(n,1,i+1)
         Y = []
         for name in plot_columns[i]:
-            y = data[:,column_names.index(name)]
+            y = all_logging[name]
+            x = all_logging[gls(name)+"step"]
             nan_mask = np.isnan(y)
             y = y[~nan_mask]
-            x_not_nan = x[~nan_mask]
+            x = x[~nan_mask]
             Y.append(y)
             fmt = "o-" if len(y)<25 else "-"
-            plt.plot(x_not_nan,y,fmt,label=name)
+            plt.plot(x,y,fmt,label=name)
         plt.legend()
         plt.grid()
         plt.xlim(0,x.max())
@@ -207,20 +242,20 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                         text_size=12)
     
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou',text_inside=False):
-    show_keys = ["x_init","target_bit","pred_bit"]
-    if "self_cond" in output.keys():
-        if output["self_cond"] is not None:
-            show_keys.append("self_cond")
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='hiou',text_inside=False):
+    show_keys = ["x_init","image","self_cond","target_bit","pred_bit"]
+    show_keys_new = []
+    for k in show_keys:
+        if k in output.keys():
+            if output[k] is not None:
+                show_keys_new.append(k)
+    show_keys = show_keys_new
     k0 = show_keys[0]
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
     if bs>max_images:
         bs = max_images
-    #output["err_x"] = output["pred_bit"]-output["target_bit"]
-    
     for k in show_keys:
-        assert k in output.keys(), f"key {k} not in output.keys()"
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
@@ -234,7 +269,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou',te
     map_dict = {"target_bit": aboi,
                 "pred_bit": aboi,
                 "x_init": aboi,
-                "self_cond": aboi}
+                "self_cond": aboi,
+                "image": nb_3}
     
     num_votes = output["pred_bit"].shape[1]
     images = []
@@ -245,7 +281,9 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='iou',te
                 for j in range(num_votes):
                     images.extend([map_dict[k](output[k][i][j],i) for i in range(bs)])
                     text1 = [k if text_inside else ""]+[""]*(bs-1)
-                    text2 = [f"\n{measure}={output[measure][i][j]:.4f}" for i in range(bs)]
+                    text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
+                    if j==0:
+                        text[0] = f"{measure}="+text[0]
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
                 text.extend([k if text_inside else ""]+[""]*(bs-1))
@@ -537,6 +575,10 @@ def main():
                                left=["left1","left2"],
                                right=["right1","right2"],
                                new_file=True)
+    elif args.unit_test==1:
+        print("UNIT TEST 1: make_loss_plot")
+        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/test"
+        make_loss_plot(save_path)
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         
