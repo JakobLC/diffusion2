@@ -193,7 +193,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       crop_method="most_border",
                       num_crops=3,
                       semantic_prob=0.5,
-                      label_map_method="random",
+                      label_map_method="all",
                       shuffle_nonzero_labels=True,
                       shuffle_datasets=True,
                       data_root=None):

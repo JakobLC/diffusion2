@@ -70,6 +70,9 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
             return output
     elif schedule_name=="linear_simple":
         gamma = lambda t: 1-t
+    elif schedule_name=="parabola":
+        #gamma = lambda t: (1-t**2)**2 expanded:
+        gamma = lambda t: 1-2*t**2+t**4
     else:
         raise ValueError(f"Unknown schedule name: {schedule_name}, must be one of ['linear', 'cosine_[start]_[end]_[tau]', 'sigmoid_[start]_[end]_[tau]', 'linear_simple']")
     
@@ -671,7 +674,7 @@ def main():
         plt.show()
     elif args.unit_test==9:
         print("UNIT TEST: simple_linear gamma function with different b scales, showing alpha and sigma")
-        b_vec = [0.01,0.03,0.1]
+        b_vec = [0.01,0.02,0.03]
         for b in b_vec:
             gamma = get_named_gamma_schedule("linear_simple",b)
             alpha = lambda t: torch.sqrt(gamma(t))
@@ -687,12 +690,13 @@ def main():
         plt.legend()
         plt.ylabel("gamma(t)")
         plt.subplot(1,2,2)
-        gamma = get_named_gamma_schedule("linear",1.0)
-        alpha = lambda t: torch.sqrt(gamma(t))
-        sigma = lambda t: torch.sqrt(1-gamma(t))
-        t = torch.linspace(0,1,1000)
-        plt.plot(t,alpha(t),"-",label=f"linear")
-        plt.plot(t,sigma(t),"--",label=f"linear")
+        for s in ["linear","cosine","parabola"]:
+            gamma = get_named_gamma_schedule(s,1.0)
+            alpha = lambda t: torch.sqrt(gamma(t))
+            sigma = lambda t: torch.sqrt(1-gamma(t))
+            t = torch.linspace(0,1,1000)
+            plt.plot(t,alpha(t),"-",label=s)
+            plt.plot(t,sigma(t),"--",label=s)
         plt.legend()
         plt.ylabel("logSNR(t)")
         plt.ylim(0,1)

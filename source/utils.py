@@ -265,6 +265,7 @@ def model_specific_args(args):
             idx1 = model_name.find("]",idx)
             assert idx0<idx1, f"model_name={model_name} has mismatched brackets."
             ver_names.append(model_name[idx0+1:idx1])
+            model_name = model_name[:idx0] + model_name[idx1+1:]
             idx = idx1+1
         
     if not model_name in model_dicts.keys():

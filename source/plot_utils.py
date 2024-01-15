@@ -16,7 +16,7 @@ import warnings
 import cv2
 
 
-def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
+def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
     filename_step = os.path.join(save_path,"logging_step.csv")
@@ -50,8 +50,9 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize=(10,8
     plot_columns = [["loss","vali_loss"],
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
-                    ["hiou","vali_hiou"],
+                    ["iou","vali_iou"],
                     ["gen_hiou","gen_vali_hiou","gen_max_hiou","gen_max_vali_hiou"],
+                    ["gen_ari","gen_vali_ari","gen_max_ari","gen_max_vali_ari"],
                     ["step_loss"]]
     plot_columns_new = []
     #remove non-existent columns
@@ -64,10 +65,14 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize=(10,8
             plot_columns_new.append(plot_columns_i)
     plot_columns = plot_columns_new
     n = len(plot_columns)
+    #at most 4 plots per column
+    n1 = min(4,n)
+    n2 = int(max(1,np.ceil(n/4)))
     
+    figsize = (figsize_per_subplot[0]*n2,figsize_per_subplot[1]*n1)
     fig = plt.figure(figsize=figsize)
     for i in range(n):
-        plt.subplot(n,1,i+1)
+        plt.subplot(n1,n2,i+1)
         Y = []
         for j in range(len(plot_columns[i])):
             name = plot_columns[i][j]
@@ -89,6 +94,7 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize=(10,8
         plt.ylim(ymin,ymax)
         plt.xlim(0,x.max()*1.05)
         plt.xlabel("steps")
+    plt.tight_layout()
     if show:
         plt.show()
     save_name = os.path.join(save_path, f"loss_plot_{step:06d}.png")
@@ -190,6 +196,8 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     if remove_children:
         for filename in filenames:
             os.remove(filename)
+        if len(os.listdir(foldername))==0:
+            os.rmdir(foldername)
     if remove_old:
         clean_up(concat_filename)
 
@@ -298,7 +306,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='hiou',t
                     text1 = [k if text_inside else ""]+[""]*(bs-1)
                     text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
                     if j==0:
-                        text[0] = f"{measure}="+text[0]
+                        text1[0] = f"{measure}="+text1[0]
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
                 text.extend([k if text_inside else ""]+[""]*(bs-1))

@@ -22,6 +22,35 @@
         "update_foward_pass_plot_interval": 200,
         "image_size": 32
     },
-    "default":
-    {}
+    "default":{
+    },
+    "snr": {
+        "remove_old_plots": false,
+        "loss_weights": "SNR",
+        "lr": 0.0001
+    },
+    "small": {
+        "versions": {
+            "1": {"loss_weights": "SNR"}, 
+            "2": {"loss_weights": "SNR_plus1"},
+            "3": {"loss_weights": "SNR_trunc"},
+            "4": {"predict": "eps"},
+            "5": {"predict": "v"},
+            "6": {"predict": "both"},
+            "7": {"loss_weights": "SNR", "predict": "eps"},
+            "8": {"loss_weights": "SNR", "predict": "v"},
+            "9": {"loss_weights": "SNR", "predict": "both"},
+            "10": {"loss_weights": "SNR_plus1", "predict": "eps"},
+            "11": {"loss_weights": "SNR_plus1", "predict": "v"},
+            "12": {"loss_weights": "SNR_plus1", "predict": "both"},
+            "13": {"loss_weights": "SNR_trunc", "predict": "eps"},
+            "14": {"loss_weights": "SNR_trunc", "predict": "v"},
+            "15": {"loss_weights": "SNR_trunc", "predict": "both"}
+            },
+        "loss_weights": "uniform",
+        "predict": "x",
+        "image_size": 32,
+        "max_iter": 200000,
+        "lr": 0.0003
+    }
 }

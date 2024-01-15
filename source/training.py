@@ -37,9 +37,11 @@ class DiffusionModelTrainer:
         self.seed = None
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
+        n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
+        self.log("Number of trainable parameters: "+str(n_trainable))
         if self.args.cat_ball_data:
-            train_ds = CatBallDataset(max_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
-            vali_ds = CatBallDataset(max_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
+            train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
+            vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
         else:
             split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
             train_ds = SegmentationDataset(split="train",
@@ -173,7 +175,7 @@ class DiffusionModelTrainer:
                 if int(ckpt.stem.split("_")[1])<self.step:
                     os.remove(ckpt)
     
-    def get_kwargs(self, batch):
+    def get_kwargs(self, batch, gen=False):
         x,info = batch
         x = x.to(self.device)
         model_kwargs = {"image": [],
@@ -182,7 +184,7 @@ class DiffusionModelTrainer:
                         "cond": []}
         bs = x.shape[0]
         for i in range(bs):
-            if np.random.rand()<self.args.image_prob:
+            if np.random.rand()<self.args.image_prob or gen:
                 model_kwargs["image"].append(info[i]["image"])
             else:
                 model_kwargs["image"].append(None)
@@ -480,7 +482,7 @@ class DiffusionModelTrainer:
         if "grid" in self.args.sample_function.split(","):
             sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid{valitrain}{self.step:06d}.png")
         if "inter" in self.args.sample_function.split(","):
-            sampler.opts.save_plot_inter_path = os.path.join(output_folder)
+            sampler.opts.save_plot_inter_path = os.path.join(output_folder,"inter")
             sampler.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter{valitrain}{self.step:06d}.png")
         sampler.opts.num_samples = self.args.num_save_samples
         sampler.opts.num_votes = self.args.num_votes
@@ -491,6 +493,7 @@ class DiffusionModelTrainer:
         sampler.opts.self_cond = self.args.self_cond
         sampler.opts.return_metrics = True
         sampler.opts.return_samples = False
+        sampler.opts.remove_old = self.args.remove_old_plots
         metric_dict = sampler.sample()
         prefix = "vali_" if vali else ""
         metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}

@@ -34,6 +34,7 @@ def get_default_sampler_options():
                         self_cond=False,
                         return_metrics=True,
                         return_samples=True,
+                        remove_old=False,
                         )
     return Namespace(**dict_options)
 
@@ -198,18 +199,19 @@ class DiffusionSampler(object):
         if self.opts.save_plot_grid_path is not None:
             assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
             filename = self.opts.save_plot_grid_path
-            plot_grid(filename,output,self.cgd.ab,max_images=32,remove_old=True)
+            plot_grid(filename,output,self.cgd.ab,max_images=32,remove_old=self.opts.remove_old)
         if self.opts.save_concat_plot_inter_path is not None:
             assert self.opts.save_concat_plot_inter_path.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.save_plot_inter_path,
                                concat_filename = self.opts.save_concat_plot_inter_path,
-                               num_timesteps = self.opts.num_inter_steps)
+                               num_timesteps = self.opts.num_inter_steps,
+                               remove_old=self.opts.remove_old)
         
 
     def get_kwargs(self,batch):
         if self.opts.kwargs_mode=="train":
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
-            x,model_kwargs,info = self.trainer.get_kwargs(batch)
+            x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
         elif self.opts.kwargs_mode=="none":
             x,info = batch
             x = x.to(self.device)
