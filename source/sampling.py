@@ -8,7 +8,7 @@ import copy
 from collections import defaultdict
 import os
 import tqdm
-from utils import get_segment_metrics
+from utils import get_segment_metrics,fancy_print_kvs
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
 #from cont_gaussian_diffusion import DummyDiffusion TODO
 
@@ -48,14 +48,13 @@ class DiffusionSampler(object):
         self.dataloader = dataloader
         self.opts = opts
         self.step = step
+        self.do_agg = do_agg
         self.trainer = trainer
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             print("WARNING: CUDA not available. Using CPU.")
             self.device = torch.device("cpu")
-        if do_agg:
-            matplotlib.use("agg")
         
     def reset(self,store_opts=False,restore_opts=False):
         self.source_batch = None
@@ -69,6 +68,9 @@ class DiffusionSampler(object):
         self.bss = 0
 
     def sample(self,**kwargs):
+        if self.do_agg:
+            old_backend = matplotlib.get_backend()
+            matplotlib.use("agg")
         if self.model.training:
             was_training = True
             self.model.eval()
@@ -119,6 +121,9 @@ class DiffusionSampler(object):
         sample_output, metric_ouput = self.get_output_dict(metric_list, self.samples)
         self.run_on_finished(output={**sample_output,**metric_ouput})
         self.reset(restore_opts=True)
+        if self.do_agg:
+            matplotlib.use(old_backend)
+
         if was_training:
             self.model.train()
         if self.opts.return_metrics and self.opts.return_samples:
@@ -341,6 +346,9 @@ def main():
         sampler.opts.save_plot_inter_path = os.path.join(args.save_path,"inter")
         sampler.opts.save_concat_plot_inter_path = os.path.join(args.save_path,"inter_concat.png")
         output = sampler.sample(num_timesteps=100)
+    elif args.unit_test==3:
+        pass
+
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

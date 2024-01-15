@@ -10,6 +10,42 @@ import json
 from collections import OrderedDict
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix
 from scipy.optimize import linear_sum_assignment
+import matplotlib
+
+def fancy_print_kvs(kvs, atmost_digits=5, s="#"):
+        """prints kvs in a nice format like
+         |#########|########|
+         | key1    | value1 |
+              ...
+         | keyN    | valueN |
+         |#########|########|
+        """
+        values_print = []
+        keys_print = []
+        for k,v in kvs.items():
+            if isinstance(v,float):
+                v = f"{v:.{atmost_digits}g}"
+            else:
+                v = str(v)
+            values_print.append(v)
+            keys_print.append(k) 
+        max_key_len = max([len(k) for k in keys_print])
+        max_value_len = max([len(v) for v in values_print])
+        print_str = "\n"
+        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
+        for k,v in zip(keys_print,values_print):
+            print_str += "| " + k + " "*(max_key_len-len(k)+1) + "| " + v + " "*(max_value_len-len(v)+1) + "|\n"
+        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
+        return print_str
+
+class MatplotlibTempBackend():
+    def __init__(self,backend):
+        self.backend = backend
+    def __enter__(self):
+        self.old_backend = matplotlib.get_backend()
+        matplotlib.use(self.backend)
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        matplotlib.use(self.old_backend)
 
 def get_all_metrics(output,ignore_idx=0,ab=None):
     assert isinstance(output,dict), "output must be an output dict"

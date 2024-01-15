@@ -133,7 +133,7 @@ class SamplerType(enum.Enum):
     """How to sample timesteps for training"""
     uniform = enum.auto()
     low_discrepency = enum.auto()
-    uniform_low_discrepency = enum.auto()
+    uniform_low_d = enum.auto()
 class ContinuousGaussianDiffusion():
     def __init__(self, 
                  analog_bits,
@@ -189,7 +189,7 @@ class ContinuousGaussianDiffusion():
             t0 = torch.rand()/bs
             t = (torch.arange(bs)/bs+t0)
             t = t[torch.randperm(bs)]
-        elif self.sampler_type==SamplerType.uniform_low_discrepency:
+        elif self.sampler_type==SamplerType.uniform_low_d:
             t = ((torch.arange(bs)[torch.randperm(bs)]+torch.rand(bs))/bs)
         else:
             raise NotImplementedError(self.sampler_type)
@@ -231,7 +231,8 @@ class ContinuousGaussianDiffusion():
         out =  {"loss_weights": loss_weights,
                 "loss": loss,
                 "losses": losses, 
-                "pred_x": pred_x, 
+                "pred_x": pred_x,
+                "t": t, 
                 "x": x,
                 "pred_eps": pred_eps,
                 "x_t": x_t,
@@ -667,6 +668,34 @@ def main():
         plt.plot(t,cgd.logsnr(t),label="logSNR")
         plt.ylim(-0.1,1.1)
         plt.legend()
+        plt.show()
+    elif args.unit_test==9:
+        print("UNIT TEST: simple_linear gamma function with different b scales, showing alpha and sigma")
+        b_vec = [0.01,0.03,0.1]
+        for b in b_vec:
+            gamma = get_named_gamma_schedule("linear_simple",b)
+            alpha = lambda t: torch.sqrt(gamma(t))
+            sigma = lambda t: torch.sqrt(1-gamma(t))
+            t = torch.linspace(0,1,1000)
+            plt.subplot(1,2,1)
+            plt.plot(t,gamma(t),label=f"b={b}")
+            plt.subplot(1,2,2)
+            plt.plot(t,alpha(t),"-",label=f"alpha, b={b}")
+            plt.plot(t,sigma(t),"--",label=f"sigma, b={b}")
+        
+        plt.subplot(1,2,1)
+        plt.legend()
+        plt.ylabel("gamma(t)")
+        plt.subplot(1,2,2)
+        gamma = get_named_gamma_schedule("linear",1.0)
+        alpha = lambda t: torch.sqrt(gamma(t))
+        sigma = lambda t: torch.sqrt(1-gamma(t))
+        t = torch.linspace(0,1,1000)
+        plt.plot(t,alpha(t),"-",label=f"linear")
+        plt.plot(t,sigma(t),"--",label=f"linear")
+        plt.legend()
+        plt.ylabel("logSNR(t)")
+        plt.ylim(0,1)
         plt.show()
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")

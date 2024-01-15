@@ -19,11 +19,11 @@ from fp16_util import (
 )
 from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
-from datasets import CatBallDataset, custom_collate_with_info
+from datasets import CatBallDataset, custom_collate_with_info, SegmentationDataset
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import dump_kvs,get_all_metrics,write_args
+from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
@@ -34,23 +34,36 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 class DiffusionModelTrainer:
     def __init__(self,args):
         self.args = args
-        
+        self.seed = None
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
         if self.args.cat_ball_data:
-            train_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=10000,size=args.image_size)
-            vali_ds = CatBallDataset(max_classes=args.max_num_classes-1,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
+            train_ds = CatBallDataset(max_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
+            vali_ds = CatBallDataset(max_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
         else:
-            raise NotImplementedError("Only cat ball data is implemented")
-        eval_batch_size = args.eval_batch_size if args.eval_batch_size>0 else args.train_batch_size
+            split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
+            train_ds = SegmentationDataset(split="train",
+                                           split_ratio=split_ratio,
+                                           image_size=args.image_size,
+                                           datasets=args.datasets,
+                                           min_label_size=args.min_label_size,
+                                           max_num_classes=args.max_num_classes)
+            vali_ds = SegmentationDataset(split="vali",
+                                          split_ratio=split_ratio,
+                                          image_size=args.image_size,
+                                          datasets=args.datasets,
+                                          min_label_size=args.min_label_size,
+                                          max_num_classes=args.max_num_classes)
         self.train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, 
-                                                                           batch_size=args.train_batch_size, 
-                                                                           shuffle=True,
+                                                                           batch_size=args.train_batch_size,
+                                                                           sampler=train_ds.get_sampler(self.seed) if hasattr(train_ds,"get_sampler") else None,
+                                                                           shuffle=not hasattr(train_ds,"get_sampler"),
                                                                            drop_last=True,
                                                                            collate_fn=custom_collate_with_info))
         self.vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, 
-                                                                          batch_size=eval_batch_size, 
-                                                                          shuffle=True,
+                                                                          batch_size=args.gen_batch_size if args.gen_batch_size>0 else args.train_batch_size,
+                                                                          sampler=vali_ds.get_sampler(self.seed) if hasattr(vali_ds,"get_sampler") else None,
+                                                                          shuffle=not hasattr(vali_ds,"get_sampler"),
                                                                           drop_last=True,
                                                                           collate_fn=custom_collate_with_info))
                                     
@@ -231,7 +244,6 @@ class DiffusionModelTrainer:
         else:
             self.optimize_normal()
         #logging
-        self.log_kv_step(loss.item())
         metrics = get_all_metrics(output,ab=self.cgd.ab)
         self.log_train_step(output,metrics)
         
@@ -240,18 +252,17 @@ class DiffusionModelTrainer:
     def evaluate_loop(self):
         with torch.no_grad():
             for vali_i in range(self.args.num_vali_batches):
-                self.run_eval_step(next(self.vali_dl))
+                self.run_vali_step(next(self.vali_dl))
         self.dump_kvs()
         
-    def run_eval_step(self, batch):
+    def run_vali_step(self, batch):
         x,model_kwargs,info = self.get_kwargs(batch)
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
         metrics = get_all_metrics(output,ab=self.cgd.ab)
-        self.log_eval_step(output,metrics)
+        self.log_vali_step(output,metrics)
         
-    def log_eval_step(self,output,metrics,prefix="vali_"):
+    def log_vali_step(self,output,metrics,prefix="vali_"):
         self.log_kv({prefix+"loss": output["loss"].item()})
-        self.log_kv_step(output["loss"].item())
         self.log_kv({prefix+k:v for k,v in metrics.items()})
         
     def log_train_step(self,output,metrics):
@@ -302,6 +313,7 @@ class DiffusionModelTrainer:
         
     def train_loop(self):
         self.log("Starting training loop...")
+        #pbar = tqdm(unit='ims', unit_scale=self.args.train_batch_size)
         pbar = tqdm()
         while self.step <= self.args.max_iter:
             
@@ -316,18 +328,20 @@ class DiffusionModelTrainer:
                 self.evaluate_loop()
             
             if self.step % self.args.update_foward_pass_plot_interval == 0:
-                plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
+                with MatplotlibTempBackend(backend="agg"):
+                    plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
-            if self.step % self.args.eval_interval == 0:
+            if self.step % self.args.gen_interval == 0:
                 self.generate_samples(vali=True)
-                if self.args.generate_train_samples:
+                if self.args.gen_train_samples:
                     self.generate_samples(vali=False)
                 self.dump_kvs_gen()
             
             if self.step % self.args.update_loss_plot_interval == 0:
-                make_loss_plot(self.args.save_path)
+                with MatplotlibTempBackend(backend="agg"):
+                    make_loss_plot(self.args.save_path,self.step)
 
-            if self.step % self.args.save_interval == 0:
+            if (self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(",")):
                 self.save_train_ckpt()
                 
             self.step += 1
@@ -388,7 +402,8 @@ class DiffusionModelTrainer:
         for k,v in self.kvs_gen_buffer.items():
             if isinstance(v,list):
                 self.kvs_gen_buffer[k] = np.mean(v)
-        self.fancy_print_kvs(self.kvs_gen_buffer,s="Ø")
+        fancy_print_str = fancy_print_kvs(self.kvs_gen_buffer,s="Ø")
+        self.log(fancy_print_str)
         dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_gen_buffer)
         self.kvs_gen_buffer = {}
 
@@ -402,7 +417,8 @@ class DiffusionModelTrainer:
         for k,v in self.kvs_buffer.items():
             if isinstance(v,list):
                 self.kvs_buffer[k] = np.mean(v)
-        self.fancy_print_kvs(self.kvs_buffer)
+        fancy_print_str = fancy_print_kvs(self.kvs_buffer)
+        self.log(fancy_print_str)
         dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_buffer)
         self.kvs_buffer = {}
         
@@ -411,31 +427,8 @@ class DiffusionModelTrainer:
                 f.write(",".join([str(v) for v in row]) + "\n")
         self.kvs_step_buffer = []
     
-    def fancy_print_kvs(self, kvs, atmost_digits=5, s="#"):
-        """prints kvs in a nice format like
-         |#########|########|
-         | key1    | value1 |
-              ...
-         | keyN    | valueN |
-         |#########|########|
-        """
-        values_print = []
-        keys_print = []
-        for k,v in kvs.items():
-            if isinstance(v,float):
-                v = f"{v:.{atmost_digits}g}"
-            else:
-                v = str(v)
-            values_print.append(v)
-            keys_print.append(k) 
-        max_key_len = max([len(k) for k in keys_print])
-        max_value_len = max([len(v) for v in values_print])
-        print_str = "\n"
-        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
-        for k,v in zip(keys_print,values_print):
-            print_str += "| " + k + " "*(max_key_len-len(k)+1) + "| " + v + " "*(max_value_len-len(v)+1) + "|\n"
-        print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
-        self.log(print_str)
+    
+        ###self.log(print_str)
 
     def _master_params_to_state_dict(self, master_params):
         """converts a list of params (flattened list if fp16) 
@@ -492,8 +485,8 @@ class DiffusionModelTrainer:
         sampler.opts.num_samples = self.args.num_save_samples
         sampler.opts.num_votes = self.args.num_votes
         sampler.opts.num_inter_samples = self.args.num_save_samples
-        sampler.opts.num_timesteps = self.args.eval_num_steps
-        sampler.opts.eval_batch_size = self.args.eval_batch_size if self.args.eval_batch_size>0 else self.args.train_batch_size
+        sampler.opts.num_timesteps = self.args.gen_num_steps
+        sampler.opts.gen_batch_size = self.args.gen_batch_size if self.args.gen_batch_size>0 else self.args.train_batch_size
         sampler.opts.clip_denoised = self.args.clip_denoised
         sampler.opts.self_cond = self.args.self_cond
         sampler.opts.return_metrics = True
@@ -502,9 +495,7 @@ class DiffusionModelTrainer:
         prefix = "vali_" if vali else ""
         metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}
         for m in max_reduction_measures:
-            metric_kvs[prefix+m] = np.max([max(v).item() for v in metric_dict[m]])
-        print(metric_kvs)
-        assert 1<0
+            metric_kvs["max_"+prefix+m] = [max(v) for v in metric_dict[m]]
         self.kvs_gen_buffer.update(metric_kvs)
 
 def main():

@@ -14,6 +14,8 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 #TODO
 # implement all points in arguments
 # forced xstart
+# show t in plot forward pass
+# test num_bits != 3 visualizations with RGB
 # add image to plot_grid
 # implement hungarian iou ignore idx
 # make seeding better in the sampler (one seed to define a whole diffusion process instead of 1000)

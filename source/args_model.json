@@ -4,22 +4,24 @@
         "max_iter": 10,
         "train_batch_size": 4,
         "save_interval": 5,
-        "eval_interval": 5,
+        "gen_interval": 5,
         "log_vali_interval": 2,
         "update_loss_plot_interval": 2,
         "update_foward_pass_plot_interval": 2,
         "image_size": 16,
-        "eval_num_steps": 10,
+        "gen_num_steps": 10,
         "num_votes": 2
     },
     "test": {
         "cat_ball_data": true,
         "train_batch_size": 32,
         "save_interval": 5000,
-        "eval_interval": 5000,
+        "gen_interval": 5000,
         "log_vali_interval": 200,
         "update_loss_plot_interval": 200,
         "update_foward_pass_plot_interval": 200,
         "image_size": 32
-    }
+    },
+    "default":
+    {}
 }

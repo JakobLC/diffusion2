@@ -16,14 +16,14 @@ import warnings
 import cv2
 
 
-def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
+def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize=(10,8),remove_old=True):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
-    filename_steps = os.path.join(save_path,"logging_steps.csv")
-    filenames = [filename_gen,filename_steps,filename]
+    filename_step = os.path.join(save_path,"logging_step.csv")
+    filenames = [filename_gen,filename_step,filename]
     #helpers
-    gli = lambda s: [s.startswith(p) for p in ["gen_","steps_",""]].index(True)
-    gls = lambda s: ["gen_","steps_",""][gli(s)]
+    gli = lambda s: [s.startswith(p) for p in ["gen_","step_",""]].index(True)
+    gls = lambda s: ["gen_","step_",""][gli(s)]
 
     all_logging = {}
     for i in range(len(filenames)):
@@ -39,21 +39,20 @@ def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),rem
             data = np.expand_dims(data,0)
         inf_mask = np.logical_and(~np.any(np.isinf(data),axis=1),~np.all(np.isnan(data),axis=1))
         data = data[inf_mask]
-        assert ~np.any(np.isnan(data[:,column_names.index("step")])), f"found nan in steps for {fn}. Not allowed."
         
-        if filename_steps==fn:
-            column_names.append("steps_steps")
+        if filename_step==fn:
+            column_names.append("step")
             data = data.reshape(data.size,len(column_names)-1)
-            data = np.concatenate([data,np.arange(len(data)).reshape(data.shape)],axis=1)
+            data = np.concatenate([data,np.arange(1,len(data)+1).reshape(data.shape)],axis=1)
         for j,k in enumerate(column_names):
-            all_logging[["gen_","steps_",""][i]+k] = data[:,j]
+            all_logging[["gen_","step_",""][i]+k] = data[:,j]
 
     plot_columns = [["loss","vali_loss"],
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
                     ["hiou","vali_hiou"],
-                    ["gen_hiou","gen_vali_hiou"],
-                    ["steps_loss"]]
+                    ["gen_hiou","gen_vali_hiou","gen_max_hiou","gen_max_vali_hiou"],
+                    ["step_loss"]]
     plot_columns_new = []
     #remove non-existent columns
     for i in range(len(plot_columns)):
@@ -70,29 +69,45 @@ def make_loss_plot(save_path,save=True,show=False,fontsize=14,figsize=(10,8),rem
     for i in range(n):
         plt.subplot(n,1,i+1)
         Y = []
-        for name in plot_columns[i]:
+        for j in range(len(plot_columns[i])):
+            name = plot_columns[i][j]
             y = all_logging[name]
             x = all_logging[gls(name)+"step"]
             nan_mask = np.isnan(y)
             y = y[~nan_mask]
             x = x[~nan_mask]
             Y.append(y)
-            fmt = "o-" if len(y)<25 else "-"
-            plt.plot(x,y,fmt,label=name)
+            plot_kwargs = get_plot_kwargs(name,j,y)
+            plt.plot(x,y,**plot_kwargs)
         plt.legend()
         plt.grid()
         plt.xlim(0,x.max())
         Y = np.array(Y).flatten()
-        plt.ylim(Y.min(),Y.max())
+        ymin,ymax = Y.min(),Y.max()
+        ymin -= 0.1*(ymax-ymin)
+        ymax += 0.1*(ymax-ymin)
+        plt.ylim(ymin,ymax)
+        plt.xlim(0,x.max()*1.05)
         plt.xlabel("steps")
     if show:
         plt.show()
-    save_name = os.path.join(save_path, f"loss_plot_{int(x[-1]):06d}.png")
+    save_name = os.path.join(save_path, f"loss_plot_{step:06d}.png")
     if save:
         fig.savefig(save_name)
     if remove_old:
         clean_up(save_name)    
     plt.close(fig)
+
+def get_plot_kwargs(name,j,y):
+    plot_kwargs = {"color": None,
+                   "label": name}
+    if name.find("gen_")>=0:
+        plot_kwargs["color"] = "C3" if name.find("vali_")>=0 else [0.1,0.2,0.9]
+    if name.find("max_")>=0:
+        plot_kwargs["linestyle"] = "--"
+    if len(y)<=25:
+        plot_kwargs["marker"] = "o"
+    return plot_kwargs
 
 def gaussian_filter_xy(x,y,sigma):
     assert len(x)==len(y)
@@ -352,9 +367,13 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         if k in output.keys():
             images.append([map_dict[k](output[k][i],i) for i in range(bs)])
     text = sum([[k if text_inside else ""]+[""]*(bs-1) for k in show_keys],[])
-    err_idx = show_keys.index("err_x")*bs
-    for i in range(bs):
-        text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.4f}"
+    if text_inside:
+        err_idx = show_keys.index("err_x")*bs
+        for i in range(bs):
+            text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.3f}"
+        x_t_idx = show_keys.index("x_t")*bs
+        for i in range(bs):
+            text[i+x_t_idx] += f"\nt={output['t'][i].item():.3f}"
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
@@ -367,10 +386,11 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
                     pixel_mult=max(1,128//image_size),
                     text_size=12)
     if not text_inside:
+        t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in range(bs)]
         sample_names = ["s#"+str(i) for i in range(bs)]
         add_text_axis_to_image(filename,
                                top=sample_names,
-                               bottom=sample_names,
+                               bottom=t_and_mse,
                                left=show_keys,
                                right=show_keys)
     if remove_old:
