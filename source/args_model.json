@@ -7,7 +7,7 @@
         "gen_interval": 5,
         "log_vali_interval": 2,
         "update_loss_plot_interval": 2,
-        "update_foward_pass_plot_interval": 2,
+        "update_forward_pass_plot_interval": 2,
         "image_size": 16,
         "gen_num_steps": 10,
         "num_votes": 2
@@ -19,7 +19,7 @@
         "gen_interval": 5000,
         "log_vali_interval": 200,
         "update_loss_plot_interval": 200,
-        "update_foward_pass_plot_interval": 200,
+        "update_forward_pass_plot_interval": 200,
         "image_size": 32
     },
     "default":{
@@ -45,12 +45,81 @@
             "12": {"loss_weights": "SNR_plus1", "predict": "both"},
             "13": {"loss_weights": "SNR_trunc", "predict": "eps"},
             "14": {"loss_weights": "SNR_trunc", "predict": "v"},
-            "15": {"loss_weights": "SNR_trunc", "predict": "both"}
+            "15": {"loss_weights": "SNR_trunc", "predict": "both"},
+            "points_test": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true}
             },
         "loss_weights": "uniform",
         "predict": "x",
-        "image_size": 32,
-        "max_iter": 200000,
-        "lr": 0.0003
+        "image_size": 64,
+        "input_scale": 0.03,
+        "max_iter": 20000,
+        "lr": 0.0001
+    },
+    "+test": {
+        "max_iter": 10,
+        "train_batch_size": 4,
+        "save_interval": 5,
+        "gen_interval": 5,
+        "log_vali_interval": 2,
+        "update_loss_plot_interval": 2,
+        "update_forward_pass_plot_interval": 2,
+        "image_size": 64,
+        "gen_num_steps": 10,
+        "num_votes": 2
+    },
+    "large": {
+        "versions": {
+            "ws": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true}
+        },
+        "num_channels": 128,
+        "loss_weights": "SNR_trunc",
+        "predict": "x",
+        "deeper_net": true,
+        "image_size": 128,
+        "input_scale": 0.01,
+        "max_iter": 50000,
+        "lr": 0.0001
+    },
+    "weak20k": {
+        "versions": {
+            "1": {"predict": "eps"},
+            "2": {"predict": "v"},
+            "3": {"predict": "both"},
+            "4": {"loss_weights": "SNR_trunc", "predict": "eps"},
+            "5": {"loss_weights": "SNR_trunc"},
+            "6": {"dropout": 0.1},
+            "7": {"predict": "eps","clip_grad_norm": 0.0},
+            "8": {"self_cond": true}
+        },
+        "train_batch_size": 16,
+        "num_save_samples": 16,
+        "max_iter": 10000,
+        "weak_bbox_prob": 0.0,
+        "weak_points_prob": 0.6667,
+        "weak_signals": true,
+        "max_num_classes": 64,
+        "image_prob": 0.95
+    },
+    "weak30k": {
+        "versions": {
+            "1": {"predict": "eps"},
+            "2": {"predict": "both"},
+            "3": {"predict": "x"},
+            "4": {"loss_weights": "SNR"},
+            "5": {"loss_weights": "SNR_plus1"},
+            "6": {"loss_weights": "uniform"},
+            "7": {"self_cond": true}
+        },
+        "predict": "v",
+        "loss_weights": "SNR_trunc",
+        "max_iter": 30000,
+        "gen_interval": 2500,
+        "image_prob": 0.95,
+        "num_save_samples": 16,
+        "weak_bbox_prob": 0.0,
+        "weak_points_prob": 0.6667,
+        "weak_signals": true,
+        "num_channels": 128,
+        "image_size": 128
     }
 }

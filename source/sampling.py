@@ -212,6 +212,9 @@ class DiffusionSampler(object):
         if self.opts.kwargs_mode=="train":
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
             x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
+            if "points" in model_kwargs.keys():
+                if model_kwargs["points"] is not None:
+                    model_kwargs["points"] = model_kwargs["points"]*self.cgd.ab.int2bit(x)
         elif self.opts.kwargs_mode=="none":
             x,info = batch
             x = x.to(self.device)

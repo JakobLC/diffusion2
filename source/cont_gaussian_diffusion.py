@@ -38,7 +38,7 @@ def coefs_(coefs, shape, dtype=torch.float32, device="cuda", batch_dim=0):
     view_shape[batch_dim] = -1
     return coefs.view(view_shape).to(device).to(dtype)
 
-def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
+def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9,clip_max_delta=1e-9):
     float64 = lambda x: torch.tensor(float(x),dtype=torch.float64)
     if schedule_name=="linear":
         gamma = lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
@@ -83,7 +83,8 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9):
     else:
         gamma_input_scaled = gamma
         
-    gamma_wrapped = lambda t: gamma_input_scaled((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)).clamp_min(clip_min)
+    gamma_wrapped = lambda t: gamma_input_scaled((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)
+                                                 ).clamp(clip_min,1-clip_max_delta)
     return gamma_wrapped
 
 def inter_save_map(x,save_i_idx):
@@ -147,10 +148,11 @@ class ContinuousGaussianDiffusion():
                  time_cond_type, 
                  sampler_type,
                  var_type, 
-                 clip_min=1e-9):
+                 clip_min=1e-9,
+                 clip_max_delta=1e-9):
         """class to handle the diffusion process"""
         self.ab = analog_bits
-        self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,clip_min=clip_min)
+        self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,clip_min=clip_min,clip_max_delta=clip_max_delta)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
         self.var_type = type_from_maybe_str(var_type,VarType)
@@ -208,6 +210,9 @@ class ContinuousGaussianDiffusion():
         if self.ab is not None:
             assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must have size 1, got {x.shape[self.ab.bit_dim]}"
             x = self.ab.int2bit(x)
+        if "points" in model_kwargs.keys():
+            if model_kwargs["points"] is not None:
+                model_kwargs["points"] = model_kwargs["points"]*x
         if t is None:
             t = self.sample_t(x.shape[0]).to(x.device)
         if eps is None:
@@ -266,13 +271,12 @@ class ContinuousGaussianDiffusion():
         elif self.model_pred_type==ModelPredType.BOTH:
             pred_eps, pred_x = torch.split(output, output.shape[1]//2, dim=1)
             #reconsiles the two predictions (parameterized by eps and by direct prediction):
-            pred_x = alpha_t*pred_x+sigma_t*self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
+            pred_x = mult_(alpha_t,pred_x)+mult_(sigma_t,self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t))
         elif self.model_pred_type==ModelPredType.V:
             #V = alpha*eps-sigma*x
             v = output
-            pred_x = alpha_t*x_t - sigma_t*v
+            pred_x = mult_(alpha_t,x_t) - mult_(sigma_t,v)
             pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
-        
         if guidance_weight is not None:
             pred_eps = (1+guidance_weight)*pred_eps - guidance_weight*self.get_predictions(model_output_guidance,x_t,alpha_t,sigma_t,clip_x=False)[1]
             pred_x = self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
@@ -447,7 +451,8 @@ def create_diffusion_from_args(args):
                                     time_cond_type=args.time_cond_type,
                                     sampler_type=args.schedule_sampler,
                                     var_type="small" if args.sigma_small else "large",
-                                    clip_min=args.gamma_clip_min)
+                                    clip_min=args.gamma_clip_min,
+                                    clip_max_delta=args.gamma_clip_max)
     return cgd
     
 def main():
@@ -701,6 +706,19 @@ def main():
         plt.ylabel("logSNR(t)")
         plt.ylim(0,1)
         plt.show()
+    elif args.unit_test==10:
+        print("UNIT TEST: logSNR vs t with different clip_min and clip_max, b=0.01")
+        clip_vec = [1e-2,1e-3,1e-4,1e-5]
+        for clip in clip_vec:
+            gamma = get_named_gamma_schedule("cosine",1.0,clip_min=clip,clip_max_delta=clip)
+            logsnr = lambda t: torch.log(gamma(t)/(1-gamma(t)))
+            t = torch.linspace(0,1,1000)
+            plt.plot(t,logsnr(t),label=f"clip={clip}")
+        plt.legend()
+        plt.ylabel("logSNR(t)")
+        plt.xlabel("t")
+        plt.show()
+        
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

@@ -117,18 +117,67 @@ def metric_preprocess(target,pred):
     pred = pred.flatten()
     return target,pred
 
+def extend_shorter_vector(vec1,vec2,fill_value=0):
+    if len(vec1)<len(vec2):
+        vec1 = np.concatenate([vec1,(fill_value*np.ones(len(vec2)-len(vec1))).astype(vec1.dtype)])
+    elif len(vec2)<len(vec1):
+        vec2 = np.concatenate([vec2,(fill_value*np.ones(len(vec1)-len(vec2))).astype(vec2.dtype)])
+    return vec1,vec2
+
 def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
-    uq_target,target = np.unique(target,return_inverse=True)
-    uq_pred,pred = np.unique(pred,return_inverse=True)
+    if ignore_idx is None:
+        ignore_idx = []
+    if isinstance(ignore_idx,list):
+        assert all([isinstance(idx,int) for idx in ignore_idx]), "ignore_idx must be None, int or list[int]"
+    else:
+        assert isinstance(ignore_idx,int), "ignore_idx must be None, int or list[int]"
+        ignore_idx = [ignore_idx]
+    
+    uq_target,target,conf_rowsum = np.unique(target,return_counts=True,return_inverse=True)
+    uq_pred,pred,conf_colsum = np.unique(pred,return_counts=True,return_inverse=True)
+    conf_rowsum,conf_colsum = extend_shorter_vector(conf_rowsum,conf_colsum)
+    uq_target,uq_pred = extend_shorter_vector(uq_target,uq_pred,fill_value=-1)
+    
+    conf_rowsum,conf_colsum = conf_rowsum[:,None],conf_colsum[None,:]
     intersection = confusion_matrix(target, pred)
-    conf_rowsum = np.sum(intersection, axis=1, keepdims=True)
-    conf_colsum = np.sum(intersection, axis=0, keepdims=True)
+
     union = conf_rowsum + conf_colsum - intersection
     iou_hungarian_mat = intersection / union
-    assignment = linear_sum_assignment(iou_hungarian_mat, maximize=True)
-    val = iou_hungarian_mat[assignment].sum()/min(len(uq_target),len(uq_pred))
+
+    mask_pred = np.isin(uq_pred,ignore_idx)
+    mask_target = np.isin(uq_target,ignore_idx)
+    #handle edge cases
+    if all(mask_pred) and all(mask_target):
+        val = 1.0
+        assign_pred = np.array([],dtype=int)
+        assign_target = np.array([],dtype=int)
+        iou_per_assignment = np.array([],dtype=float)
+    elif all(mask_pred) or all(mask_target):
+        val = 0.0
+        assign_pred = np.array([],dtype=int)
+        assign_target = np.array([],dtype=int)
+        iou_per_assignment = np.array([],dtype=float)
+    else:
+        #force optimal assignment to match ignore_idx with ignore_idx
+        iou_hungarian_mat[mask_target,:] = 0
+        iou_hungarian_mat[:,mask_pred] = 0
+        iou_hungarian_mat += mask_target[:,None]*mask_pred[None,:]
+
+        assignment = linear_sum_assignment(iou_hungarian_mat, maximize=True)
+
+        assign_target = uq_target[assignment[0]]
+        assign_pred = uq_pred[assignment[1]]
+        iou_per_assignment = iou_hungarian_mat[assignment[0],assignment[1]]
+        
+        #remove matches which have ignore_idx or dummy (-1) as both target and pred
+        ignore_idx.append(-1)
+        mask = np.logical_or(~np.isin(assign_pred,ignore_idx),~np.isin(assign_target,ignore_idx))
+        assign_target,assign_pred,iou_per_assignment = assign_target[mask],assign_pred[mask], iou_per_assignment[mask]
+        
+        val = np.mean(iou_per_assignment)
+
     if return_assignment:
-        return val, assignment
+        return val, assign_target, assign_pred, iou_per_assignment
     else:
         return val
     
@@ -248,7 +297,50 @@ class SmartParser():
             return self.descriptions[k]
         else:
             return ""
-        
+
+def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
+    arch_state_dict = model_arch.state_dict()
+    load_info = {"arch_not_sd": [],"sd_not_arch": [],"match_same_size": [], "match_diff_size": []}
+    sd_keys = list(state_dict.keys())
+    for name, W in arch_state_dict.items():
+        if name in sd_keys:
+            sd_keys.remove(name)
+            s1 = np.array(state_dict[name].shape)
+            s2 = np.array(W.shape)
+            l1 = len(s1)
+            l2 = len(s2)
+            l_max = max(l1,l2)
+            if l1<l_max:
+                s1 = np.concatenate((s1,np.ones(l_max-l1,dtype=int)))
+            if l2<l_max:
+                s2 = np.concatenate((s2,np.ones(l_max-l2,dtype=int)))
+                
+            if all(s1==s2):
+                load_info["match_same_size"].append(name)
+                arch_state_dict[name] = state_dict[name]
+            else:
+                if verbose:
+                    m = ". Matching." if allow_diff_size else ". Ignoring."
+                    print("Param. "+name+" found with sizes: "+str(list(s1[0:l1]))
+                                                      +" and "+str(list(s2[0:l2]))+m)
+                if allow_diff_size:
+                    s = [min(i_s1,i_s2) for i_s1,i_s2 in zip(list(s1),list(s2))]
+                    idx1 = [slice(None,s[i],None) for i in range(l2)]
+                    idx2 = tuple([slice(None,s[i],None) for i in range(l2)])
+                    
+                    if l1>l2:
+                        idx1 += [0 for _ in range(l1-l2)]
+                    idx1 = tuple(idx1)
+                    tmp = state_dict[name][idx1]
+                    arch_state_dict[name][idx2] = tmp
+                load_info["match_diff_size"].append(name)
+        else:
+            load_info["arch_not_sd"].append(name)
+    for name in sd_keys:
+        load_info["sd_not_arch"].append(name)
+    model_arch.load_state_dict(arch_state_dict)
+    return model_arch, load_info
+
 def model_specific_args(args):
     model_dicts = json.loads((Path(__file__).parent/"args_model.json").read_text())
     model_name = args.model_name
@@ -259,14 +351,12 @@ def model_specific_args(args):
         plus_names = []
     ver_names = []
     if ("[" in model_name) and ("]" in model_name):
-        idx = 0
         for _ in range(model_name.count("[")):
-            idx0 = model_name.find("[",idx)
-            idx1 = model_name.find("]",idx)
+            idx0 = model_name.find("[")
+            idx1 = model_name.find("]")
             assert idx0<idx1, f"model_name={model_name} has mismatched brackets."
             ver_names.append(model_name[idx0+1:idx1])
             model_name = model_name[:idx0] + model_name[idx1+1:]
-            idx = idx1+1
         
     if not model_name in model_dicts.keys():
         raise ValueError(f"model_name={model_name} not found in model_dicts")

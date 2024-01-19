@@ -22,7 +22,9 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
     filename_step = os.path.join(save_path,"logging_step.csv")
     filenames = [filename_gen,filename_step,filename]
     #helpers
+    #get logging index
     gli = lambda s: [s.startswith(p) for p in ["gen_","step_",""]].index(True)
+    #get logging string
     gls = lambda s: ["gen_","step_",""][gli(s)]
 
     all_logging = {}
@@ -42,18 +44,19 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
         
         if filename_step==fn:
             column_names.append("step")
-            data = data.reshape(data.size,len(column_names)-1)
-            data = np.concatenate([data,np.arange(1,len(data)+1).reshape(data.shape)],axis=1)
+            data = np.concatenate([data,np.arange(1,len(data)+1).reshape(-1,1)],axis=1)
         for j,k in enumerate(column_names):
             all_logging[["gen_","step_",""][i]+k] = data[:,j]
-
+    if len(all_logging.keys())==0:
+        return
     plot_columns = [["loss","vali_loss"],
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
                     ["iou","vali_iou"],
                     ["gen_hiou","gen_vali_hiou","gen_max_hiou","gen_max_vali_hiou"],
                     ["gen_ari","gen_vali_ari","gen_max_ari","gen_max_vali_ari"],
-                    ["step_loss"]]
+                    ["step_loss"],
+                    ["step_grad_norm"]]
     plot_columns_new = []
     #remove non-existent columns
     for i in range(len(plot_columns)):
@@ -89,8 +92,11 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
         plt.xlim(0,x.max())
         Y = np.array(Y).flatten()
         ymin,ymax = Y.min(),Y.max()
-        ymin -= 0.1*(ymax-ymin)
         ymax += 0.1*(ymax-ymin)
+        if name.find("loss")>=0 or name.find("grad_norm")>=0:
+            plt.yscale("log")
+        else:
+            ymin -= 0.1*(ymax-ymin)
         plt.ylim(ymin,ymax)
         plt.xlim(0,x.max()*1.05)
         plt.xlabel("steps")
@@ -130,11 +136,15 @@ def gaussian_filter_xy(x,y,sigma):
     return y2
 
 def mask_overlay_smooth(image,mask,
-                 pallete=nc.largest_colors,
+                 pallete=None,
                  alpha_mask=0.4):
     assert isinstance(image,np.ndarray)
     assert isinstance(mask,np.ndarray)
-    mask = np.atleast_3d(mask)
+    assert len(mask.shape)==3
+    if pallete is None:
+        pallete = np.concatenate([np.array([[0,0,0]]),nc.largest_colors],axis=0)
+    if mask.shape[2]==1:
+        raise ValueError("mask_overlay_smooth expects a 1-out-of-K encoding")
     if mask.dtype==np.uint8:
         mask = mask.astype(float)/255
     if isinstance(image,np.ndarray):
@@ -159,10 +169,14 @@ def mask_overlay_smooth(image,mask,
     return image_colored
     
 
-def analog_bits_on_image(x,im,ab):
-    assert isinstance(x,torch.Tensor), "analog_bits_to_image expects a torch.Tensor"
-    x = ab.bit2int(x.unsqueeze(0)).cpu().detach().numpy().squeeze(0)
-    return mask_overlay_smooth(im,x)
+def analog_bits_on_image(x_bits,im,ab):
+    assert isinstance(x_bits,torch.Tensor), "analog_bits_on_image expects a torch.Tensor"
+    x_int = ab.bit2int(x_bits.unsqueeze(0)).cpu().detach().numpy().squeeze(0)
+    magnitude = np.minimum(x_bits.abs().mean(0).cpu().detach().numpy(),1)
+    mask = np.zeros((im.shape[0],im.shape[1],2**ab.num_bits))
+    for i in range(2**ab.num_bits):
+        mask[:,:,i] = (x_int==i)*magnitude
+    return mask_overlay_smooth(im,mask,alpha_mask=1.0)
 
 def mean_dim0(x):
     assert isinstance(x,torch.Tensor), "mean_dim2 expects a torch.Tensor"
@@ -265,8 +279,8 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                         text_size=12)
     
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='hiou',text_inside=False):
-    show_keys = ["x_init","image","self_cond","target_bit","pred_bit"]
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False):
+    show_keys = ["x_init","image","points","target_bit","pred_bit"]
     show_keys_new = []
     for k in show_keys:
         if k in output.keys():
@@ -292,8 +306,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='hiou',t
     map_dict = {"target_bit": aboi,
                 "pred_bit": aboi,
                 "x_init": aboi,
-                "self_cond": aboi,
-                "image": nb_3}
+                "image": nb_3,
+                "points": aboi}
     
     num_votes = output["pred_bit"].shape[1]
     images = []
@@ -334,8 +348,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='hiou',t
     if remove_old:
         clean_up(filename)
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False):
-    show_keys = ["image","x_t","pred_x","x","err_x","pred_eps","eps"]
+def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True):
+    show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps"]
     k0 = show_keys[0]
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
@@ -350,6 +364,9 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
 
     for k in show_keys:
         assert k in output.keys(), f"key {k} not in output.keys()"
+        if output[k] is None:
+            show_keys.remove(k)
+            continue
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
@@ -368,19 +385,23 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
                 "err_x": lambda x,i: error_image(x),
                 "pred_eps": md0,
                 "eps": md0,
-                "self_cond": aboi}
-    
+                "self_cond": aboi,
+                "points": aboi}
+    if sort_samples_by_t:
+        perm = torch.argsort(output["t"]).tolist()
+    else:
+        perm = torch.arange(bs).tolist()
     images = []
     for k in show_keys:
         if k in output.keys():
-            images.append([map_dict[k](output[k][i],i) for i in range(bs)])
+            images.append([map_dict[k](output[k][i],i) for i in perm])
     text = sum([[k if text_inside else ""]+[""]*(bs-1) for k in show_keys],[])
     if text_inside:
         err_idx = show_keys.index("err_x")*bs
-        for i in range(bs):
+        for i in perm:
             text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.3f}"
         x_t_idx = show_keys.index("x_t")*bs
-        for i in range(bs):
+        for i in perm:
             text[i+x_t_idx] += f"\nt={output['t'][i].item():.3f}"
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
@@ -394,8 +415,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
                     pixel_mult=max(1,128//image_size),
                     text_size=12)
     if not text_inside:
-        t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in range(bs)]
-        sample_names = ["s#"+str(i) for i in range(bs)]
+        t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in perm]
+        sample_names = ["s#"+str(i) for i in perm]
         add_text_axis_to_image(filename,
                                top=sample_names,
                                bottom=t_and_mse,

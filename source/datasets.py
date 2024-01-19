@@ -10,10 +10,35 @@ import os
 import albumentations as A
 import cv2
 
+def points_image_from_label(label,num_points=None):
+    assert torch.is_tensor(label)
+    assert len(label.shape)==3
+    assert label.shape[0]==1
+    if num_points is None:
+        num_points = np.random.choice([1,1,1,1,1,1,1,1,8,
+                                       2,2,2,2,2,2,2,7,7,
+                                       3,3,3,3,3,3,6,6,6,
+                                       4,4,4,4,4,5,5,5,5])
+    counts = torch.bincount(label.cpu().flatten())
+    nonzero_counts_idx = torch.where(counts>0)[0].cpu().numpy()
+    label_indices = np.random.choice(nonzero_counts_idx,size=num_points,replace=True)
+    D1 = torch.zeros(num_points,dtype=torch.int64)
+    D2 = torch.zeros(num_points,dtype=torch.int64)
+    for i in np.unique(label_indices):
+        mask_i = label_indices==i
+        _,d1,d2 = torch.where(label==i)
+        d1,d2 = d1.cpu(),d2.cpu()
+        index = torch.randint(0,len(d1),(mask_i.sum().item(),))
+        D1[mask_i] = d1[index]
+        D2[mask_i] = d2[index]
+    points_image = torch.zeros_like(label,dtype=torch.float32)
+    points_image[:,D1,D2] = 1
+    return points_image.to(label.device)
+
 class AnalogBits(object):
     def __init__(self,num_bits=8,
                  shuffle_zero=False,
-                 shuffle=True,
+                 shuffle=False,
                  permanent_seed=None,
                  bit_dim=1,
                  batch_has_different_seed=False):
@@ -63,7 +88,6 @@ class AnalogBits(object):
         assert x.shape[self.bit_dim]==1
         if self.shuffle:
             x = self.get_perm(inv=False)[x]
-        #convert to binary
         x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits,bitorder="little").astype(np.float32)*2-1
         if was_torch:
             x = torch.from_numpy(x).to(device)
@@ -88,7 +112,6 @@ class AnalogBits(object):
         if was_torch:
             x = torch.from_numpy(x).to(device)
         return x
-        
 
 class CatBallDataset(torch.utils.data.Dataset):
     def __init__(self,

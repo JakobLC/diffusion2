@@ -344,6 +344,7 @@ class UNetModel(nn.Module):
         no_diffusion=False,
         self_cond=False,
         cond=False,
+        is_pred_both=False,
     ):
         super().__init__()
 
@@ -370,7 +371,7 @@ class UNetModel(nn.Module):
         self.input_dict = {"sample": out_channels if not self.no_diffusion else 0,
                            "image": image_channels,
                            "bbox": int(weak_signals),
-                           "points": int(weak_signals),
+                           "points": out_channels*int(weak_signals),
                            "self_cond": out_channels if self_cond else 0,
                            "cond": out_channels+image_channels if cond else 0,
                            }
@@ -475,11 +476,11 @@ class UNetModel(nn.Module):
                     layers.append(Upsample(ch, conv_resample, dims=dims))
                     resolution -= 1
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
-
+        both_mult = 2 if is_pred_both else 1
         self.out = nn.Sequential(
             normalization(ch),
             SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
+            zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
         )
 
     def convert_to_fp16(self):
@@ -605,12 +606,12 @@ def create_unet_from_args(args):
     else:
         raise ValueError(f"unsupported image size: {image_size}")
     out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
-    if args["predict"]=="both":
-        out_channels *= 2
     unet = UNetModel(image_size=args["image_size"],
+                     is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
                     image_channels=1 if args["cat_ball_data"] else 3,
                     num_res_blocks=args["num_res_blocks"],
+                    model_channels=args["num_channels"],
                     attention_resolutions=args["attention_resolutions"],
                     dropout=args["dropout"],
                     channel_mult=channel_mult,

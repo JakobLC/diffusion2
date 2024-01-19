@@ -10,6 +10,7 @@ from tqdm import tqdm
 from PIL import Image
 from shutil import rmtree
 import jlc
+import json
 from fp16_util import (
     make_master_params,
     master_params_to_model_params,
@@ -17,9 +18,10 @@ from fp16_util import (
     unflatten_master_params,
     zero_grad,
 )
+import datetime
 from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
-from datasets import CatBallDataset, custom_collate_with_info, SegmentationDataset
+from datasets import CatBallDataset, custom_collate_with_info, SegmentationDataset, points_image_from_label
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
@@ -38,7 +40,38 @@ class DiffusionModelTrainer:
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
         n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
+        
+        if self.args.mode=="new":
+            if self.args.save_path=="":
+                self.args.save_path = str(Path("./saves/") / f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')}_{args.model_name}")
+            self.log("Starting new training run.")
+        elif self.args.mode=="load":
+            self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name)
+            if self.args.save_path=="":
+                self.args.save_path = str(Path("./saves/") / f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')}_{args.model_name}")
+            self.log("Starting new training run with loaded ckpt from: "+self.args.ckpt_name)
+        elif self.args.mode=="cont":
+            self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name)
+            if self.args.save_path=="":
+                self.args.save_path = str(Path(self.args.ckpt_name).parent)
+            self.log("Continuing training run.")
+        else:
+            raise ValueError("Unknown mode: "+self.args.mode+", must be one of ['new','load','cont']")
+        
+        if torch.cuda.is_available():
+            self.log("CUDA available. Using GPU.")
+            self.device = torch.device("cuda")
+        else:
+            self.log("WARNING: CUDA not available. Using CPU.")
+            raise NotImplementedError("CPU not implemented")
+            self.device = torch.device("cpu")
+        
         self.log("Number of trainable parameters: "+str(n_trainable))
+
+        self.log("Saving to: "+self.args.save_path)
+
         if self.args.cat_ball_data:
             train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
             vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
@@ -68,36 +101,11 @@ class DiffusionModelTrainer:
                                                                           shuffle=not hasattr(vali_ds,"get_sampler"),
                                                                           drop_last=True,
                                                                           collate_fn=custom_collate_with_info))
-                                    
-        if torch.cuda.is_available():
-            self.log("CUDA available. Using GPU.")
-            self.device = torch.device("cuda")
-        else:
-            self.log("WARNING: CUDA not available. Using CPU.")
-            raise NotImplementedError("CPU not implemented")
-            self.device = torch.device("cpu")
+
             
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
-        self.kvs_step_buffer = []
-        
-        self.args.save_path = self.check_save_path()
-        
-        if Path(self.args.save_path).exists():
-            possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
-            is_test_folder = Path(self.args.save_path).stem=="test"
-            if len(possible_ckpts)==0 or is_test_folder:
-                #nuke old folder if no ckpts are found
-                new_training = True
-                rmtree(self.args.save_path)
-                os.makedirs(self.args.save_path)
-            else:
-                assert len(possible_ckpts)==1, "Multiple ckpts found. Please delete all but one."
-                ckpt = torch.load(str(possible_ckpts[0]))
-                new_training = False
-        else:
-            new_training = True
-            os.makedirs(self.args.save_path)
+        self.kvs_step_buffer = []            
 
         #init models, optimizers etc
         self.model = self.model.to(self.device)
@@ -117,17 +125,7 @@ class DiffusionModelTrainer:
         
         assert len(self.master_params) == len(self.ema_params[0])
             
-        if new_training:
-            self.log("Starting new training run.")
-            write_args(args, Path(args.save_path)/"args.json")
-            self.step = 1
-            self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
-            self.best_miou = 0.0
-            self.fixed_batch = None
-            self.log_kv_step("loss")
-        else:
-            self.log("Resuming training run.")
-            self.step = ckpt["step"]+1
+        if self.args.mode in ["cont","load"]:
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_miou = ckpt["best_miou"]
             self.fixed_batch = ckpt["fixed_batch"]
@@ -135,10 +133,42 @@ class DiffusionModelTrainer:
             self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model.load_state_dict(ckpt["model"])
             self.model_params = list(self.model.parameters())
-            
             for i, ema_rate in enumerate(self.ema_rate):
                 if "ema_"+str(ema_rate) in ckpt.keys():
                     self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
+
+        if self.args.mode in ["load","new"]:
+            write_args(args, Path(args.save_path)/"args.json")
+            self.step = 1
+            self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
+            self.best_miou = 0.0
+            self.fixed_batch = None
+            self.log_kv_step(self.args.log_train_metrics.split(","))
+        elif self.args.mode=="cont":
+            self.step = ckpt["step"]+1
+
+        self.log("Init complete.")
+
+    def load_ckpt(self, ckpt_name, check_valid_args=False):
+        if ckpt_name=="":
+            ckpt_name = "*"+self.args.model_name+"/ckpt_*.pt"
+        bracket_glob_fix = lambda x: "[[]".join([a.replace("]","[]]") for a in x.split("[")])
+        saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
+        ckpt_matches = list(Path(saves_folder).glob(bracket_glob_fix(ckpt_name)))
+        if len(ckpt_matches)==0:
+            raise ValueError("No ckpts found. Please specify a valid ckpt_name. ckpt_name: "+ckpt_name)
+        elif len(ckpt_matches)>1:
+            raise ValueError("Multiple ckpts found. Please specify a more specific ckpt_name. ckpt_name: "+ckpt_name+" ckpt_matches: "+str(ckpt_matches))
+        else:
+            ckpt_name = ckpt_matches[0]
+        if check_valid_args:
+            ckpt_args = json.loads((ckpt_name.parent/"args.json").read_text())
+            #check all ckpt args are the same as the current args
+            for k,v in ckpt_args.items():
+                if k not in ["save_path","ckpt_name","mode"]:
+                    assert k in self.args.__dict__.keys(), f"could not find key {k} from ckpt_args in current args"
+                    assert self.args.__dict__[k]==v, f"ckpt args and current args differ for key {k}: {v} vs {self.args.__dict__[k]}"
+        return str(ckpt_name)
 
     def save_state_dict(self,ema_idx=None,delete_old=False,miou=None):
         if delete_old:
@@ -195,7 +225,7 @@ class DiffusionModelTrainer:
                     model_kwargs["bbox"].append(None)
                     
                 if np.random.rand()<self.args.weak_points_prob:
-                    raise NotImplementedError("points not implemented")
+                    model_kwargs["points"].append(points_image_from_label(x[i]))
                 else:
                     model_kwargs["points"].append(None)
             if self.args.cond_type!="none":
@@ -247,7 +277,7 @@ class DiffusionModelTrainer:
             self.optimize_normal()
         #logging
         metrics = get_all_metrics(output,ab=self.cgd.ab)
-        self.log_train_step(output,metrics)
+        self.log_train_step(output,metrics,self.last_grad_norm)
         
         return output,metrics
     
@@ -267,9 +297,14 @@ class DiffusionModelTrainer:
         self.log_kv({prefix+"loss": output["loss"].item()})
         self.log_kv({prefix+k:v for k,v in metrics.items()})
         
-    def log_train_step(self,output,metrics):
+    def log_train_step(self,output,metrics,grad_norm):
         self.log_kv({"loss": output["loss"].item()})
-        self.log_kv_step(output["loss"].item())
+        kvs_step = []
+        if "loss" in self.args.log_train_metrics.split(","):
+            kvs_step.append(output["loss"].item())
+        if "grad_norm" in self.args.log_train_metrics.split(","):
+            kvs_step.append(grad_norm)
+        self.log_kv_step(kvs_step)
         self.log_kv(metrics)
     
     def _update_lr(self):
@@ -287,12 +322,18 @@ class DiffusionModelTrainer:
     def optimize_fp16(self):
         if any(not torch.isfinite(p.grad).all() for p in self.model_params):
             self.log_loss_scale -= 1
+            self.last_grad_norm = float("nan")
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
+            if self.log_loss_scale <= -20:
+                self.log("Loss scale has gotten too small, stopping training.")
+                exit()
             return
 
         model_grads_to_master_grads(self.model_params, self.master_params)
         self.master_params[0].grad.mul_(1.0 / (2 ** self.log_loss_scale))
         self._log_grad_norm()
+        if self.args.clip_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.master_params, self.args.clip_grad_norm)
         self._update_lr()
         self.opt.step()
         for rate, params in zip(self.ema_rate, self.ema_params):
@@ -312,6 +353,7 @@ class DiffusionModelTrainer:
         for p in self.master_params:
             sqsum += (p.grad ** 2).sum().item()
         self.log_kv({"grad_norm": np.sqrt(sqsum)})
+        self.last_grad_norm = np.sqrt(sqsum)
         
     def train_loop(self):
         self.log("Starting training loop...")
@@ -329,7 +371,7 @@ class DiffusionModelTrainer:
             if self.step % self.args.log_vali_interval == 0:
                 self.evaluate_loop()
             
-            if self.step % self.args.update_foward_pass_plot_interval == 0:
+            if self.step % self.args.update_forward_pass_plot_interval == 0:
                 with MatplotlibTempBackend(backend="agg"):
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
@@ -350,19 +392,20 @@ class DiffusionModelTrainer:
             
         self.log("Training loop finished.")
         
+    
         
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
-        
-        
-        if filepath.exists():
-            with open(str(filepath), "a") as f:
-                f.write(msg + "\n")
-        else:
-            os.makedirs(filepath.parent, exist_ok=True)
+        if not filepath.exists():
+            self.check_save_path(self.args.save_path)
+            os.makedirs(self.args.save_path, exist_ok=True)
             with open(str(filepath), "w") as f:
                 f.write(msg + "\n")
+        else:
+            with open(str(filepath), "a") as f:
+                f.write(msg + "\n")
+            
         if also_print:
             print(msg)
     
@@ -392,7 +435,7 @@ class DiffusionModelTrainer:
                 else:
                     self.kvs_buffer[k] = [v]
     
-    def log_kv_step(self, *values):
+    def log_kv_step(self, values):
         """
         Saves values in a buffer to be saved to a file later.
         No reduction is applied to the values.
@@ -426,7 +469,7 @@ class DiffusionModelTrainer:
         
         with open(str(Path(self.args.save_path)/"logging_step.csv"), "a") as f:
             for row in self.kvs_step_buffer:
-                f.write(",".join([str(v) for v in row]) + "\n")
+                f.write(",".join([str(v) for v in list(row)]) + "\n")
         self.kvs_step_buffer = []
     
     
@@ -451,12 +494,10 @@ class DiffusionModelTrainer:
         else:
             return params
 
-    def check_save_path(self):
-        """Check if the save path is a subfolder of the saves folder. 
-        This is important since the training loop will delete the save folder 
-        under some conditions."""
+    def check_save_path(self,save_path):
+        """Check if the save path is a subfolder of the saves folder."""
         saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
-        save_path = Path(os.path.abspath(self.args.save_path))
+        save_path = Path(os.path.abspath(save_path))
         out = False
         num_parents = len(save_path.parents)
         parent = save_path.parent
@@ -467,7 +508,6 @@ class DiffusionModelTrainer:
                 break
             parent = parent.parent
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
-        return str(save_path)
     
     
     def generate_samples(self, vali=True, max_reduction_measures=["hiou","ari"]):
