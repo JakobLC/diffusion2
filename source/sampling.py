@@ -12,82 +12,151 @@ from utils import get_segment_metrics,fancy_print_kvs
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
 #from cont_gaussian_diffusion import DummyDiffusion TODO
 
+def get_named_sampler_options(name):
+    opts = get_default_sampler_options()
+    valid_sampler_names = ["default","vali","train","gw2","self_cond","self_cond_gw2","ddim"]
+    if name=="vali":
+        pass
+    elif name=="train":
+        opts.split = "train"
+    elif name=="gw2":
+        opts.guidance_weight = 2.0
+    elif name=="self_cond":
+        opts.self_cond = True
+    elif name=="self_cond_gw2":
+        opts.guidance_weight = 2.0
+        opts.self_cond = True
+    elif name=="ddim":
+        opts.sampler_type = "ddim"
+    else:
+        raise ValueError(f"Unknown sampler name: {name}, must be one of {valid_sampler_names}")
+    return opts
+
 def get_default_sampler_options():
     dict_options = dict(clip_denoised=True,
                         num_timesteps=100,
                         num_samples=8,
                         guidance_weight=0.0,
-                        num_votes=1, 
-                        eval_batch_size=8,
+                        guidance_kwargs='',
+                        num_votes=5, 
+                        eval_batch_size=0,
                         progress_bar=True,
                         sampler_type="ddpm",
                         progress_bar_timestep=False,
-                        save_plot_grid_path=None,
-                        save_plot_inter_path=None,
-                        save_raw_samples_path=None,
-                        save_concat_plot_inter_path=None,
                         save_raw_inter=False,
                         num_inter_steps=10,
-                        num_inter_samples=0,
+                        num_inter_samples=8,
+                        num_grid_samples=8,
                         inter_votes_per_sample=1,
                         kwargs_mode="train",
                         self_cond=False,
                         return_metrics=True,
-                        return_samples=True,
+                        return_samples=False,
                         remove_old=False,
+                        do_agg=True,
+                        ema_model_rate=0,
+                        
+                        split="vali",
+                        buffer_limit=64,
+
+                        #where to save things
+                        save_plot_grid_path=None,
+                        save_plot_inter_path=None,
+                        save_raw_samples_path=None,
+                        save_concat_plot_inter_path=None,
+
+                        sample_function="grid,inter",
+
+                        #options for saving
+
                         )
+    
     return Namespace(**dict_options)
 
 class DiffusionSampler(object):
-    def __init__(self, diffusion, model, dataloader, step=0, 
-                 opts=get_default_sampler_options(),do_agg=True,
-                 trainer=None):
+    def __init__(self, trainer, opts=get_default_sampler_options(),
+                 ):
         super().__init__()
-        self.cgd = diffusion
         self.is_dummy_diffusion = False#isinstance(diffusion,DummyDiffusion) TODO
-        self.model = model
-        self.dataloader = dataloader
         self.opts = opts
-        self.step = step
-        self.do_agg = do_agg
         self.trainer = trainer
+        self.setup_name = "vali"
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             print("WARNING: CUDA not available. Using CPU.")
             self.device = torch.device("cpu")
-        
-    def reset(self,store_opts=False,restore_opts=False):
-        self.source_batch = None
-        self.queue = None
-        if restore_opts:
-            self.opts = self.original_opts
-        if store_opts:
-            self.original_opts = copy.copy(self.opts)
+    
+    def load_gen_setup(self,setup_name):
+        self.setup_name = setup_name
+        self.opts = get_named_sampler_options(setup_name)
+
+    def prepare_sampling(self,model=None):
+        #init variables
         self.samples = []
         self.source_idx = 0
         self.bss = 0
+        self.source_batch = None
+        self.queue = None
+        if self.opts.eval_batch_size==0:
+            self.opts.eval_batch_size = self.trainer.args.train_batch_size
 
-    def sample(self,**kwargs):
-        if self.do_agg:
+        if self.opts.split=="train":
+            self.dataloader = self.trainer.train_dl
+        elif self.opts.split=="vali":
+            self.dataloader = self.trainer.vali_dl
+        elif self.opts.split=="test":
+            raise NotImplementedError("Test split not implemented.")
+        
+        if model is None:
+            if self.opts.ema_model_rate>0:
+                model = self.trainer.get_ema_model(self.opts.ema_model_rate)
+            else:
+                model = self.trainer.model
+        was_training = model.training
+        model.eval()
+
+        if self.opts.do_agg:
             old_backend = matplotlib.get_backend()
             matplotlib.use("agg")
-        if self.model.training:
-            was_training = True
-            self.model.eval()
         else:
-            was_training = False
-        self.reset(store_opts=True)
-        self.opts = Namespace(**{**vars(self.opts),**kwargs})
-            
+            old_backend = None
+
+        if "grid" in self.opts.sample_function.split(",") and self.opts.num_grid_samples>0:
+            if self.opts.save_plot_grid_path is None:
+                output_folder = os.path.join(self.trainer.args.save_path,"samples")
+                self.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.setup_name}_{self.trainer.step:06d}.png")
+        if "inter" in self.opts.sample_function.split(",") and self.opts.num_inter_samples>0:
+            if self.opts.save_plot_inter_path is None:
+                output_folder = os.path.join(self.trainer.args.save_path,"samples")
+                self.opts.save_plot_inter_path = os.path.join(output_folder,f"inter")
+            if self.opts.save_concat_plot_inter_path is None:
+                output_folder = os.path.join(self.trainer.args.save_path,"samples")
+                self.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter_concat_{self.setup_name}_{self.trainer.step:06d}.png")
+        
         if self.opts.save_raw_samples_path is not None:
             os.makedirs(self.opts.save_raw_samples_path,exist_ok=True)
+        if self.opts.save_plot_inter_path is not None:
+            os.makedirs(self.opts.save_plot_inter_path,exist_ok=True)
+        if self.opts.save_concat_plot_inter_path is not None:
+            os.makedirs(os.path.dirname(self.opts.save_concat_plot_inter_path),exist_ok=True)
+        if self.opts.save_plot_grid_path is not None:
+            os.makedirs(os.path.dirname(self.opts.save_plot_grid_path),exist_ok=True)
+
+        return model, was_training, old_backend
+
+    def sample(self,model=None,**kwargs):
+        self.opts = Namespace(**{**vars(self.opts),**kwargs})
+        model,was_training,old_backend = self.prepare_sampling(model)
+
+        
         self.queue = None
         metric_list = []
         votes = []
         num_batches = np.ceil(self.opts.num_samples*self.opts.num_votes/self.opts.eval_batch_size).astype(int)
         if num_batches==0:
-            return [], {}, [], None
+            print("WARNING: num_batches==0.")
+            return None
         if self.opts.progress_bar:
             progress_bar = tqdm.tqdm(range(num_batches), desc="Batch progress.")
         else:
@@ -95,10 +164,10 @@ class DiffusionSampler(object):
         with torch.no_grad():
             for batch_ite in progress_bar:
                 x_true, model_kwargs, info, batch_queue = self.form_next_batch()
-                x_true_bit = self.cgd.ab.int2bit(x_true)
+                x_true_bit = self.trainer.cgd.ab.int2bit(x_true)
                 
                 x_init = torch.randn_like(x_true_bit)
-                sample_output = self.cgd.sample_loop(model=self.model, 
+                sample_output = self.trainer.cgd.sample_loop(model=model, 
                                             x_init=x_init, 
                                             num_steps=self.opts.num_timesteps, 
                                             sampler_type=self.opts.sampler_type,
@@ -108,7 +177,8 @@ class DiffusionSampler(object):
                                             progress_bar=self.opts.progress_bar_timestep,
                                             save_i_steps=self.save_i_steps,
                                             save_i_idx=[bq["save_inter_steps"] for bq in batch_queue],
-                                            self_cond=self.opts.self_cond
+                                            self_cond=self.opts.self_cond,
+                                            guidance_kwargs=self.opts.guidance_kwargs,
                                             )
                 self.run_on_single_batch(sample_output,batch_queue,x_init,x_true_bit,model_kwargs,batch_ite)
                 for i in range(sample_output["pred"].shape[0]):
@@ -121,12 +191,12 @@ class DiffusionSampler(object):
         
         sample_output, metric_ouput = self.get_output_dict(metric_list, self.samples)
         self.run_on_finished(output={**sample_output,**metric_ouput})
-        self.reset(restore_opts=True)
-        if self.do_agg:
-            matplotlib.use(old_backend)
 
+        if old_backend is not None:
+            matplotlib.use(old_backend)
         if was_training:
-            self.model.train()
+            model.train()
+        
         if self.opts.return_metrics and self.opts.return_samples:
             return {**sample_output,**metric_ouput}
         elif self.opts.return_metrics:
@@ -160,14 +230,12 @@ class DiffusionSampler(object):
             plot_inter(foldername=self.opts.save_plot_inter_path,
                        sample_output=sample_output,
                        model_kwargs=model_kwargs,
-                       ab=self.cgd.ab,
+                       ab=self.trainer.cgd.ab,
                        save_i_idx=save_i_idx,
                        plot_text=self.opts.save_concat_plot_inter_path is None)
         if self.opts.save_raw_samples_path is not None:
             if not hasattr(self,"raw_samples"):
                 self.raw_samples = []
-            if not os.path.exists(self.opts.save_raw_samples_path):
-                os.makedirs(self.opts.save_raw_samples_path)
             if not self.opts.save_raw_inter:
                 if "inter" in sample_output.keys():
                     del sample_output["inter"]
@@ -180,7 +248,7 @@ class DiffusionSampler(object):
         x_true = x_true.cpu()
         x_true_bit = x_true_bit.cpu()
         votes = torch.stack(votes,dim=0).cpu()
-        votes_int = self.cgd.ab.bit2int(votes)            
+        votes_int = self.trainer.cgd.ab.bit2int(votes)            
         self.samples.append({"pred_bit": votes,
                              "pred_int": votes_int,
                              "target_bit": x_true_bit,
@@ -199,7 +267,7 @@ class DiffusionSampler(object):
         if self.opts.save_plot_grid_path is not None:
             assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
             filename = self.opts.save_plot_grid_path
-            plot_grid(filename,output,self.cgd.ab,max_images=32,remove_old=self.opts.remove_old)
+            plot_grid(filename,output,self.trainer.cgd.ab,max_images=32,remove_old=self.opts.remove_old)
         if self.opts.save_concat_plot_inter_path is not None:
             assert self.opts.save_concat_plot_inter_path.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.save_plot_inter_path,
@@ -214,7 +282,7 @@ class DiffusionSampler(object):
             x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
             if "points" in model_kwargs.keys():
                 if model_kwargs["points"] is not None:
-                    model_kwargs["points"] = model_kwargs["points"]*self.cgd.ab.int2bit(x)
+                    model_kwargs["points"] = model_kwargs["points"]*self.trainer.cgd.ab.int2bit(x)
         elif self.opts.kwargs_mode=="none":
             x,info = batch
             x = x.to(self.device)
@@ -223,10 +291,11 @@ class DiffusionSampler(object):
             
     def form_next_batch(self):
         if self.queue is None:
+            assert self.opts.num_samples>=self.opts.num_inter_samples, "num_samples must be at least as large as num_inter_samples."
+            assert self.opts.num_samples>=self.opts.num_grid_samples, "num_samples must be at least as large as num_grid_samples."
             self.save_i_steps = []
-            if (0<self.opts.num_inter_samples) and (0<self.opts.inter_votes_per_sample):
-                if (not self.opts.save_raw_inter) and (self.opts.save_plot_inter_path is None):
-                    raise ValueError("self.opts.save_raw_inter and self.opts.save_plot_inter_path are both False. No need to compute intermediate steps. Set num_inter_samples>0 and inter_votes_per_sample>0.")
+            if "inter" in self.opts.sample_function.split(","):
+                assert (0<self.opts.num_inter_samples) and (0<self.opts.inter_votes_per_sample), "num_inter_samples and inter_votes_per_sample must be positive when doing 'inter' sampling."
                 legal_timesteps = list(range(self.opts.num_timesteps-1, -1, -1))
                 idx = np.round(np.linspace(0,len(legal_timesteps)-1,self.opts.num_inter_steps)).astype(int)
                 #remove duplicates without changing order
@@ -236,7 +305,7 @@ class DiffusionSampler(object):
             for i in range(self.opts.num_samples):
                 for j in range(self.opts.num_votes):
                     save_inter_steps = (i<self.opts.num_inter_samples) and (j<self.opts.inter_votes_per_sample)
-                    self.queue.append({"sample":i,"vote":j,"save_inter_steps": save_inter_steps})
+                    self.queue.append({"sample":i,"vote":j,"save_inter_steps": save_inter_steps, "save_grid": (i<self.opts.num_grid_samples)})
         
         bs = min(self.opts.eval_batch_size,len(self.queue))
         if self.source_idx >= self.bss:
@@ -276,84 +345,21 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
-        print("UNIT TEST 0: generate images and show them")
+        print("UNIT TEST 0: do sampling")
         from utils import SmartParser
         from training import DiffusionModelTrainer
-        
-        args = SmartParser().get_args(do_parse_args=False)
-        args.model_name = "test_trained"
-        args.save_path = "./saves/test_trained/"
-        trainer = DiffusionModelTrainer(args)
-        jlc.num_of_params(trainer.model)
-        sampler = DiffusionSampler(diffusion=trainer.cgd,
-                                   model=trainer.model,
-                                   dataloader=trainer.vali_dl,
-                                   step=trainer.step,
-                                   do_agg=False)
-        sampler.opts.num_samples = 16
-        output = sampler.sample(num_timesteps=10)
-        images = []
-        key_show = "pred_bit"
-        im = output[key_show]
-        if len(im.shape)==3:
-            im = im.permute(1,2,0).numpy()
-            images.append(im)
-        elif len(im.shape)==4:
-            im = im.permute(0,2,3,1).numpy()
-            images.extend([im[i] for i in range(im.shape[0])])
-        else:
-            assert len(im.shape)==5, f"im.shape: {im.shape}"
-            #collapse first 2 dims
-            for i in range(im.shape[0]):
-                for j in range(im.shape[1]):
-                    images.append(im[i,j].permute(1,2,0).numpy())
-        jlc.montage(images,return_im=True,padding_color=1,padding=1)
-        plt.show()
-        jlc.zoom()
-    elif args.unit_test==1:
-        print("UNIT TEST 1: plot grid of generated images")
-        from utils import SmartParser
-        from training import DiffusionModelTrainer
-        
-        args = SmartParser().get_args(do_parse_args=False)
-        args.model_name = "test_trained"
-        args.save_path = "./saves/test_trained/"
-        trainer = DiffusionModelTrainer(args)
-        sampler = DiffusionSampler(diffusion=trainer.cgd,
-                                   model=trainer.model,
-                                   dataloader=trainer.vali_dl,
-                                   step=trainer.step,
-                                   do_agg=False)
-        sampler.opts.num_samples = 2
-        sampler.opts.num_votes = 3
-        output = sampler.sample(num_timesteps=10)
-        filename = os.path.join(args.save_path,"test_123.png")
-        plot_grid(filename,output,trainer.cgd.ab,max_images=32,remove_old=False)
-    elif args.unit_test==2:
-        print("UNIT TEST 2: plot intermediate generated images")
-        from utils import SmartParser
-        from training import DiffusionModelTrainer
-        
-        args = SmartParser().get_args(do_parse_args=False)
-        args.model_name = "test_trained"
-        args.save_path = "./saves/test_trained/"
-        trainer = DiffusionModelTrainer(args)
-        sampler = DiffusionSampler(diffusion=trainer.cgd,
-                                   model=trainer.model,
-                                   dataloader=trainer.vali_dl,
-                                   step=trainer.step,
-                                   do_agg=False,
-                                   trainer=trainer)
-        sampler.opts.num_samples = 2
-        sampler.opts.num_votes = 3
-        sampler.opts.num_inter_samples = 2
-        sampler.opts.num_inter_steps = 20
-        sampler.opts.save_plot_inter_path = os.path.join(args.save_path,"inter")
-        sampler.opts.save_concat_plot_inter_path = os.path.join(args.save_path,"inter_concat.png")
-        output = sampler.sample(num_timesteps=100)
-    elif args.unit_test==3:
-        pass
 
+        #args.mode = "cont"
+        #args.model_name = "weak30k[7]"
+        alt_parse_args = ["--mode","cont","--model_name","weak30k[7]"]
+        args = SmartParser().get_args(do_parse_args=False,alt_parse_args=alt_parse_args)
+        trainer = DiffusionModelTrainer(args)
+        sampler = DiffusionSampler(trainer)
+        sampler.load_gen_setup("gw2")
+        sampler.opts.sample_function = "grid"
+        output = sampler.sample()
+    elif args.unit_test==1:
+        pass
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

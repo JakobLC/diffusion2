@@ -138,6 +138,8 @@ class SamplerType(enum.Enum):
     uniform = enum.auto()
     low_discrepency = enum.auto()
     uniform_low_d = enum.auto()
+
+
 class ContinuousGaussianDiffusion():
     def __init__(self, 
                  analog_bits,
@@ -322,12 +324,16 @@ class ContinuousGaussianDiffusion():
                 if abs(w)<1e-9:
                     return None
                 w = w.repeat(bs)
+            else:
+                if (abs(w)<1e-9).all():
+                    return None
             assert w.numel() == bs, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
             w = w.view(bs,1,1,1)
             return w
         
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
-                    guidance_weight=0.0, self_cond=False, progress_bar=False, save_i_steps=[], save_i_idx=[]):
+                    guidance_weight=0.0, self_cond=False, progress_bar=False, save_i_steps=[], save_i_idx=[],
+                    guidance_kwargs=""):
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -358,7 +364,7 @@ class ContinuousGaussianDiffusion():
             t_cond = self.to_t_cond(t).to(x_t.dtype).to(x_t.device)
             
             if guidance_weight is not None:
-                model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs if k in self.guidance_kwargs})
+                model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs.items() if k in guidance_kwargs.split(",")})
             else:
                 model_output_guidance = None
             

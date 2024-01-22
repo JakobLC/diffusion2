@@ -89,16 +89,20 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             plt.plot(x,y,**plot_kwargs)
         plt.legend()
         plt.grid()
-        plt.xlim(0,x.max())
+        xmax = x.max() if len(x)>0 else 1
+        plt.xlim(0,xmax)
         Y = np.array(Y).flatten()
-        ymin,ymax = Y.min(),Y.max()
+        if len(Y)>0:
+            ymin,ymax = Y.min(),Y.max()
+        else:
+            ymin,ymax = 0.1,1
         ymax += 0.1*(ymax-ymin)
         if name.find("loss")>=0 or name.find("grad_norm")>=0:
             plt.yscale("log")
         else:
             ymin -= 0.1*(ymax-ymin)
         plt.ylim(ymin,ymax)
-        plt.xlim(0,x.max()*1.05)
+        plt.xlim(0,xmax*1.05)
         plt.xlabel("steps")
     plt.tight_layout()
     if show:

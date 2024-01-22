@@ -63,9 +63,7 @@
         "log_vali_interval": 2,
         "update_loss_plot_interval": 2,
         "update_forward_pass_plot_interval": 2,
-        "image_size": 64,
-        "gen_num_steps": 10,
-        "num_votes": 2
+        "image_size": 64
     },
     "large": {
         "versions": {
@@ -115,11 +113,19 @@
         "max_iter": 30000,
         "gen_interval": 2500,
         "image_prob": 0.95,
-        "num_save_samples": 16,
         "weak_bbox_prob": 0.0,
         "weak_points_prob": 0.6667,
         "weak_signals": true,
         "num_channels": 128,
         "image_size": 128
+    },
+    "+interval": {
+        "max_iter": 10,
+        "train_batch_size": 4,
+        "save_interval": 5,
+        "gen_interval": 5,
+        "log_vali_interval": 2,
+        "update_loss_plot_interval": 2,
+        "update_forward_pass_plot_interval": 2
     }
 }

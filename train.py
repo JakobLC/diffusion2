@@ -20,8 +20,15 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 # make nuke.py to remove all dead runs from the logging files
 # add SAM image features or image embedding model
 # write pretty_point() function
-def main(**modified_args):    
-    args = SmartParser().get_args(modified_args)    
+# fix inter remove_old
+# add test dataset to sampling
+# implement dummy diffusion
+# implement forward pass corruption
+# implement timestep delta from bit diffusion
+# add a buffer_max_samples argument to the sampler
+
+def main(**modified_args):
+    args = SmartParser().get_args(modified_args)
     if isinstance(args,tuple):
         args, modified_args_list = args
         for modified_args in modified_args_list:

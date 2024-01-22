@@ -4,7 +4,6 @@
     "diffusion": {
         "no_diffusion": [false,                     "TODO, not implemented. Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false"],
         "noise_schedule": ["cosine",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: linear"],
-        "clip_denoised": [true,                     "Should the denoised image be clipped to the input range? TYPE: boolean. DEFAULT: true. DEFAULT: true"],
         "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false"],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
         "input_scale": [0.01,                       "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"],
@@ -29,23 +28,13 @@
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"]
     },
-    "generation": {
-        "gen_num_steps": [100,                      "Number of timesteps used for evaluation during training. positive integer. DEFAULT: 100. DEFAULT: 100"], 
-        "gen_guidance_weight" : [0.0,               "Weight of guidance loss during evaluation. TYPE: positive float or 0.0 (no guidance). DEFAULT: 0.0"],
-        "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 5000"],
-        "gen_train_samples": [true,                 "Should training samples be generated? TYPE: boolean. DEFAULT: true"],
-        "gen_batch_size": [0,                       "Batch size for evaluation. positive integer or 0 (same as train_batch_size). DEFAULT: 0"],
-        "gen_ema_step": [50000,                     "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"]
-    }, 
     "meta": {
+        "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 5000"],
+        "gen_setups": ["vali,train",                "Which sampler setups to use for evaluation? TYPE: comma separated list of strings. DEFAULT: 'vali,train'"],
         "remove_old_plots": [true,                  "Should old plots be removed? TYPE: boolean. DEFAULT: true"],
         "save_ckpt_steps": ["-1,",                  "Save checkpoint when reaching step number in training. TYPE: comma separated list of integers or -1 (no saving). DEFAULT: '-1,'"],
         "resume_from_step": [false,                 "Resume training as if it was started at the checkpoint step. TYPE: boolean. DEFAULT: false"],
-        "num_votes": [5,                            "Number of votes for evaluation. TYPE: positive integer. DEFAULT: 5"],
         "save_interval": [5000,                     "Save checkpoint every n steps. TYPE: positive integer. DEFAULT: 5000"],
-        "num_save_samples": [8,                     "Number of samples to save when evaluating. TYPE: positive integer or 0 (no saving). DEFAULT 8"],
-        "num_save_samples_fixed": [0,               "TODO, not implemented. Number of fixed samples to save when evaluating. TYPE: positive integer or 0 (no fixed saving). DEFAULT 8"],
-        "sample_function": ["grid,inter",           "Which sample functions to use? TYPE: comma separated list of strings. DEFAULT: 'cat,grid,single,inter'"],
         "seed": [-1,                                "TODO, not implemented. Seed for random number generator. TYPE: non-negative integer or -1 (random). DEFAULT: -1"],
         "log_vali_interval": [200,                  "Log validation and mean train metrics every n steps. TYPE: positive integer. DEFAULT: 200"],
         "log_train_metrics": ["loss,grad_norm",     "Which metrics to log during all steps? TYPE: comma separated list of strings. DEFAULT: 'loss,'"],
@@ -74,6 +63,7 @@
         "datasets": ["non-medical,",                "Which datasets to use? TYPE: comma separated list of strings. DEFAULT: 'non-medical,'"],
         "split_ratio" : ["0.8,0.1,0.1",             "Ratio of train, vali, test split. TYPE: comma separated list of 3 floats. DEFAULT: '0.8,0.1,0.1'"],
         "train_batch_size": [8,                     "Batch size for training. positive integer. DEFAULT: 8"],
+        "vali_batch_size": [8,                      "Batch size for validation. positive integer. DEFAULT: 8"],
         "weight_decay": [0.0,                       "Weight decay. TYPE: float. DEFAULT: 0.0"],
         "lr_warmup_steps": [0,                      "Number of warmup steps for learning rate. TYPE: positive integer or 0 (no warmup). DEFAULT: 0"],
         "lr_warmup_type": ["linear",                "Which warmup type to use? TYPE: One of ['cosine','linear']. DEFAULT: 'linear'"],
@@ -106,6 +96,16 @@
         "override_incompatible_args": false,
         "use_checkpoint": false,
         "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','resnet','stylegan2']. DEFAULT: 'none'"],
-        "num_classes": [0,                          "Number of classes. TYPE: positive integer or 0 (no classes). DEFAULT: 0"]
+        "num_classes": [0,                          "Number of classes. TYPE: positive integer or 0 (no classes). DEFAULT: 0"],
+        "clip_denoised": [true,                     "Should the denoised image be clipped to the input range? TYPE: boolean. DEFAULT: true. DEFAULT: true"],
+        "num_votes": [5,                            "Number of votes for evaluation. TYPE: positive integer. DEFAULT: 5"],
+        "num_save_samples": [8,                     "Number of samples to save when evaluating. TYPE: positive integer or 0 (no saving). DEFAULT 8"],
+        "num_save_samples_fixed": [0,               "TODO, not implemented. Number of fixed samples to save when evaluating. TYPE: positive integer or 0 (no fixed saving). DEFAULT 8"],
+        "sample_function": ["grid,inter",           "Which sample functions to use? TYPE: comma separated list of strings. DEFAULT: 'cat,grid,single,inter'"],
+        "gen_num_steps": [100,                      "Number of timesteps used for evaluation during training. positive integer. DEFAULT: 100. DEFAULT: 100"],
+        "gen_guidance_weight" : [0.0,               "Weight of guidance loss during evaluation. TYPE: positive float or 0.0 (no guidance). DEFAULT: 0.0"],
+        "gen_train_samples": [true,                 "Should training samples be generated? TYPE: boolean. DEFAULT: true"],
+        "gen_batch_size": [0,                       "Batch size for evaluation. positive integer or 0 (same as train_batch_size). DEFAULT: 0"],
+        "gen_ema_step": [50000,                     "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"]
     }
 }

@@ -25,7 +25,7 @@ from datasets import CatBallDataset, custom_collate_with_info, SegmentationDatas
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs
+from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs,set_random_seed
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
@@ -96,7 +96,7 @@ class DiffusionModelTrainer:
                                                                            drop_last=True,
                                                                            collate_fn=custom_collate_with_info))
         self.vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, 
-                                                                          batch_size=args.gen_batch_size if args.gen_batch_size>0 else args.train_batch_size,
+                                                                          batch_size=args.vali_batch_size if args.vali_batch_size>0 else args.train_batch_size,
                                                                           sampler=vali_ds.get_sampler(self.seed) if hasattr(vali_ds,"get_sampler") else None,
                                                                           shuffle=not hasattr(vali_ds,"get_sampler"),
                                                                           drop_last=True,
@@ -130,8 +130,8 @@ class DiffusionModelTrainer:
             self.best_miou = ckpt["best_miou"]
             self.fixed_batch = ckpt["fixed_batch"]
             self.opt.load_state_dict(ckpt["optimizer"])
-            self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model.load_state_dict(ckpt["model"])
+            self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model_params = list(self.model.parameters())
             for i, ema_rate in enumerate(self.ema_rate):
                 if "ema_"+str(ema_rate) in ckpt.keys():
@@ -139,13 +139,18 @@ class DiffusionModelTrainer:
 
         if self.args.mode in ["load","new"]:
             write_args(args, Path(args.save_path)/"args.json")
-            self.step = 1
+            self.step = 0
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
             self.best_miou = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
         elif self.args.mode=="cont":
-            self.step = ckpt["step"]+1
+            self.step = ckpt["step"]
+
+        if self.args.seed>=0:
+            set_random_seed(self.args.seed)
+        else:
+            set_random_seed(None)
 
         self.log("Init complete.")
 
@@ -205,6 +210,12 @@ class DiffusionModelTrainer:
                 if int(ckpt.stem.split("_")[1])<self.step:
                     os.remove(ckpt)
     
+    def get_ema_model(self,ema_rate):
+        assert float(ema_rate) in self.ema_rates, f"Could not find specified ema_rate. ema_rate: {ema_rate}, ema_rates: {self.ema_rates}"
+        ema_rate_idx = self.ema_rates.index(float(ema_rate))
+        ema_model = copy.deepcopy(self.model).load_state_dict(self._master_params_to_state_dict(self.ema_params[ema_rate_idx]))
+        return ema_model
+
     def get_kwargs(self, batch, gen=False):
         x,info = batch
         x = x.to(self.device)
@@ -356,6 +367,7 @@ class DiffusionModelTrainer:
         self.last_grad_norm = np.sqrt(sqsum)
         
     def train_loop(self):
+        self.step += 1
         self.log("Starting training loop...")
         #pbar = tqdm(unit='ims', unit_scale=self.args.train_batch_size)
         pbar = tqdm()
@@ -376,9 +388,7 @@ class DiffusionModelTrainer:
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
             if self.step % self.args.gen_interval == 0:
-                self.generate_samples(vali=True)
-                if self.args.gen_train_samples:
-                    self.generate_samples(vali=False)
+                self.generate_samples()
                 self.dump_kvs_gen()
             
             if self.step % self.args.update_loss_plot_interval == 0:
@@ -510,36 +520,25 @@ class DiffusionModelTrainer:
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
     
     
-    def generate_samples(self, vali=True, max_reduction_measures=["hiou","ari"]):
-        sampler = DiffusionSampler(diffusion=self.cgd,
-                                   model=self.model,
-                                   dataloader=self.vali_dl if vali else self.train_dl,
-                                   step=self.step,
-                                   do_agg=False,
-                                   trainer=self)
-        valitrain = "_vali_" if vali else "_train_"
-        output_folder = os.path.join(self.args.save_path,"samples")
-        if "grid" in self.args.sample_function.split(","):
-            sampler.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid{valitrain}{self.step:06d}.png")
-        if "inter" in self.args.sample_function.split(","):
-            sampler.opts.save_plot_inter_path = os.path.join(output_folder,"inter")
-            sampler.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter{valitrain}{self.step:06d}.png")
-        sampler.opts.num_samples = self.args.num_save_samples
-        sampler.opts.num_votes = self.args.num_votes
-        sampler.opts.num_inter_samples = self.args.num_save_samples
-        sampler.opts.num_timesteps = self.args.gen_num_steps
-        sampler.opts.gen_batch_size = self.args.gen_batch_size if self.args.gen_batch_size>0 else self.args.train_batch_size
-        sampler.opts.clip_denoised = self.args.clip_denoised
-        sampler.opts.self_cond = self.args.self_cond
-        sampler.opts.return_metrics = True
-        sampler.opts.return_samples = False
-        sampler.opts.remove_old = self.args.remove_old_plots
-        metric_dict = sampler.sample()
-        prefix = "vali_" if vali else ""
-        metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}
-        for m in max_reduction_measures:
-            metric_kvs["max_"+prefix+m] = [max(v) for v in metric_dict[m]]
-        self.kvs_gen_buffer.update(metric_kvs)
+    def generate_samples(self, max_reduction_measures=["hiou","ari"]):
+        for gen_setup in self.args.gen_setups.split(","):
+
+            sampler = DiffusionSampler(trainer=self)
+            sampler.load_gen_setup(gen_setup)
+            metric_dict = sampler.sample()
+            
+            if gen_setup=="vali":
+                prefix = "vali_"
+            elif gen_setup=="train":
+                prefix = ""
+            else:
+                prefix = None
+            if prefix is not None:
+                metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}
+                for m in max_reduction_measures:
+                    metric_kvs["max_"+prefix+m] = [max(v) for v in metric_dict[m]]
+                self.kvs_gen_buffer.update(metric_kvs)
+        
 
 def main():
     import argparse

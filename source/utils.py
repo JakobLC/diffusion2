@@ -201,12 +201,14 @@ def mse_loss(pred_x, x, batch_dim=0):
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
 
-def model_and_diffusion_defaults(idx=0,ordered_dict=False):
+def model_and_diffusion_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False):
     default_path = Path(__file__).parent/"args_def.json"
     if ordered_dict:
         args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
     else:
         args_dicts = json.loads(default_path.read_text())
+    if return_deprecated_keys:
+        return args_dicts["deprecated"].keys()
     args_dict = {}
     for k,v in args_dicts.items():
         if isinstance(v,dict):
@@ -220,7 +222,7 @@ def model_and_diffusion_defaults(idx=0,ordered_dict=False):
 class SmartParser():
     def __init__(self,defaults_func=model_and_diffusion_defaults):
         self.parser = argparse.ArgumentParser()
-        self.descriptions = model_and_diffusion_defaults(idx=1)
+        self.descriptions = defaults_func(idx=1)
         defaults = defaults_func()
         self.type_dict = {}
         for k, v in defaults.items():
@@ -240,12 +242,16 @@ class SmartParser():
         args = argparse.Namespace(**args_dict)
         return args
         
-    def get_args(self,modified_args={},do_parse_args=True):
+    def get_args(self,modified_args={},do_parse_args=True,alt_parse_args=[]):
         if do_parse_args:
             args = self.parser.parse_args()
         else:
-            args = self.parser.parse_args([])
+            args = self.parser.parse_args(alt_parse_args)
         args = model_specific_args(args)
+        deprecated_keys = model_and_diffusion_defaults(return_deprecated_keys=True)
+        for k in args.__dict__.keys():
+            if k in deprecated_keys:
+                raise ValueError(f"key {k} is deprecated.")
         args = self.parse_types(args)
         for k,v in modified_args.items():
             assert k in args.__dict__.keys(), f"key {k} not found in args.__dict__.keys()={args.__dict__.keys()}"
