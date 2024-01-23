@@ -1,18 +1,15 @@
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib
-import jlc
 from argparse import Namespace
-import copy
 from collections import defaultdict
 import os
 import tqdm
-from utils import get_segment_metrics,fancy_print_kvs
+from utils import get_segment_metrics,SmartParser
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
 #from cont_gaussian_diffusion import DummyDiffusion TODO
-
-def get_named_sampler_options(name):
+"""
+def get_named_gen_setup(name):
     opts = get_default_sampler_options()
     valid_sampler_names = ["default","vali","train","gw2","self_cond","self_cond_gw2","ddim"]
     if name=="vali":
@@ -32,52 +29,62 @@ def get_named_sampler_options(name):
         raise ValueError(f"Unknown sampler name: {name}, must be one of {valid_sampler_names}")
     return opts
 
-def get_default_sampler_options():
-    dict_options = dict(clip_denoised=True,
-                        num_timesteps=100,
-                        num_samples=8,
-                        guidance_weight=0.0,
-                        guidance_kwargs='',
-                        num_votes=5, 
-                        eval_batch_size=0,
-                        progress_bar=True,
-                        sampler_type="ddpm",
-                        progress_bar_timestep=False,
-                        save_raw_inter=False,
-                        num_inter_steps=10,
-                        num_inter_samples=8,
-                        num_grid_samples=8,
-                        inter_votes_per_sample=1,
-                        kwargs_mode="train",
-                        self_cond=False,
-                        return_metrics=True,
-                        return_samples=False,
-                        remove_old=False,
-                        do_agg=True,
-                        ema_model_rate=0,
-                        
-                        split="vali",
-                        buffer_limit=64,
 
-                        #where to save things
-                        save_plot_grid_path=None,
-                        save_plot_inter_path=None,
-                        save_raw_samples_path=None,
-                        save_concat_plot_inter_path=None,
+def get_default_sampler_options(return_dict=True,return_description=False):
+    dict_options = dict(
+            clip_denoised               = [True,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: True"],
+            num_timesteps               = [100,             "Number of timesteps to use for sampling. TYPE: int. DEFAULT: 100"],
+            guidance_weight             = [0.0,             "Weight of classifier free diffusion guidance, 0.0 for No guidance. TYPE: float. DEFAULT: 0.0"],
+            guidance_kwargs             = ['',              "Keyword arguments which are passed to the guidance forward pass, empty for none. TYPE: str. DEFAULT: ''"],
+            eval_batch_size             = [0,               "Batch size for evaluation. 0 for same as train. TYPE: int. DEFAULT: 0"],
+            sampler_type                = ["ddpm",          "Type of sampler to use. One of ['ddpm','ddim']. TYPE: str. DEFAULT: 'ddpm'"],
+            self_cond                   = [False,           "Whether to use self conditioning. TYPE: bool. DEFAULT: False"],
 
-                        sample_function="grid,inter",
+            ema_model_rate              = [0,               "EMA model rate to use for sampling. 0 for no EMA (normal model). TYPE: int. DEFAULT: 0"],
+            split                       = ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
+            kwargs_mode                 = ["train",         "How to get kwargs for the model forward pass. One of ['train']. TYPE: str. DEFAULT: 'train'"],
+            
+            do_agg                      = [True,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: True"],
+            progress_bar                = [True,            "Whether to show a progress bar for batches. TYPE: bool. DEFAULT: True"],
+            progress_bar_timestep       = [False,           "Whether to show a second progress bar running over timesteps during sampling. TYPE: bool. DEFAULT: False"],
 
-                        #options for saving
+            save_raw_inter              = [False,           "Whether to save raw intermediate samples. Needs save_raw_samples==True to have an effect. TYPE: bool. DEFAULT: False"],
+            save_raw_samples            = [False,           "Whether to save raw samples. TYPE: bool. DEFAULT: False"],
+            return_samples              = [False,           "Whether to return samples. TYPE: bool. DEFAULT: False"],
+            remove_old                  = [False,           "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: False"],
+            plotting_functions          = ["grid,inter",    "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter']. TYPE: str. DEFAULT: 'grid,inter'"],
 
-                        )
-    
-    return Namespace(**dict_options)
+            #how much to sample
+            num_votes                   = [5,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
+            num_samples                 = [8,               "Number of samples (unique images) to produce votes for. TYPE: int. DEFAULT: 8"],
+            num_inter_steps             = [10,              "Number of unique intermediate steps to save for saving/plotting (limited by num_timesteps also). TYPE: int. DEFAULT: 10"],
+            num_inter_samples           = [8,               "Number of intermediate samples to save for saving/plotting. TYPE: int. DEFAULT: 8"],
+            num_grid_samples            = [8,               "Number of samples to use for a grid plot. TYPE: int. DEFAULT: 8"],
 
+            inter_votes_per_sample      = [1,               "How many votes per image (e.g. 1=only first vote) should intermediate steps be saved for. TYPE: int. DEFAULT: 1"],
+
+            #where to save things
+            save_plot_grid_path         = ["",              "desc"],
+            save_plot_inter_path        = ["",              "desc"],
+            save_raw_samples_path       = ["",              "desc"],
+            save_concat_plot_inter_path = ["",              "desc"],
+            default_save_folder         = ["samples",       "desc"],
+            )
+    idx = 1 if return_description else 0
+    for key in dict_options:
+        dict_options[key] = dict_options[key][idx]
+    if return_dict:
+        return dict_options
+    else:
+        return Namespace(**dict_options)
+"""
 class DiffusionSampler(object):
-    def __init__(self, trainer, opts=get_default_sampler_options(),
+    def __init__(self, trainer, opts=None,
                  ):
         super().__init__()
         self.is_dummy_diffusion = False#isinstance(diffusion,DummyDiffusion) TODO
+        if opts is None:
+            opts = SmartParser("sample_opts").get_args([])
         self.opts = opts
         self.trainer = trainer
         self.setup_name = "vali"
@@ -87,9 +94,11 @@ class DiffusionSampler(object):
             print("WARNING: CUDA not available. Using CPU.")
             self.device = torch.device("cpu")
     
-    def load_gen_setup(self,setup_name):
+    def load_gen_setup(self,setup_name,modified_args={}):
         self.setup_name = setup_name
-        self.opts = get_named_sampler_options(setup_name)
+        self.opts = SmartParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
+        for k,v in modified_args.items():
+            self.opts.__dict__[k] = v
 
     def prepare_sampling(self,model=None):
         #init variables
@@ -122,33 +131,66 @@ class DiffusionSampler(object):
         else:
             old_backend = None
 
-        if "grid" in self.opts.sample_function.split(",") and self.opts.num_grid_samples>0:
-            if self.opts.save_plot_grid_path is None:
-                output_folder = os.path.join(self.trainer.args.save_path,"samples")
+        if "grid" in self.opts.plotting_functions.split(",") and self.opts.num_grid_samples>0:
+            if self.opts.save_plot_grid_path=="":
+                output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
                 self.opts.save_plot_grid_path = os.path.join(output_folder,f"plot_grid_{self.setup_name}_{self.trainer.step:06d}.png")
-        if "inter" in self.opts.sample_function.split(",") and self.opts.num_inter_samples>0:
-            if self.opts.save_plot_inter_path is None:
-                output_folder = os.path.join(self.trainer.args.save_path,"samples")
-                self.opts.save_plot_inter_path = os.path.join(output_folder,f"inter")
-            if self.opts.save_concat_plot_inter_path is None:
-                output_folder = os.path.join(self.trainer.args.save_path,"samples")
-                self.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter_concat_{self.setup_name}_{self.trainer.step:06d}.png")
+        inter_is_used = ("inter" in self.opts.plotting_functions.split(",") and self.opts.num_inter_samples>0) or (self.opts.save_raw_inter and self.opts.save_raw_samples)
         
-        if self.opts.save_raw_samples_path is not None:
+        if inter_is_used:
+            legal_timesteps = list(range(self.opts.num_timesteps-1, -1, -1))
+            idx = np.round(np.linspace(0,len(legal_timesteps)-1,self.opts.num_inter_steps)).astype(int)
+            #remove duplicates without changing order
+            idx = [idx[i] for i in range(len(idx)) if (i==0) or (idx[i]!=idx[i-1])]
+            self.save_i_steps = [legal_timesteps[i] for i in idx]
+            if self.opts.save_plot_inter_path=="":
+                output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
+                self.opts.save_plot_inter_path = os.path.join(output_folder,f"inter")
+            if self.opts.save_concat_plot_inter_path=="":
+                output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
+                self.opts.save_concat_plot_inter_path = os.path.join(output_folder,f"plot_inter_concat_{self.setup_name}_{self.trainer.step:06d}.png")
+        else:
+            self.save_i_steps = []
+        if self.opts.save_raw_samples:
+            if self.opts.save_raw_samples_path=="":
+                output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
+                self.opts.save_raw_samples_path = os.path.join(output_folder,f"raw_samples_{self.setup_name}_{self.trainer.step:06d}.pt")
+
+        if self.opts.save_raw_samples_path!="":
             os.makedirs(self.opts.save_raw_samples_path,exist_ok=True)
-        if self.opts.save_plot_inter_path is not None:
+        if self.opts.save_plot_inter_path!="":
             os.makedirs(self.opts.save_plot_inter_path,exist_ok=True)
-        if self.opts.save_concat_plot_inter_path is not None:
+        if self.opts.save_concat_plot_inter_path!="":
             os.makedirs(os.path.dirname(self.opts.save_concat_plot_inter_path),exist_ok=True)
-        if self.opts.save_plot_grid_path is not None:
+        if self.opts.save_plot_grid_path!="":
             os.makedirs(os.path.dirname(self.opts.save_plot_grid_path),exist_ok=True)
 
         return model, was_training, old_backend
 
+    def verify_valid_opts(self):
+        inter_is_used = ("inter" in self.opts.plotting_functions.split(",") and self.opts.num_inter_samples>0) or (self.opts.save_raw_inter and self.opts.save_raw_samples)
+        if inter_is_used:
+            assert self.opts.num_samples>=self.opts.num_inter_samples, "num_samples must be at least as large as num_inter_samples."
+            assert self.opts.num_votes  >=self.opts.inter_votes_per_sample, "num_votes must be at least as large as inter_votes_per_sample."
+            assert self.opts.num_inter_samples>0, "num_inter_samples must be positive."
+        if "grid" in self.opts.plotting_functions.split(","):
+            assert self.opts.num_samples>=self.opts.num_grid_samples, "num_samples must be at least as large as num_grid_samples."
+        assert self.opts.num_votes>0, "num_votes must be positive."
+        assert self.opts.num_samples>=0, "num_samples must be non-negative."
+        if self.opts.return_samples>64:
+            print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
+        
+        modified_opts_wrt_setup = {}
+        ref_opts = SmartParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
+        for k,v in self.opts.__dict__.items():
+            if v!=ref_opts.__dict__[k]:
+                modified_opts_wrt_setup[k] = v
+        return modified_opts_wrt_setup
+
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
+        modified_opts_wrt_setup = self.verify_valid_opts()
         model,was_training,old_backend = self.prepare_sampling(model)
-
         
         self.queue = None
         metric_list = []
@@ -188,7 +230,7 @@ class DiffusionSampler(object):
                         metrics = self.run_on_full_votes(votes,x_true[i],x_true_bit[i],info[i],model_kwargs_i,x_init[i])
                         votes = []
                         metric_list.append(metrics)
-        
+
         sample_output, metric_ouput = self.get_output_dict(metric_list, self.samples)
         self.run_on_finished(output={**sample_output,**metric_ouput})
 
@@ -197,14 +239,13 @@ class DiffusionSampler(object):
         if was_training:
             model.train()
         
-        if self.opts.return_metrics and self.opts.return_samples:
-            return {**sample_output,**metric_ouput}
-        elif self.opts.return_metrics:
-            return metric_ouput
-        elif self.opts.return_samples:
-            return sample_output
-        else:
-            return None
+        metric_ouput["setup_name"] = self.setup_name
+        metric_ouput["modded_opts"] = str(modified_opts_wrt_setup)
+
+
+        if not self.opts.return_samples:
+            sample_output = None
+        return sample_output, metric_ouput
     
     def get_output_dict(self, metric_list, samples):
         sample_output = {}
@@ -225,15 +266,15 @@ class DiffusionSampler(object):
             
     def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite):
         sample_output["x"] = x_true_bit      
-        if self.opts.save_plot_inter_path is not None:
+        if self.opts.save_plot_inter_path!="":
             save_i_idx = [bq_i["save_inter_steps"] for bq_i in bq]
             plot_inter(foldername=self.opts.save_plot_inter_path,
                        sample_output=sample_output,
                        model_kwargs=model_kwargs,
                        ab=self.trainer.cgd.ab,
                        save_i_idx=save_i_idx,
-                       plot_text=self.opts.save_concat_plot_inter_path is None)
-        if self.opts.save_raw_samples_path is not None:
+                       plot_text=self.opts.save_concat_plot_inter_path=="")
+        if self.opts.save_raw_samples_path!="":
             if not hasattr(self,"raw_samples"):
                 self.raw_samples = []
             if not self.opts.save_raw_inter:
@@ -264,16 +305,16 @@ class DiffusionSampler(object):
         return metrics
     
     def run_on_finished(self,output):
-        if self.opts.save_plot_grid_path is not None:
+        if self.opts.save_plot_grid_path!="":
             assert self.opts.save_plot_grid_path.endswith(".png"), f"filename: {filename}"
             filename = self.opts.save_plot_grid_path
             plot_grid(filename,output,self.trainer.cgd.ab,max_images=32,remove_old=self.opts.remove_old)
-        if self.opts.save_concat_plot_inter_path is not None:
+        if self.opts.save_concat_plot_inter_path!="":
             assert self.opts.save_concat_plot_inter_path.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.save_plot_inter_path,
                                concat_filename = self.opts.save_concat_plot_inter_path,
                                num_timesteps = self.opts.num_inter_steps,
-                               remove_old=self.opts.remove_old)
+                               remove_old = self.opts.remove_old)
         
 
     def get_kwargs(self,batch):
@@ -291,16 +332,7 @@ class DiffusionSampler(object):
             
     def form_next_batch(self):
         if self.queue is None:
-            assert self.opts.num_samples>=self.opts.num_inter_samples, "num_samples must be at least as large as num_inter_samples."
-            assert self.opts.num_samples>=self.opts.num_grid_samples, "num_samples must be at least as large as num_grid_samples."
-            self.save_i_steps = []
-            if "inter" in self.opts.sample_function.split(","):
-                assert (0<self.opts.num_inter_samples) and (0<self.opts.inter_votes_per_sample), "num_inter_samples and inter_votes_per_sample must be positive when doing 'inter' sampling."
-                legal_timesteps = list(range(self.opts.num_timesteps-1, -1, -1))
-                idx = np.round(np.linspace(0,len(legal_timesteps)-1,self.opts.num_inter_steps)).astype(int)
-                #remove duplicates without changing order
-                idx = [idx[i] for i in range(len(idx)) if (i==0) or (idx[i]!=idx[i-1])]
-                self.save_i_steps = [legal_timesteps[i] for i in idx]
+            
             self.queue = []
             for i in range(self.opts.num_samples):
                 for j in range(self.opts.num_votes):
@@ -352,11 +384,11 @@ def main():
         #args.mode = "cont"
         #args.model_name = "weak30k[7]"
         alt_parse_args = ["--mode","cont","--model_name","weak30k[7]"]
-        args = SmartParser().get_args(do_parse_args=False,alt_parse_args=alt_parse_args)
+        args = SmartParser().get_args(alt_parse_args=alt_parse_args)
         trainer = DiffusionModelTrainer(args)
         sampler = DiffusionSampler(trainer)
         sampler.load_gen_setup("gw2")
-        sampler.opts.sample_function = "grid"
+        sampler.opts.plotting_functions = "grid"
         output = sampler.sample()
     elif args.unit_test==1:
         pass

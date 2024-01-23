@@ -1,0 +1,8 @@
+{
+    "vali": {},
+    "train": {"split": "train"},
+    "gw2": {"guidance_weight": 2.0},
+    "self_cond": {"self_cond": true},
+    "self_cond_gw2": {"guidance_weight": 2.0, "self_cond": true},
+    "ddim": {"sampler_type": "ddim"}
+}

@@ -25,7 +25,7 @@ from datasets import CatBallDataset, custom_collate_with_info, SegmentationDatas
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs,set_random_seed
+from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs,set_random_seed,bracket_glob_fix
 #from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
 #                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
 #from datasets import get_random_points_images,get_noisy_bbox_images
@@ -59,7 +59,6 @@ class DiffusionModelTrainer:
             self.log("Continuing training run.")
         else:
             raise ValueError("Unknown mode: "+self.args.mode+", must be one of ['new','load','cont']")
-        
         if torch.cuda.is_available():
             self.log("CUDA available. Using GPU.")
             self.device = torch.device("cuda")
@@ -157,7 +156,6 @@ class DiffusionModelTrainer:
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
             ckpt_name = "*"+self.args.model_name+"/ckpt_*.pt"
-        bracket_glob_fix = lambda x: "[[]".join([a.replace("]","[]]") for a in x.split("[")])
         saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
         ckpt_matches = list(Path(saves_folder).glob(bracket_glob_fix(ckpt_name)))
         if len(ckpt_matches)==0:
@@ -389,7 +387,6 @@ class DiffusionModelTrainer:
             
             if self.step % self.args.gen_interval == 0:
                 self.generate_samples()
-                self.dump_kvs_gen()
             
             if self.step % self.args.update_loss_plot_interval == 0:
                 with MatplotlibTempBackend(backend="agg"):
@@ -520,25 +517,26 @@ class DiffusionModelTrainer:
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
     
     
-    def generate_samples(self, max_reduction_measures=["hiou","ari"]):
-        for gen_setup in self.args.gen_setups.split(","):
+    def generate_samples(self, gen_tuples=None, max_reduction_measures=["hiou","ari"]):
+        """
+        Inputs:
+            gen_tuples: list of tuples (gen_setup, modified_args) with types (str,dict).
+            max_reduction_measures: list of strings with the names of the metrics to reduce to their max as well as mean reduction.
+        """
+        if gen_tuples is None:
+            gen_tuples = [(gs, {}) for gs in self.args.gen_setups.split(",")]
 
+        for gen_setup,modified_args in gen_tuples:
             sampler = DiffusionSampler(trainer=self)
-            sampler.load_gen_setup(gen_setup)
-            metric_dict = sampler.sample()
-            
-            if gen_setup=="vali":
-                prefix = "vali_"
-            elif gen_setup=="train":
-                prefix = ""
-            else:
-                prefix = None
-            if prefix is not None:
-                metric_kvs = {prefix+k: sum(v,[]) for k,v in metric_dict.items()}
-                for m in max_reduction_measures:
-                    metric_kvs["max_"+prefix+m] = [max(v) for v in metric_dict[m]]
-                self.kvs_gen_buffer.update(metric_kvs)
-        
+            sampler.load_gen_setup(gen_setup,modified_args)
+            _, metric_dict = sampler.sample()
+            metric_kvs = {}
+            for k,v in metric_dict.items():
+                metric_kvs[k] = sum(v,[]) if isinstance(v,list) else v
+            for m in max_reduction_measures:
+                metric_kvs["max_"+m] = [max(v) for v in metric_dict[m]]
+            self.kvs_gen_buffer.update(metric_kvs)
+            self.dump_kvs_gen()
 
 def main():
     import argparse
@@ -557,7 +555,7 @@ def main():
     elif args.unit_test==1:
         print("UNIT TEST 1: continued training")
         from utils import SmartParser
-        args = SmartParser().get_args(do_parse_args=False)
+        args = SmartParser().get_args(alt_parse_args=[])
         args.model_name = "test_trained"
         args.save_path = "./saves/test_trained/"
         args.max_iter = 5002

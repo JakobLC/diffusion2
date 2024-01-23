@@ -16,6 +16,21 @@ import warnings
 import cv2
 
 
+def get_dtype(vec):
+    vec0 = vec[0]
+    assert isinstance(vec0,(str,int,float,bytes)), f"expected vec0 to be a str, int, float, or bytes, found {type(vec0)}" 
+    try:
+        int(vec0)
+        return int
+    except:
+        pass
+    try:
+        float(vec0)
+        return float
+    except:
+        pass
+    return str
+
 def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
@@ -34,27 +49,28 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             continue
         with open(fn,"r") as f:
             column_names = f.readline()[:-1].split(",")
-        data = np.genfromtxt(fn, delimiter=",")[1:]
+        data = np.genfromtxt(fn, dtype=object, delimiter=",")[1:]
         if data.size==0:
             continue
         if len(data.shape)==1:
             data = np.expand_dims(data,0)
-        inf_mask = np.logical_and(~np.any(np.isinf(data),axis=1),~np.all(np.isnan(data),axis=1))
-        data = data[inf_mask]
+        #inf_mask = np.logical_and(~np.any(np.isinf(data),axis=1),~np.all(np.isnan(data),axis=1))
+        #data = data[inf_mask]
         
         if filename_step==fn:
             column_names.append("step")
             data = np.concatenate([data,np.arange(1,len(data)+1).reshape(-1,1)],axis=1)
         for j,k in enumerate(column_names):
-            all_logging[["gen_","step_",""][i]+k] = data[:,j]
+            all_logging[["gen_","step_",""][i]+k] = data[:,j].astype(get_dtype(data[:,j]))
     if len(all_logging.keys())==0:
         return
+    plot_gen_setups = ["vali","train"]
     plot_columns = [["loss","vali_loss"],
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
                     ["iou","vali_iou"],
-                    ["gen_hiou","gen_vali_hiou","gen_max_hiou","gen_max_vali_hiou"],
-                    ["gen_ari","gen_vali_ari","gen_max_ari","gen_max_vali_ari"],
+                    ["gen_hiou","gen_max_hiou"],#both vali and train
+                    ["gen_ari","gen_max_ari"],#both vali and train
                     ["step_loss"],
                     ["step_grad_norm"]]
     plot_columns_new = []
@@ -84,9 +100,19 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             nan_mask = np.isnan(y)
             y = y[~nan_mask]
             x = x[~nan_mask]
-            Y.append(y)
-            plot_kwargs = get_plot_kwargs(name,j,y)
-            plt.plot(x,y,**plot_kwargs)
+            if gls(name)=="gen_":
+                for gen_setup in plot_gen_setups:
+                    setup_mask = np.array(all_logging["gen_setup_name"])==gen_setup
+                    y2 = y[setup_mask]
+                    x2 = x[setup_mask]
+                    if len(y2)>0:
+                        Y.append(y2)
+                        plot_kwargs = get_plot_kwargs(gen_setup+"_"+name,j,y2)
+                        plt.plot(x2,y2,**plot_kwargs)
+            else:
+                Y.append(y)
+                plot_kwargs = get_plot_kwargs(name,j,y)
+                plt.plot(x,y,**plot_kwargs)
         plt.legend()
         plt.grid()
         xmax = x.max() if len(x)>0 else 1
@@ -439,6 +465,7 @@ def clean_up(filename):
     format except for the last part of the name seperated by an
     underscore. For example, "folder_name/loss_plot_000001.png"
     """
+    assert "_" in Path(filename).name, f"filename {filename} does not contain an underscore, which is assumed for clean_up."
     safe_filename = Path(filename)
     glob_str = "_".join(safe_filename.name.split("_")[:-1])+"_*"+safe_filename.suffix
     old_filenames = list(safe_filename.parent.glob(glob_str))
@@ -630,8 +657,8 @@ def main():
                                new_file=True)
     elif args.unit_test==1:
         print("UNIT TEST 1: make_loss_plot")
-        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/test"
-        make_loss_plot(save_path)
+        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-01-23-13-28-59-321247_weak30k+interval"
+        make_loss_plot(save_path,11,remove_old=False)
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

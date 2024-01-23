@@ -11,6 +11,11 @@ from collections import OrderedDict
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix
 from scipy.optimize import linear_sum_assignment
 import matplotlib
+from functools import partial
+
+def get_model_name_from_written_args(filename):
+    loaded = json.loads(Path(filename).read_text())
+    return loaded["model_name"]
 
 def fancy_print_kvs(kvs, atmost_digits=5, s="#"):
         """prints kvs in a nice format like
@@ -46,6 +51,9 @@ class MatplotlibTempBackend():
         matplotlib.use(self.backend)
     def __exit__(self, exc_type, exc_val, exc_tb):
         matplotlib.use(self.old_backend)
+
+def bracket_glob_fix(x):
+    return "[[]".join([a.replace("]","[]]") for a in x.split("[")])
 
 def get_all_metrics(output,ignore_idx=0,ab=None):
     assert isinstance(output,dict), "output must be an output dict"
@@ -201,8 +209,8 @@ def mse_loss(pred_x, x, batch_dim=0):
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
 
-def model_and_diffusion_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False):
-    default_path = Path(__file__).parent/"args_def.json"
+def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filename="args_def.json"):
+    default_path = Path(__file__).parent/filename
     if ordered_dict:
         args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
     else:
@@ -219,12 +227,16 @@ def model_and_diffusion_defaults(idx=0,ordered_dict=False,return_deprecated_keys
             args_dict[k] = v[idx]
     return args_dict
 
+
 class SmartParser():
-    def __init__(self,defaults_func=model_and_diffusion_defaults):
-        self.parser = argparse.ArgumentParser()
-        self.descriptions = defaults_func(idx=1)
-        defaults = defaults_func()
+    def __init__(self,name="args"):
+        self.filename_def = name+"_def.json"
+        self.filename_model = name+"_model.json"
+        self.defaults_func = partial(load_defaults,filename=self.filename_def)
+        self.descriptions = self.defaults_func(idx=1)
+        defaults = self.defaults_func()
         self.type_dict = {}
+        self.parser = argparse.ArgumentParser()
         for k, v in defaults.items():
             v_hat = v
             t = self.get_type_from_default(v)
@@ -242,13 +254,15 @@ class SmartParser():
         args = argparse.Namespace(**args_dict)
         return args
         
-    def get_args(self,modified_args={},do_parse_args=True,alt_parse_args=[]):
-        if do_parse_args:
+    def get_args(self,alt_parse_args=None,modified_args={}):
+        if alt_parse_args is None:
             args = self.parser.parse_args()
         else:
+            assert isinstance(alt_parse_args,list), f"alt_parse_args must be a list or None. alt_parse_args={alt_parse_args}"
             args = self.parser.parse_args(alt_parse_args)
-        args = model_specific_args(args)
-        deprecated_keys = model_and_diffusion_defaults(return_deprecated_keys=True)
+        model_dicts = json.loads((Path(__file__).parent/self.filename_model).read_text())
+        args = model_specific_args(args,model_dicts)
+        deprecated_keys = self.defaults_func(return_deprecated_keys=True)
         for k in args.__dict__.keys():
             if k in deprecated_keys:
                 raise ValueError(f"key {k} is deprecated.")
@@ -273,7 +287,7 @@ class SmartParser():
             
             if num_modified_args>1:
                 for i in range(num_modified_args):
-                    model_name_new = args.model_name
+                    model_name_new = args.model_name if hasattr(args,"model_name") else args.gen_setup
                     for k,v in modified_args_list[i].items():
                         model_name_new += f"_({k}={v})"
                     modified_args_list[i]["model_name"] = model_name_new
@@ -347,9 +361,15 @@ def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=Fal
     model_arch.load_state_dict(arch_state_dict)
     return model_arch, load_info
 
-def model_specific_args(args):
-    model_dicts = json.loads((Path(__file__).parent/"args_model.json").read_text())
-    model_name = args.model_name
+
+def model_specific_args(args,model_dicts):
+    if hasattr(args,"model_name"):
+        model_name = args.model_name
+    elif hasattr(args,"gen_setup"):
+        model_name = args.gen_setup
+    else:
+        raise ValueError("args must have a model_name or gen_setup attribute.")
+    
     if "+" in model_name:
         plus_names = model_name.split("+")[1:]
         model_name = model_name.split("+")[0]
@@ -386,7 +406,7 @@ def write_args(args, save_path, match_keys=True):
         if not save_path.endswith(".json"):
             save_path += ".json"
         save_path = Path(save_path)
-    ref_args = model_and_diffusion_defaults(idx=0,ordered_dict=True)
+    ref_args = load_defaults(idx=0,ordered_dict=True)
     args_dict = args.__dict__
     if match_keys:
         ref_to_save = all([k in args_dict.keys() for k in ref_args.keys()])
@@ -655,26 +675,7 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
-        print("UNIT TEST 0: test measures")
-        target = torch.randint(0,8,size=(1,1,1,100))
-        metrics = ["iou","hiou","ari","mi"]
-        metrics_per_t = {k: [] for k in metrics}
-        err_ratio = list(range(100))
-        for t in err_ratio:
-            
-            pred = torch.randint_like(target,0,8)
-            pred[:,:,:,:t] = target[:,:,:,:t]
-            m = batched_metrics(pred.clone(),target.clone(),metrics=metrics,ignore_idx=0)
-            for k in metrics:
-                metrics_per_t[k].append(m[k])
-        import matplotlib.pyplot as plt, jlc
-        plt.figure()
-        for k,v in metrics_per_t.items():
-            plt.plot(err_ratio,v,label=k)
-        plt.legend()
-        jlc.zoom()
-        plt.show()
-
+        print("UNIT TEST 0: -")
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         
