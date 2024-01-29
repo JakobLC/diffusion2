@@ -3,7 +3,7 @@
     "save_path": ["",                               "Path to save the model. TYPE: str. DEFAULT: ''"],
     "diffusion": {
         "no_diffusion": [false,                     "TODO, not implemented. Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false"],
-        "noise_schedule": ["cosine",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: linear"],
+        "noise_schedule": ["cosine",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: cosine"],
         "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false"],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
         "input_scale": [0.01,                       "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"],
@@ -11,6 +11,7 @@
         "gamma_clip_max": [1e-9,                    "Maximum value for gamma (to avoid singularities). TYPE: float. DEFAULT: 1e-9"]
     },
     "model": {
+        "channel_multiplier": ["auto",              "Channel multipliers for the UNet, specifying the number of layers and their multiplier with num_channels. TYPE: comma separated list of ints. DEFAULT: 'auto'"],                   
         "dropout": [0.0,                            "UNet dropout probability. TYPE: float. DEFAULT: 0.0"],
         "predict": ["x",                            "How to parmeterize x_t. TYPE: One of ['x','v','eps','both']. DEFAULT: 'x'"],
         "use_scale_shift_norm": [false,             "Should scaling and shifting of normalization layers be be used for class conditioning? otherwise simply linear addition. TYPE: boolean. DEFAULT: false"],
@@ -44,7 +45,8 @@
         "run_without_test": [false,                 "Should all evaluation be skipped? TYPE: boolean. DEFAULT: false"],
         "mode": ["new",                             "Which mode to run in? new: new training, cont: continue from ckpt, load: load ckpt and make new TYPE: One of ['new','cont','load']. DEFAULT: 'new'"],
         "ckpt_name": ["",                           "Relative name to ./saves/ to load ckpt from. Empty string for ckpt_name='*[model_name]/ckpt_*.pt'. TYPE: DEFAULT: '' "],
-        "save_best_ckpt": [false,                   "TODO, not implemented. Should the best checkpoint be tracked and saved? TYPE: boolean. DEFAULT: false"]
+        "save_best_ckpt": [false,                   "TODO, not implemented. Should the best checkpoint be tracked and saved? TYPE: boolean. DEFAULT: false"],
+        "debug_run": [false,                        "Should a debug run be performed? TYPE: boolean. DEFAULT: false"]
     },
     "training": {
         "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false"],
@@ -53,7 +55,7 @@
         "betas": ["0.9,0.999",                      "Adam betas. TYPE: comma separated list of floats. DEFAULT: '0.9,0.999'"],
         "bce_loss": [false,                         "Should BCE loss be used? TYPE: boolean. DEFAULT: false"],
         "min_label_size": [0.0,                     "Minimum relative label mask size in relation to the image. TYPE: float. DEFAULT: 0.01"],
-        "image_prob": [0.9,                         "Probability of image being given as input. TYPE: float. DEFAULT: 0.9"],
+        "image_prob": [0.95,                        "Probability of image being given as input. TYPE: float. DEFAULT: 0.9"],
         "weak_bbox_prob": [0.25,                    "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25"],
         "weak_points_prob": [0.25,                  "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25"],
         "self_cond_prob": [0.5,                     "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25"],

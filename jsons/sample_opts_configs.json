@@ -1,0 +1,17 @@
+{
+    "vali": {},
+    "train": {"split": "train"},
+    "gw2": {"guidance_weight": 2.0},
+    "self_cond": {"self_cond": true},
+    "self_cond_gw2": {"guidance_weight": 2.0, "self_cond": true},
+    "ddim": {"sampler_type": "ddim"},
+    "vali-ts10": {"num_timesteps": 10},
+    "train-ts10": {"split": "train", "num_timesteps": 10},
+    "ema_vali-ts10": {"ema_model_rate": 0.9999, "num_samples": 100, "num_timesteps": 10},
+    "optimized": {"num_timesteps": 100, "num_samples": 8, "ema_model_rate": 0.9999, "plotting_functions": "grid","seed": 1},
+    "gw": {"num_timesteps": 100, "num_samples": 8, "ema_model_rate": 0.9999, "plotting_functions": "grid","seed": 1, "guidance_weight": 2.0},
+    "eval": {"num_timesteps": 25, "num_samples": 100, "ema_model_rate": 0.9999, "plotting_functions": "","seed": 1},
+    "valifast": {"num_timesteps": 10, "plotting_functions": "grid", "num_grid_samples": 4},
+    "trainfast": {"split": "train", "num_timesteps": 10, "plotting_functions": "grid", "num_grid_samples": 4},
+    "minimum_gen": {"num_timesteps": 2, "num_samples": 1,"num_grid_samples": 1, "num_inter_samples": 1}
+}

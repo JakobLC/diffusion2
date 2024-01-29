@@ -6,31 +6,27 @@ sys.path.append(os.path.abspath('./source/'))
 from source.utils import SmartParser
 from source.training import DiffusionModelTrainer
 from pathlib import Path
-import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning)
+#import warnings
+#warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
 #TODO
 # implement all points in arguments
-# forced xstart
-# make seeding better in the sampler (one seed to define a whole diffusion process instead of 1000)
-# make sample setup strings
-# make sample.py
+# implement forced xstart
+# implement fixed batches for long training runs
 # remove lines from dead runs in the logging files when continuing training
 # make nuke.py to remove all dead runs from the logging files
 # add SAM image features or image embedding model
 # write pretty_point() function
-# fix inter remove_old
-# add test dataset to sampling
 # implement dummy diffusion
 # implement forward pass corruption
 # implement timestep delta from bit diffusion
-# add a buffer_max_samples argument to the sampler
-
+# add option to save sampling results to sample_info.json
+# implement key checking and debugging for get_output_dict
 def main(**modified_args):
-    args = SmartParser().get_args(modified_args)
-    if isinstance(args,tuple):
-        args, modified_args_list = args
+    args = SmartParser().get_args(modified_args=modified_args)
+    if isinstance(args,list):
+        modified_args_list = args
         for modified_args in modified_args_list:
             main(**modified_args)
         return

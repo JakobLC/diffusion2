@@ -1,6 +1,10 @@
 {
-    "gen_setup"                       : ["vali",          "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
-    "name_match_str"                  : ["*weak30k[7]",   "string to search for models when in pure sampling mode. TYPE: str. DEFAULT: '*weak30k[7]'"],
+    "gen_setup"                       : ["vali",           "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
+    "options for pure generation (sample.py)": {
+        "gen_id"                      : ["",              "id of the generation to use. TYPE: str. DEFAULT: ''"],
+        "name_match_str"              : ["*weak30k[7]",   "string to search for models when in pure sampling mode. TYPE: str. DEFAULT: '*weak30k[7]'"],
+        "seed"                        : [-1,              "Seed to use for sampling. New random seed if <0. TYPE: int. DEFAULT: -1"]
+    },    
     "model options": {
         "clip_denoised"               : [true,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: true"],
         "num_timesteps"               : [100,             "Number of timesteps to use for sampling. TYPE: int. DEFAULT: 100"],
@@ -9,9 +13,9 @@
         "eval_batch_size"             : [0,               "Batch size for evaluation. 0 for same as train. TYPE: int. DEFAULT: 0"],
         "sampler_type"                : ["ddpm",          "Type of sampler to use. One of ['ddpm','ddim']. TYPE: str. DEFAULT: 'ddpm'"],
         "self_cond"                   : [false,           "Whether to use self conditioning. TYPE: bool. DEFAULT: false"],
-        "ema_model_rate"              : [0,               "EMA model rate to use for sampling. 0 for no EMA (normal model). TYPE: int. DEFAULT: 0"],
+        "ema_model_rate"              : [0.0,             "EMA model rate to use for sampling. 0 for no EMA (normal model). TYPE: float. DEFAULT: 0.0"],
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
-        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward pass. One of ['train']. TYPE: str. DEFAULT: 'train'"]
+        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. One of ['train']. TYPE: str. DEFAULT: 'train'"]
     },
     "meta options": {
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],
@@ -19,9 +23,10 @@
         "progress_bar_timestep"       : [false,           "Whether to show a second progress bar running over timesteps during sampling. TYPE: bool. DEFAULT: false"],
         "save_raw_inter"              : [false,           "Whether to save raw intermediate samples. Needs save_raw_samples==true to have an effect. TYPE: bool. DEFAULT: false"],
         "save_raw_samples"            : [false,           "Whether to save raw samples. TYPE: bool. DEFAULT: false"],
+        "save_sample_opts"            : [true,            "Whether to save the sample options in the default_save_folder. TYPE: bool. DEFAULT: true"],
         "return_samples"              : [false,           "Whether to return samples. TYPE: bool. DEFAULT: false"],
-        "remove_old"                  : [false,           "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: false"],
-        "plotting_functions"          : ["grid,inter",    "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter']. TYPE: str. DEFAULT: 'grid,inter'"]
+        "remove_old"                  : [true,            "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: false"],
+        "plotting_functions"          : ["grid,concat",   "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter','concat']. TYPE: str. DEFAULT: 'grid,concat'"]
     },
     "how much to sample": {
         "num_votes"                   : [5,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
@@ -32,10 +37,10 @@
         "inter_votes_per_sample"      : [1,               "How many votes per image (e.g. 1=only first vote) should intermediate steps be saved for. TYPE: int. DEFAULT: 1"]
     },
     "where to save things": {
-        "save_plot_grid_path"         : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "save_plot_inter_path"        : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "save_raw_samples_path"       : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "save_concat_plot_inter_path" : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "grid_filename"               : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "inter_folder"                : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "raw_samples_folder"          : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "default_save_folder"         : ["samples",       "Default folder to save samples in, as a relative path wrt. the model save_path. TYPE: str. DEFAULT: 'samples'"]
     },
     "deprecated": {}

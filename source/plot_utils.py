@@ -9,11 +9,102 @@ import os
 import glob
 from pathlib import Path
 from PIL import Image
-import copy
+from utils import bracket_glob_fix, save_dict_list_to_json
 import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
 import cv2
+import datetime
+import pandas as pd
+
+def collect_gen_table(gen_id="many",
+                   name_match_strings="*30k*",
+                   saves_folder = str(Path(__file__).parent.parent / "saves"),
+                   save=True,
+                   return_table=False,
+                   save_name= str(Path(__file__).parent.parent / "jsons" / "gen_table.json"),
+                   do_glob_bracket_fix=False,
+                   verbose=True,
+                   sort_by_save_path=True,
+                   make_pretty_table=True,
+                   pretty_digit_limit=5):
+    
+    match_save_names = []
+    match_save_idxs = []
+    if name_match_strings=="auto":
+        all_save_names = os.listdir(saves_folder)
+        matching_save_names = all_save_names
+    else:
+        if not isinstance(name_match_strings,list):
+            assert isinstance(name_match_strings,str), f"expected name_match_strings to be a list of strings or 'auto', found {type(name_match_strings)}"
+            name_match_strings = [name_match_strings]
+        matching_save_names = []
+        for s in name_match_strings:
+            if do_glob_bracket_fix:
+                s = bracket_glob_fix(s)
+            if not s.endswith("/"):
+                s += "/"
+            matching_save_names += [p.name for p in Path(saves_folder).glob(s)]
+
+    table = pd.DataFrame()
+
+    for s in matching_save_names:
+        fn = os.path.join(saves_folder,s,"logging_gen.csv")
+        if os.path.exists(fn):
+            with open(fn,"r") as f:
+                column_names = f.readline()[:-1].split(",")
+            data = np.genfromtxt(fn, dtype=str, delimiter=",")[1:]
+            if data.size==0:
+                continue
+            if "gen_id" not in column_names:
+                continue
+            gen_ids = data[:,column_names.index("gen_id")].astype(str)
+            match_idx = np.where(gen_ids==gen_id)[0]
+            if len(match_idx)==0:
+                if verbose and name_match_strings!="auto": print("Warning: no matches found for gen_id="+gen_id+", save_name="+s)
+                continue
+            else:
+                match_save_names.append(s)
+                match_save_idxs.append(match_idx[-1])
+                match_data_s = data[match_idx]
+                #match_data_s = np.array([get_dtype([di])(di) for di in match_data_s.flatten()]).reshape(match_data_s.shape)
+                if verbose and len(match_idx)>1: 
+                    print("Warning: multiple matches found for gen_id="+gen_id+", save_name="+s+" using the latest.")
+                
+            table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
+    table["save_path"] = match_save_names
+    table["model_name"] = ["_".join(s.split("_")[1:]) for s in match_save_names]
+    if sort_by_save_path:
+        table = table.sort_values(by=["save_path"])
+    table = table.loc[:, (table != "").any(axis=0)]
+    table = {k: table[k].tolist() for k in table.keys()}
+    if make_pretty_table:
+        buffer = 2
+        pretty_table = ["" for _ in range(len(table["save_path"])+2)] 
+        for k in table.keys():
+            pretty_col = ["" for _ in range(len(table["save_path"])+2)]
+            
+            if table[k][0].replace(".","").isdigit() and table[k][0].find(".")>=0:
+                idx = slice(pretty_digit_limit+2)
+            else:
+                idx = slice(None)
+            max_length = max(max([len(str(x)[idx]) for x in table[k]]),len(k))+buffer
+            pretty_col[0] = k+" "*(max_length-len(k))
+            pretty_col[1] = "#"*max_length
+            pretty_col[2:] = [str(x)[idx]+" "*(max_length-len(str(x)[idx])-2)+", " for x in table[k]]
+            if k=="model_name":
+                pretty_col[0] = "model_name"+" "*(max_length-len("model_name")-1)+"# "
+                pretty_col[1] = "#"*(max_length+1)
+                pretty_col[2:] = [s.replace(","," #") for s in pretty_col[2:]]
+                pretty_table = [pretty_col[i]+pretty_table[i] for i in range(len(pretty_table))]
+            else:
+                pretty_table = [pretty_table[i]+pretty_col[i] for i in range(len(pretty_table))]
+        table["pretty_table"] = pretty_table
+    if save:
+        save_dict_list_to_json(table,save_name,append=True)
+    if return_table:
+        return table
+#def make_gen_bar_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
 
 
 def get_dtype(vec):
@@ -31,7 +122,7 @@ def get_dtype(vec):
         pass
     return str
 
-def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True):
+def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
     filename_step = os.path.join(save_path,"logging_step.csv")
@@ -64,7 +155,6 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             all_logging[["gen_","step_",""][i]+k] = data[:,j].astype(get_dtype(data[:,j]))
     if len(all_logging.keys())==0:
         return
-    plot_gen_setups = ["vali","train"]
     plot_columns = [["loss","vali_loss"],
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
@@ -97,12 +187,13 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             name = plot_columns[i][j]
             y = all_logging[name]
             x = all_logging[gls(name)+"step"]
-            nan_mask = np.isnan(y)
-            y = y[~nan_mask]
-            x = x[~nan_mask]
+            nan_or_inf_mask = np.logical_or(np.isnan(y),np.isinf(y))
+            
             if gls(name)=="gen_":
                 for gen_setup in plot_gen_setups:
                     setup_mask = np.array(all_logging["gen_setup_name"])==gen_setup
+                    gen_id_mask = np.array(all_logging["gen_gen_id"])==""
+                    setup_mask = np.logical_and(np.logical_and(setup_mask,~nan_or_inf_mask),gen_id_mask)
                     y2 = y[setup_mask]
                     x2 = x[setup_mask]
                     if len(y2)>0:
@@ -110,26 +201,29 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
                         plot_kwargs = get_plot_kwargs(gen_setup+"_"+name,j,y2)
                         plt.plot(x2,y2,**plot_kwargs)
             else:
-                Y.append(y)
-                plot_kwargs = get_plot_kwargs(name,j,y)
-                plt.plot(x,y,**plot_kwargs)
-        plt.legend()
-        plt.grid()
-        xmax = x.max() if len(x)>0 else 1
-        plt.xlim(0,xmax)
-        Y = np.array(Y).flatten()
+                y = y[~nan_or_inf_mask]
+                x = x[~nan_or_inf_mask]
+                if len(y)>0:
+                    Y.append(y)
+                    plot_kwargs = get_plot_kwargs(name,j,y)
+                    plt.plot(x,y,**plot_kwargs)
         if len(Y)>0:
+            plt.legend()
+            plt.grid()
+            xmax = x.max()
+            plt.xlim(0,xmax)
+            Y = np.array(sum([y.flatten().tolist() for y in Y],[]))
+            if any(np.isinf(Y)):
+                print("Warning: inf found in Y at plot_columns[i]=",plot_columns[i])
             ymin,ymax = Y.min(),Y.max()
-        else:
-            ymin,ymax = 0.1,1
-        ymax += 0.1*(ymax-ymin)
-        if name.find("loss")>=0 or name.find("grad_norm")>=0:
-            plt.yscale("log")
-        else:
-            ymin -= 0.1*(ymax-ymin)
-        plt.ylim(ymin,ymax)
-        plt.xlim(0,xmax*1.05)
-        plt.xlabel("steps")
+            ymax += 0.1*(ymax-ymin)+1e-14
+            if name.find("loss")>=0 or name.find("grad_norm")>=0:
+                plt.yscale("log")
+            else:
+                ymin -= 0.1*(ymax-ymin)
+            plt.ylim(ymin,ymax)
+            plt.xlim(0,xmax*1.05)
+            plt.xlabel("steps")
     plt.tight_layout()
     if show:
         plt.show()
@@ -144,7 +238,7 @@ def get_plot_kwargs(name,j,y):
     plot_kwargs = {"color": None,
                    "label": name}
     if name.find("gen_")>=0:
-        plot_kwargs["color"] = "C3" if name.find("vali_")>=0 else [0.1,0.2,0.9]
+        plot_kwargs["color"] = "C3" if name.find("vali")>=0 else [0.1,0.2,0.9]
     if name.find("max_")>=0:
         plot_kwargs["linestyle"] = "--"
     if len(y)<=25:
@@ -202,7 +296,7 @@ def mask_overlay_smooth(image,mask,
 def analog_bits_on_image(x_bits,im,ab):
     assert isinstance(x_bits,torch.Tensor), "analog_bits_on_image expects a torch.Tensor"
     x_int = ab.bit2int(x_bits.unsqueeze(0)).cpu().detach().numpy().squeeze(0)
-    magnitude = np.minimum(x_bits.abs().mean(0).cpu().detach().numpy(),1)
+    magnitude = np.minimum(torch.min(x_bits.abs(),0)[0].cpu().detach().numpy(),1)
     mask = np.zeros((im.shape[0],im.shape[1],2**ab.num_bits))
     for i in range(2**ab.num_bits):
         mask[:,:,i] = (x_int==i)*magnitude
@@ -280,7 +374,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
     if not os.path.exists(foldername):
         os.makedirs(foldername)
     filenames = []
-    num_inter_exists = len(glob.glob(os.path.join(foldername,"intermediate_*.png")))
+    num_inter_exists = len(glob.glob(bracket_glob_fix(os.path.join(foldername,"intermediate_*.png"))))
     for i in range(batch_size):
         ii = save_i_idx[i]
         images = [[map_dict["x"](sample_output["x"][ii],i)],
@@ -455,7 +549,7 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
     if remove_old:
         clean_up(filename)
         
-def clean_up(filename):
+def clean_up(filename,verbose=False):
     """
     Removes all files in the same folder as filename that have 
     the same name and format except for the last part of the name
@@ -471,6 +565,8 @@ def clean_up(filename):
     old_filenames = list(safe_filename.parent.glob(glob_str))
     for old_filename in old_filenames:
         if old_filename!=safe_filename:
+            if verbose:
+                print("\nRemoving old file:",old_filename,", based on from safe file: ",safe_filename.parent)
             os.remove(old_filename)
 
 def render_axis_ticks(image_width=1000,
@@ -657,8 +753,11 @@ def main():
                                new_file=True)
     elif args.unit_test==1:
         print("UNIT TEST 1: make_loss_plot")
-        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-01-23-13-28-59-321247_weak30k+interval"
+        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-01-29-16-51-36-055665_long[13]"
         make_loss_plot(save_path,11,remove_old=False)
+    elif args.unit_test==2:
+        print("UNIT TEST 2: collect_gen_table")
+        collect_gen_table(gen_id="many_ema")
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

@@ -4,7 +4,7 @@ Helpers to train with 16-bit precision.
 
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
-
+from torch import zeros_like,zeros
 
 def convert_module_to_f16(l):
     """
@@ -36,15 +36,25 @@ def make_master_params(model_params):
     master_params.requires_grad = True
     return [master_params]
 
-
 def model_grads_to_master_grads(model_params, master_params):
     """
     Copy the gradients from the model parameters into the master parameters
     from make_master_params().
     """
+    #print name of first none parameter
+    """for param in model_params:
+        if param.grad is None:
+            print("param name",param.name)
+            print("param.shape:",param.shape)
+            raise ValueError("param.grad is None")"""
+    #master_params[0].grad = _flatten_dense_tensors([param.grad.data.detach().float() for param in model_params])
+    #master_params[0].grad._fix_weakref()
     master_params[0].grad = _flatten_dense_tensors(
-        [param.grad.data.detach().float() for param in model_params]
+        [(param.grad.data.detach().float() if param.grad is not None else zeros_like(param).float()) for param in model_params]
     )
+    #fix weakref
+    for param in model_params:
+        param.grad._fix_weakref()
 
 
 def master_params_to_model_params(model_params, master_params):

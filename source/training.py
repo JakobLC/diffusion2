@@ -2,12 +2,11 @@ import copy
 import functools
 import os
 from pathlib import Path
-
+import psutil
 import numpy as np
 import torch
 from torch.optim import AdamW
 from tqdm import tqdm
-from PIL import Image
 from shutil import rmtree
 import jlc
 import json
@@ -21,22 +20,26 @@ from fp16_util import (
 import datetime
 from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
-from datasets import CatBallDataset, custom_collate_with_info, SegmentationDataset, points_image_from_label
+from datasets import (CatBallDataset, custom_collate_with_info, 
+                      SegmentationDataset, points_image_from_label)
 from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,fancy_print_kvs,set_random_seed,bracket_glob_fix
-#from utils import (make_loss_plot,make_cond_loss_plot,load_state_dict_loose,ReturnOnceOnNext,
-#                    TemporarilyDeterministic,DummyWith,plot_fixed_images,dump_kvs)
-#from datasets import get_random_points_images,get_noisy_bbox_images
-
+from utils import (dump_kvs,get_all_metrics,write_args,MatplotlibTempBackend,
+                   fancy_print_kvs,set_random_seed,bracket_glob_fix,
+                   set_random_seed,is_infinite_and_not_none,
+                   AlwaysReturnsFirstItemOnNext)
+from pympler import muppy,summary,tracker
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
 class DiffusionModelTrainer:
     def __init__(self,args):
+        
         self.args = args
-        self.seed = None
+
+        self.seed = set_random_seed(args.seed)
+        args.seed = self.seed
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
         n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
@@ -57,8 +60,14 @@ class DiffusionModelTrainer:
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
             self.log("Continuing training run.")
+        elif self.args.mode=="gen":
+            self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name)
+            if self.args.save_path=="":
+                self.args.save_path = str(Path(self.args.ckpt_name).parent)
+            self.log("Setting up generation.")
         else:
-            raise ValueError("Unknown mode: "+self.args.mode+", must be one of ['new','load','cont']")
+            raise ValueError("Unknown mode: "+self.args.mode+", must be one of ['new','load','cont','gen']")
         if torch.cuda.is_available():
             self.log("CUDA available. Using GPU.")
             self.device = torch.device("cuda")
@@ -72,36 +81,14 @@ class DiffusionModelTrainer:
         self.log("Saving to: "+self.args.save_path)
 
         if self.args.cat_ball_data:
-            train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
-            vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)
-        else:
-            split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
-            train_ds = SegmentationDataset(split="train",
-                                           split_ratio=split_ratio,
-                                           image_size=args.image_size,
-                                           datasets=args.datasets,
-                                           min_label_size=args.min_label_size,
-                                           max_num_classes=args.max_num_classes)
-            vali_ds = SegmentationDataset(split="vali",
-                                          split_ratio=split_ratio,
-                                          image_size=args.image_size,
-                                          datasets=args.datasets,
-                                          min_label_size=args.min_label_size,
-                                          max_num_classes=args.max_num_classes)
-        self.train_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(train_ds, 
-                                                                           batch_size=args.train_batch_size,
-                                                                           sampler=train_ds.get_sampler(self.seed) if hasattr(train_ds,"get_sampler") else None,
-                                                                           shuffle=not hasattr(train_ds,"get_sampler"),
-                                                                           drop_last=True,
-                                                                           collate_fn=custom_collate_with_info))
-        self.vali_dl = jlc.DataloaderIterator(torch.utils.data.DataLoader(vali_ds, 
-                                                                          batch_size=args.vali_batch_size if args.vali_batch_size>0 else args.train_batch_size,
-                                                                          sampler=vali_ds.get_sampler(self.seed) if hasattr(vali_ds,"get_sampler") else None,
-                                                                          shuffle=not hasattr(vali_ds,"get_sampler"),
-                                                                          drop_last=True,
-                                                                          collate_fn=custom_collate_with_info))
-
+            raise NotImplementedError("cat_ball_data not implemented")
+            """train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
+            vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)"""
+        
+        if self.args.mode in ["new","load","cont"]:
+            self.create_datasets(["train","vali"])
             
+
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
@@ -119,12 +106,12 @@ class DiffusionModelTrainer:
         self.opt = AdamW(self.master_params, lr=self.args.lr, weight_decay=self.args.weight_decay,
                          betas=betas)
         
-        self.ema_rate = [float(x) for x in self.args.ema_rate.split(",")]
-        self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rate]
+        self.ema_rates = [float(x) for x in self.args.ema_rate.split(",")]
+        self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rates]
         
         assert len(self.master_params) == len(self.ema_params[0])
             
-        if self.args.mode in ["cont","load"]:
+        if self.args.mode in ["cont","load","gen"]:
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_miou = ckpt["best_miou"]
             self.fixed_batch = ckpt["fixed_batch"]
@@ -132,7 +119,7 @@ class DiffusionModelTrainer:
             self.model.load_state_dict(ckpt["model"])
             self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model_params = list(self.model.parameters())
-            for i, ema_rate in enumerate(self.ema_rate):
+            for i, ema_rate in enumerate(self.ema_rates):
                 if "ema_"+str(ema_rate) in ckpt.keys():
                     self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
 
@@ -143,7 +130,7 @@ class DiffusionModelTrainer:
             self.best_miou = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
-        elif self.args.mode=="cont":
+        elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
 
         if self.args.seed>=0:
@@ -152,6 +139,30 @@ class DiffusionModelTrainer:
             set_random_seed(None)
 
         self.log("Init complete.")
+
+    def create_datasets(self,split_list=["train","vali"]):
+        if isinstance(split_list,str):
+            split_list = [split_list]
+        split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
+        for split in split_list:
+            
+            dataset = SegmentationDataset(split=split,
+                                        split_ratio=split_ratio,
+                                        image_size=self.args.image_size,
+                                        datasets=self.args.datasets,
+                                        min_label_size=self.args.min_label_size,
+                                        max_num_classes=self.args.max_num_classes)
+            dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
+                                        batch_size=self.args.train_batch_size,
+                                        sampler=dataset.get_sampler(self.seed) if hasattr(dataset,"get_sampler") else None,
+                                        shuffle=not hasattr(dataset,"get_sampler"),
+                                        drop_last=True,
+                                        collate_fn=custom_collate_with_info))
+            if self.args.debug_run:
+                pass
+                #self.tr = tracker.SummaryTracker()
+                #dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
+            setattr(self,split+"_dl",dataloader)
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
@@ -180,7 +191,7 @@ class DiffusionModelTrainer:
             name = "model"
             params = self.master_params
         else:
-            assert ema_idx<len(self.ema_rate), "ema_idx must be smaller than the number of ema rates"
+            assert ema_idx<len(self.ema_rates), "ema_idx must be smaller than the number of ema rates"
             name = "ema"
             params = self.ema_params[ema_idx]
         
@@ -199,7 +210,7 @@ class DiffusionModelTrainer:
                      "log_loss_scale": self.log_loss_scale,
                      "best_miou": self.best_miou,
                      "fixed_batch": self.fixed_batch}
-        for ema_rate, params in zip(self.ema_rate, self.ema_params):
+        for ema_rate, params in zip(self.ema_rates, self.ema_params):
             save_dict["ema_"+str(ema_rate)] = self._master_params_to_state_dict(params)
         torch.save(save_dict, str(Path(self.args.save_path)/f"ckpt_{self.step:06d}.pt"))
         if delete_old:
@@ -209,10 +220,12 @@ class DiffusionModelTrainer:
                     os.remove(ckpt)
     
     def get_ema_model(self,ema_rate):
+        if self.args.mode!="gen":
+            raise ValueError("ema model only implemented for mode='gen'")
         assert float(ema_rate) in self.ema_rates, f"Could not find specified ema_rate. ema_rate: {ema_rate}, ema_rates: {self.ema_rates}"
         ema_rate_idx = self.ema_rates.index(float(ema_rate))
-        ema_model = copy.deepcopy(self.model).load_state_dict(self._master_params_to_state_dict(self.ema_params[ema_rate_idx]))
-        return ema_model
+        self.model.load_state_dict(self._master_params_to_state_dict(self.ema_params[ema_rate_idx]))
+        return self.model
 
     def get_kwargs(self, batch, gen=False):
         x,info = batch
@@ -228,15 +241,16 @@ class DiffusionModelTrainer:
             else:
                 model_kwargs["image"].append(None)
             if self.args.weak_signals:
-                if np.random.rand()<self.args.weak_bbox_prob:
-                    raise NotImplementedError("bbox not implemented")
-                else:
-                    model_kwargs["bbox"].append(None)
-                    
-                if np.random.rand()<self.args.weak_points_prob:
-                    model_kwargs["points"].append(points_image_from_label(x[i]))
-                else:
-                    model_kwargs["points"].append(None)
+                if self.args.weak_bbox_prob>0:
+                    if np.random.rand()<=self.args.weak_bbox_prob:
+                        raise NotImplementedError("bbox not implemented")
+                    else:
+                        model_kwargs["bbox"].append(None)
+                if self.args.weak_points_prob>0:
+                    if np.random.rand()<=self.args.weak_points_prob:
+                        model_kwargs["points"].append(points_image_from_label(x[i]))
+                    else:
+                        model_kwargs["points"].append(None)
             if self.args.cond_type!="none":
                 if np.random.rand()<self.args.cond_prob:
                     raise NotImplementedError("cond not implemented")
@@ -274,7 +288,6 @@ class DiffusionModelTrainer:
         output = {**output,**model_kwargs}
         
         loss = output["loss"]
-        
         if self.args.use_fp16:
             loss_scale = 2 ** self.log_loss_scale
             (loss * loss_scale).backward()
@@ -286,7 +299,7 @@ class DiffusionModelTrainer:
             self.optimize_normal()
         #logging
         metrics = get_all_metrics(output,ab=self.cgd.ab)
-        self.log_train_step(output,metrics,self.last_grad_norm)
+        self.log_train_step(output,metrics,self.last_grad_norm,self.last_clip_ratio)
         
         return output,metrics
     
@@ -295,6 +308,7 @@ class DiffusionModelTrainer:
             for vali_i in range(self.args.num_vali_batches):
                 self.run_vali_step(next(self.vali_dl))
         self.dump_kvs()
+        self.kvs_buffer = {}
         
     def run_vali_step(self, batch):
         x,model_kwargs,info = self.get_kwargs(batch)
@@ -306,13 +320,15 @@ class DiffusionModelTrainer:
         self.log_kv({prefix+"loss": output["loss"].item()})
         self.log_kv({prefix+k:v for k,v in metrics.items()})
         
-    def log_train_step(self,output,metrics,grad_norm):
+    def log_train_step(self,output,metrics,grad_norm,clip_ratio):
         self.log_kv({"loss": output["loss"].item()})
         kvs_step = []
         if "loss" in self.args.log_train_metrics.split(","):
             kvs_step.append(output["loss"].item())
         if "grad_norm" in self.args.log_train_metrics.split(","):
             kvs_step.append(grad_norm)
+        if "clip_ratio" in self.args.log_train_metrics.split(","):
+            kvs_step.append(clip_ratio)
         self.log_kv_step(kvs_step)
         self.log_kv(metrics)
     
@@ -329,15 +345,15 @@ class DiffusionModelTrainer:
             param_group["lr"] = lr_new
                 
     def optimize_fp16(self):
-        if any(not torch.isfinite(p.grad).all() for p in self.model_params):
+        if any(is_infinite_and_not_none(p) for p in self.model_params):
             self.log_loss_scale -= 1
-            self.last_grad_norm = float("nan")
+            self.last_grad_norm = -1.0
+            self.last_clip_ratio = -1.0 
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
             if self.log_loss_scale <= -20:
                 self.log("Loss scale has gotten too small, stopping training.")
                 exit()
             return
-
         model_grads_to_master_grads(self.model_params, self.master_params)
         self.master_params[0].grad.mul_(1.0 / (2 ** self.log_loss_scale))
         self._log_grad_norm()
@@ -345,24 +361,33 @@ class DiffusionModelTrainer:
             torch.nn.utils.clip_grad_norm_(self.master_params, self.args.clip_grad_norm)
         self._update_lr()
         self.opt.step()
-        for rate, params in zip(self.ema_rate, self.ema_params):
+        for rate, params in zip(self.ema_rates, self.ema_params):
             update_ema(params, self.master_params, rate=rate)
         master_params_to_model_params(self.model_params, self.master_params)
         self.log_loss_scale += self.args.fp16_scale_growth
 
     def optimize_normal(self):
         self._log_grad_norm()
+        if self.args.clip_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.master_params, self.args.clip_grad_norm)
         self._update_lr()
         self.opt.step()
-        for rate, params in zip(self.ema_rate, self.ema_params):
+        for rate, params in zip(self.ema_rates, self.ema_params):
             update_ema(params, self.master_params, rate=rate)
 
     def _log_grad_norm(self):
         sqsum = 0.0
+        ratio_count = 0
+        num_total_params = 0
         for p in self.master_params:
             sqsum += (p.grad ** 2).sum().item()
-        self.log_kv({"grad_norm": np.sqrt(sqsum)})
+            ratio_count += (p.grad.abs() > self.args.clip_grad_norm).sum().item()
+            num_total_params += p.numel()
+        
+        self.last_clip_ratio = ratio_count / num_total_params
         self.last_grad_norm = np.sqrt(sqsum)
+        self.log_kv({"grad_norm": self.last_grad_norm})
+        self.log_kv({"clip_ratio": self.last_clip_ratio})
         
     def train_loop(self):
         self.step += 1
@@ -378,21 +403,26 @@ class DiffusionModelTrainer:
             output,metrics = self.run_train_step(batch)
             pbar.update(1)
 
-            if self.step % self.args.log_vali_interval == 0:
+            if self.step % self.args.log_vali_interval == 0 and self.args.log_vali_interval>0:
+                if self.args.debug_run:
+                    cpu_usage = psutil.cpu_percent(interval=1)
+                    ram_usage = psutil.virtual_memory().percent
+                    self.log_kv({"cpu_usage": cpu_usage})
+                    self.log_kv({"ram_usage": ram_usage})
                 self.evaluate_loop()
-            
-            if self.step % self.args.update_forward_pass_plot_interval == 0:
+                
+            if self.step % self.args.update_forward_pass_plot_interval == 0 and self.args.update_forward_pass_plot_interval>0:
                 with MatplotlibTempBackend(backend="agg"):
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
             
-            if self.step % self.args.gen_interval == 0:
+            if self.step % self.args.gen_interval == 0 and self.args.gen_interval>0:
                 self.generate_samples()
             
-            if self.step % self.args.update_loss_plot_interval == 0:
+            if self.step % self.args.update_loss_plot_interval == 0 and self.args.update_loss_plot_interval>0:
                 with MatplotlibTempBackend(backend="agg"):
-                    make_loss_plot(self.args.save_path,self.step)
+                    make_loss_plot(self.args.save_path,self.step,plot_gen_setups=self.args.gen_setups.split(","))
 
-            if (self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(",")):
+            if (self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(",")) and self.args.save_interval>0:
                 self.save_train_ckpt()
                 
             self.step += 1

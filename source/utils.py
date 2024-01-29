@@ -5,13 +5,74 @@ from pathlib import Path
 import csv
 import os
 import copy
+import sys
 import argparse
 import json
 from collections import OrderedDict
-from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix, pair_confusion_matrix
 from scipy.optimize import linear_sum_assignment
 import matplotlib
 from functools import partial
+import jsonlines
+
+class AlwaysReturnsFirstItemOnNext():
+    def __init__(self,iterable):
+        self.first_item = next(iterable)
+        self.iterable = iterable
+    def __iter__(self):
+        return self
+    def __next__(self):
+        return self.first_item
+
+def is_infinite_and_not_none(x):
+    if x is None:
+        return False
+    else:
+        return torch.isinf(x).any()
+
+def save_dict_list_to_json(data_list, file_path, append=False):
+    assert len(file_path)>=5, "File path must end with .json or .jsonl"
+    assert file_path[-5:] in ["jsonl",".json"], "File path must end with .json or .jsonl"
+    if file_path[-5:] == "jsonl":
+        assert len(file_path)>=6, "File path must end with .json or .jsonl"
+        assert file_path[-6:]==".jsonl","File path must end with .json or .jsonl"
+    if not isinstance(data_list,list):
+        data_list = [data_list]
+    if file_path[-5:] == ".json":
+        if append:
+            try:
+                existing_data = load_json_to_dict_list(file_path)
+                combined_data = existing_data + data_list
+            except FileNotFoundError:
+                combined_data = data_list
+        else:
+            combined_data = data_list
+        
+        with open(file_path, 'w') as json_file:
+            json.dump(combined_data, json_file, indent=4)
+    elif file_path[-6:] == ".jsonl":
+        mode = "a" if append else "w"
+        with jsonlines.open(file_path, mode=mode) as writer:
+            for line in data_list:
+                writer.write(line)
+    else:
+        raise ValueError("File path must end with .json or .jsonl")
+
+def load_json_to_dict_list(file_path):
+    assert len(file_path)>=5, "File path must end with .json"
+    assert file_path[-5:] in ["jsonl",".json"], "File path must end with .json or .jsonl"
+    if file_path[-5:] == "jsonl":
+        assert len(file_path)>=6, "File path must end with .json or .jsonl"
+        assert file_path[-6:]==".jsonl","File path must end with .json or .jsonl"
+    if file_path[-5:] == ".json":
+        with open(file_path, 'r') as json_file:
+            data_list = json.load(json_file)
+    elif file_path[-6:] == ".jsonl":
+        data_list = []
+        with jsonlines.open(file_path) as reader:
+            for line in reader:
+                data_list.append(line)
+    return data_list
 
 def get_model_name_from_written_args(filename):
     loaded = json.loads(Path(filename).read_text())
@@ -71,7 +132,7 @@ def get_mse_metrics(output):
         metrics["mse_eps"] = mse_loss(output["pred_eps"],output["eps"]).tolist()
     return metrics
 
-def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None):
+def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None,reduce_to_mean=True):
     assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
     assert isinstance(target,torch.Tensor), "target must be a torch tensor"
     if len(pred.shape)==len(target.shape)==3:
@@ -91,7 +152,7 @@ def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx
         metrics = [metrics]
     metric_dict = {"iou": standard_iou,
                    "hiou": hungarian_iou,
-                   "ari": adjusted_rand_score,
+                   "ari": adjusted_rand_score_stable,
                    "mi": adjusted_mutual_info_score}
     #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
     out = {metric: [] for metric in metrics}
@@ -104,6 +165,14 @@ def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx
             out[metric] = out[metric][0]
     return out
 
+def adjusted_rand_score_stable(target,pred):
+    (tn, fp), (fn, tp) = pair_confusion_matrix(target.astype(np.uint64),pred.astype(np.uint64))
+    tn,fp,fn,tp = np.float64(tn),np.float64(fp),np.float64(fn),np.float64(tp)
+    if fp==0 and fn==0:
+        return 1.0
+    else:
+        return 2. * (tp * tn - fn * fp) / ((tp + fn) * (fn + tn) + (tp + fp) * (fp + tn))
+
 def handle_empty(metric_func):
     def wrapped(target,pred,*args,**kwargs):
         if len(target)==0 and len(pred)==0:
@@ -114,7 +183,7 @@ def handle_empty(metric_func):
             return metric_func(target,pred,*args,**kwargs)
     return wrapped
 
-def metric_preprocess(target,pred):
+def metric_preprocess(target,pred,dtype=np.int64):
     assert isinstance(target,np.ndarray) or isinstance(target,torch.Tensor), "target must be a torch tensor or numpy array"
     assert isinstance(pred,np.ndarray) or isinstance(pred,torch.Tensor), "pred must be a torch tensor or numpy array"
     if isinstance(target,torch.Tensor):
@@ -204,13 +273,19 @@ def standard_iou(target,pred,ignore_idx=0,reduce_classes=True):
         iou = np.mean(iou)
     return iou
 
+def get_save_name_str(setup_name,gen_id,step):
+    if gen_id=="":
+        return f"{setup_name}_{step:06d}"
+    else:
+        return f"{setup_name}_{gen_id}_{step:06d}"
+
 def mse_loss(pred_x, x, batch_dim=0):
     """mean squared error loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     return torch.mean((pred_x-x)**2, dim=non_batch_dims)
 
-def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filename="args_def.json"):
-    default_path = Path(__file__).parent/filename
+def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filename="jsons/args_default.json"):
+    default_path = Path(__file__).parent.parent/filename
     if ordered_dict:
         args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
     else:
@@ -229,9 +304,13 @@ def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filenam
 
 
 class SmartParser():
-    def __init__(self,name="args"):
-        self.filename_def = name+"_def.json"
-        self.filename_model = name+"_model.json"
+    def __init__(self,name="args",modify_name_str=None):
+        if modify_name_str is None:
+            modify_name_str = {"args": True,"sample_opts": False}[name]
+        self.modify_name_str = modify_name_str
+        self.name_str = {"args": "model_name","sample_opts": "gen_setup"}[name]
+        self.filename_def   = "jsons/"+name+"_default.json"
+        self.filename_model = "jsons/"+name+"_configs.json"
         self.defaults_func = partial(load_defaults,filename=self.filename_def)
         self.descriptions = self.defaults_func(idx=1)
         defaults = self.defaults_func()
@@ -257,19 +336,28 @@ class SmartParser():
     def get_args(self,alt_parse_args=None,modified_args={}):
         if alt_parse_args is None:
             args = self.parser.parse_args()
+            postprocess_args = sys.argv[1:]
         else:
             assert isinstance(alt_parse_args,list), f"alt_parse_args must be a list or None. alt_parse_args={alt_parse_args}"
             args = self.parser.parse_args(alt_parse_args)
-        model_dicts = json.loads((Path(__file__).parent/self.filename_model).read_text())
-        args = model_specific_args(args,model_dicts)
+            postprocess_args = alt_parse_args
+        model_dicts = json.loads((Path(__file__).parent.parent/self.filename_model).read_text())
+        args = model_specific_args(args,model_dicts,self.name_str)
         deprecated_keys = self.defaults_func(return_deprecated_keys=True)
         for k in args.__dict__.keys():
             if k in deprecated_keys:
                 raise ValueError(f"key {k} is deprecated.")
+        if len(postprocess_args)>0:
+            for k,v in zip(postprocess_args[:-1],postprocess_args[1:]):
+                if k.startswith("--") and not v.startswith("--"):
+                    if k[2:] in args.__dict__.keys():
+                        args.__dict__[k[2:]] = self.type_dict[k[2:]](v)
         args = self.parse_types(args)
         for k,v in modified_args.items():
             assert k in args.__dict__.keys(), f"key {k} not found in args.__dict__.keys()={args.__dict__.keys()}"
             assert not isinstance(v,list), f"list not supported in modified_args to avoid recursion."
+            if isinstance(v,str):
+                assert v.find(";")<0, f"semicolon not supported in modified_args to avoid recursion."
             args.__dict__[k] = v
         if any([isinstance(v,list) for v in args.__dict__.values()]):
             modified_args_list = []
@@ -287,11 +375,12 @@ class SmartParser():
             
             if num_modified_args>1:
                 for i in range(num_modified_args):
-                    model_name_new = args.model_name if hasattr(args,"model_name") else args.gen_setup
+                    model_name_new = getattr(args,self.name_str)
                     for k,v in modified_args_list[i].items():
                         model_name_new += f"_({k}={v})"
-                    modified_args_list[i]["model_name"] = model_name_new
-                args = args, modified_args_list
+                    if self.modify_name_str:
+                        modified_args_list[i][self.name_str] = model_name_new
+                args = modified_args_list
         return args
     
     def list_wrap_type(self,t):
@@ -362,13 +451,8 @@ def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=Fal
     return model_arch, load_info
 
 
-def model_specific_args(args,model_dicts):
-    if hasattr(args,"model_name"):
-        model_name = args.model_name
-    elif hasattr(args,"gen_setup"):
-        model_name = args.gen_setup
-    else:
-        raise ValueError("args must have a model_name or gen_setup attribute.")
+def model_specific_args(args,model_dicts,name_str):
+    model_name = getattr(args,name_str)
     
     if "+" in model_name:
         plus_names = model_name.split("+")[1:]
@@ -380,23 +464,23 @@ def model_specific_args(args,model_dicts):
         for _ in range(model_name.count("[")):
             idx0 = model_name.find("[")
             idx1 = model_name.find("]")
-            assert idx0<idx1, f"model_name={model_name} has mismatched brackets."
+            assert idx0<idx1, f"{name_str}={model_name} has mismatched brackets."
             ver_names.append(model_name[idx0+1:idx1])
             model_name = model_name[:idx0] + model_name[idx1+1:]
         
     if not model_name in model_dicts.keys():
-        raise ValueError(f"model_name={model_name} not found in model_dicts")
+        raise ValueError(f"{name_str}={model_name} not found in model_dicts")
     for k,v in model_dicts[model_name].items():
         if k!="versions":
             args.__dict__[k] = v
     if len(ver_names)>0:
-        assert "versions" in model_dicts[model_name].keys(), f"model_name={model_name} does not have versions."
+        assert "versions" in model_dicts[model_name].keys(), f"{name_str}={model_name} does not have versions."
         for k,v in model_dicts[model_name]["versions"].items():
             if k in ver_names:
                 for k2,v2 in v.items():
                     args.__dict__[k2] = v2
     for mn in plus_names:
-        assert "+"+mn in model_dicts.keys(), f"model_name={'+'+mn} not found in model_dicts."
+        assert "+"+mn in model_dicts.keys(), f"{name_str}={'+'+mn} not found in model_dicts."
         for k,v in model_dicts["+"+mn].items():
             args.__dict__[k] = v
     return args
@@ -595,7 +679,7 @@ def set_random_seed(seed, deterministic=False):
             to True and `torch.backends.cudnn.benchmark` to False.
             Default: False.
     """
-    if seed is None:
+    if seed is None or seed < 0:
         np.random.seed()
         seed = np.random.randint(0, 2**16-1)
     random.seed(seed)
@@ -605,6 +689,7 @@ def set_random_seed(seed, deterministic=False):
     if deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    return seed
 
 def num_of_params(model,print_numbers=True):
     """

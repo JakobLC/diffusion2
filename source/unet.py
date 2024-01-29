@@ -345,20 +345,23 @@ class UNetModel(nn.Module):
         self_cond=False,
         cond=False,
         is_pred_both=False,
+        debug_flag=False,
     ):
         super().__init__()
-
+        self.debug_flag = debug_flag
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         self.image_size = image_size
         self.model_channels = model_channels
         self.num_res_blocks = num_res_blocks
+        
         self.attention_resolutions = []
-        for ar in attention_resolutions.split(","):
-            ar = int(ar)
-            if ar < 0:
-                ar = len(channel_mult) + ar - 1
-            self.attention_resolutions.append(ar)
+        if attention_resolutions not in ["", ","]:
+            for ar in attention_resolutions.split(","):
+                ar = int(ar)
+                if ar < 0:
+                    ar = len(channel_mult) + ar - 1
+                self.attention_resolutions.append(ar)
         self.dropout = dropout
         self.channel_mult = channel_mult
         self.conv_resample = conv_resample
@@ -428,26 +431,26 @@ class UNetModel(nn.Module):
                 )
                 input_block_chans.append(ch)
                 resolution += 1
-
-        self.middle_block = TimestepEmbedSequential(
-            ResBlock(
-                ch,
-                time_embed_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-            ),
-            AttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads),
-            ResBlock(
-                ch,
-                time_embed_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-            ),
-        )
+        middle_layers = [ResBlock(
+                        ch,
+                        time_embed_dim,
+                        dropout,
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        )]
+        if len(self.attention_resolutions)>0:
+            middle_layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads))
+        middle_layers.append(ResBlock(
+                            ch,
+                            time_embed_dim,
+                            dropout,
+                            dims=dims,
+                            use_checkpoint=use_checkpoint,
+                            use_scale_shift_norm=use_scale_shift_norm,
+                        ))
+        
+        self.middle_block = TimestepEmbedSequential(*middle_layers)
 
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
@@ -517,7 +520,8 @@ class UNetModel(nn.Module):
         :return: an [N x C x ...] Tensor of outputs.
         """
         h,timesteps,labels = self.prepare_inputs(sample, timesteps, labels, **kwargs)
-
+       # if self.debug_flag:
+            #return sample*(1+0.001*list(self.parameters())[0].mean())
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         if self.no_diffusion:
             emb *= 0
@@ -586,25 +590,29 @@ class UNetModel(nn.Module):
 def create_unet_from_args(args):
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
-    image_size = args["image_size"]
-    if image_size == 256:
-        if args["deeper_net"]:
-            channel_mult = (1, 1, 1, 2, 2, 4, 4)
+
+    if args["channel_multiplier"]=="auto":
+        image_size = args["image_size"]
+        if image_size == 256:
+            if args["deeper_net"]:
+                channel_mult = (1, 1, 1, 2, 2, 4, 4)
+            else:
+                channel_mult = (1, 1, 2, 2, 4, 4)
+        elif image_size == 128:
+            if args["deeper_net"]:
+                channel_mult = (1, 1, 2, 2, 4, 4)
+            else:
+                channel_mult = (1, 2, 2, 4, 4)
+        elif image_size == 64:
+            channel_mult = (1, 2, 3, 4)
+        elif image_size == 32:
+            channel_mult = (1, 2, 2, 2)
+        elif image_size == 16:
+            channel_mult = (1, 2, 2)
         else:
-            channel_mult = (1, 1, 2, 2, 4, 4)
-    elif image_size == 128:
-        if args["deeper_net"]:
-            channel_mult = (1, 1, 2, 2, 4, 4)
-        else:
-            channel_mult = (1, 2, 2, 4, 4)
-    elif image_size == 64:
-        channel_mult = (1, 2, 3, 4)
-    elif image_size == 32:
-        channel_mult = (1, 2, 2, 2)
-    elif image_size == 16:
-        channel_mult = (1, 2, 2)
+            raise ValueError(f"unsupported image size: {image_size}")
     else:
-        raise ValueError(f"unsupported image size: {image_size}")
+        channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
     out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
     unet = UNetModel(image_size=args["image_size"],
                      is_pred_both=args["predict"]=="both",
@@ -620,7 +628,8 @@ def create_unet_from_args(args):
                     num_heads_upsample=args["num_heads_upsample"],
                     weak_signals=args["weak_signals"],
                     self_cond=args["self_cond"],
-                    cond=args["cond_type"]!="none")
+                    cond=args["cond_type"]!="none",
+                    debug_flag=args["debug_run"])
     return unet
 
 def main():
