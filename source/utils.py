@@ -679,7 +679,9 @@ def set_random_seed(seed, deterministic=False):
             to True and `torch.backends.cudnn.benchmark` to False.
             Default: False.
     """
-    if seed is None or seed < 0:
+    if seed < 0:
+        seed = None
+    if seed is None:
         np.random.seed()
         seed = np.random.randint(0, 2**16-1)
     random.seed(seed)

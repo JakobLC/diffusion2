@@ -40,6 +40,7 @@ class DiffusionModelTrainer:
 
         self.seed = set_random_seed(args.seed)
         args.seed = self.seed
+
         self.cgd = create_diffusion_from_args(args)
         self.model = create_unet_from_args(args)
         n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
@@ -84,7 +85,10 @@ class DiffusionModelTrainer:
             raise NotImplementedError("cat_ball_data not implemented")
             """train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
             vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)"""
-        
+        if args.save_best_ckpt:
+            n_setups = len(args.gen_setups.split(","))
+            assert -n_setups < args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
+            
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
             
@@ -92,6 +96,7 @@ class DiffusionModelTrainer:
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
+        self.num_nan_losses = 0
 
         #init models, optimizers etc
         self.model = self.model.to(self.device)
@@ -113,7 +118,7 @@ class DiffusionModelTrainer:
             
         if self.args.mode in ["cont","load","gen"]:
             self.log_loss_scale = ckpt["log_loss_scale"]
-            self.best_miou = ckpt["best_miou"]
+            self.best_metric = (ckpt["best_metric"] if ckpt["best_metric"] is not None else 0.0) if "best_metric" in ckpt.keys() else 0.0
             self.fixed_batch = ckpt["fixed_batch"]
             self.opt.load_state_dict(ckpt["optimizer"])
             self.model.load_state_dict(ckpt["model"])
@@ -127,16 +132,11 @@ class DiffusionModelTrainer:
             write_args(args, Path(args.save_path)/"args.json")
             self.step = 0
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
-            self.best_miou = 0.0
+            self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
-
-        if self.args.seed>=0:
-            set_random_seed(self.args.seed)
-        else:
-            set_random_seed(None)
 
         self.log("Init complete.")
 
@@ -158,10 +158,15 @@ class DiffusionModelTrainer:
                                         shuffle=not hasattr(dataset,"get_sampler"),
                                         drop_last=True,
                                         collate_fn=custom_collate_with_info))
-            if self.args.debug_run:
-                pass
+            if self.args.debug_run=="no_dl":
                 #self.tr = tracker.SummaryTracker()
-                #dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
+                dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
+            elif self.args.debug_run=="spam_getitem":
+                for i in range(1000):
+                    batch = next(dataloader)
+                    if i%10==0:
+                        mem_usage = psutil.virtual_memory().percent
+                        print(f"i: {i}, mem_usage: {mem_usage}")
             setattr(self,split+"_dl",dataloader)
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
@@ -183,49 +188,38 @@ class DiffusionModelTrainer:
                     assert k in self.args.__dict__.keys(), f"could not find key {k} from ckpt_args in current args"
                     assert self.args.__dict__[k]==v, f"ckpt args and current args differ for key {k}: {v} vs {self.args.__dict__[k]}"
         return str(ckpt_name)
-
-    def save_state_dict(self,ema_idx=None,delete_old=False,miou=None):
-        if delete_old:
-            rmtree(Path(self.args.save_path)/"state_dicts")
-        if ema_idx is None:
-            name = "model"
-            params = self.master_params
-        else:
-            assert ema_idx<len(self.ema_rates), "ema_idx must be smaller than the number of ema rates"
-            name = "ema"
-            params = self.ema_params[ema_idx]
         
-        if miou is None:
-            miou = 0.0
-        name += f"_step{self.step:06d}"
-        name += f"_miou{miou:.4f}"
-        if not (Path(self.args.save_path)/"state_dicts").exists():
-            os.makedirs(Path(self.args.save_path)/"state_dicts")
-        torch.save(self._master_params_to_state_dict(params), str(Path(self.args.save_path)/"state_dicts"/f"{name}.pt"))
-        
-    def save_train_ckpt(self,delete_old=True):
+    def save_train_ckpt(self,delete_old=True,name_str="ckpt_",additional_str="",only_keep_keys=None):
         save_dict = {"step": self.step,
                      "model": self._master_params_to_state_dict(self.master_params),
                      "optimizer": self.opt.state_dict(),
                      "log_loss_scale": self.log_loss_scale,
-                     "best_miou": self.best_miou,
+                     "best_metric": self.best_metric,
                      "fixed_batch": self.fixed_batch}
         for ema_rate, params in zip(self.ema_rates, self.ema_params):
             save_dict["ema_"+str(ema_rate)] = self._master_params_to_state_dict(params)
-        torch.save(save_dict, str(Path(self.args.save_path)/f"ckpt_{self.step:06d}.pt"))
+        save_name = str(Path(self.args.save_path)/f"{name_str}{additional_str}{self.step:06d}.pt")
+        if only_keep_keys is not None:
+            for k in only_keep_keys:
+                assert k in save_dict.keys(), f"key {k} not found in save_dict"
+            save_dict = {k:v for k,v in save_dict.items() if k in only_keep_keys}
+        torch.save(save_dict, save_name)
         if delete_old:
-            possible_ckpts = list(Path(self.args.save_path).glob("ckpt_*.pt"))
-            for ckpt in possible_ckpts:
-                if int(ckpt.stem.split("_")[1])<self.step:
-                    os.remove(ckpt)
+            possible_ckpts = list(Path(self.args.save_path).glob(bracket_glob_fix(f"{name_str}*.pt")))
+            for ckpt_name in possible_ckpts:
+                if str(ckpt_name)!=save_name:
+                    os.remove(ckpt_name)
     
-    def get_ema_model(self,ema_rate):
-        if self.args.mode!="gen":
-            raise ValueError("ema model only implemented for mode='gen'")
-        assert float(ema_rate) in self.ema_rates, f"Could not find specified ema_rate. ema_rate: {ema_rate}, ema_rates: {self.ema_rates}"
-        ema_rate_idx = self.ema_rates.index(float(ema_rate))
-        self.model.load_state_dict(self._master_params_to_state_dict(self.ema_params[ema_rate_idx]))
-        return self.model
+    def get_ema_model(self,ema_idx):
+        assert ema_idx < len(self.ema_rates), "ema_idx must be smaller than the number of ema rates"
+        tmp = make_master_params(copy.deepcopy(self.model_params))
+        master_params_to_model_params(self.model_params, self.ema_params[ema_idx])
+
+        self.ema_params[ema_idx] = tmp
+        del tmp
+        swap_pointers_func = lambda: self.get_ema_model(ema_idx)
+
+        return self.model, swap_pointers_func
 
     def get_kwargs(self, batch, gen=False):
         x,info = batch
@@ -233,7 +227,8 @@ class DiffusionModelTrainer:
         model_kwargs = {"image": [],
                         "bbox": [],
                         "points": [],
-                        "cond": []}
+                        "cond": [],
+                        "classes": []}
         bs = x.shape[0]
         for i in range(bs):
             if np.random.rand()<self.args.image_prob or gen:
@@ -257,7 +252,14 @@ class DiffusionModelTrainer:
                     #model_kwargs["cond"] = info["get_cond"]()
                 else:
                     model_kwargs["cond"].append(None)
-
+            if self.args.class_type!="none":
+                if self.args.class_type=="num_classes" and self.args.classes_prob>0:
+                    if np.random.rand()<self.args.classes_prob:
+                        model_kwargs["classes"].append(torch.tensor(info[i]["num_classes"],dtype=torch.long))
+                    else:
+                        model_kwargs["classes"].append(None)
+                else:
+                    raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
         to_dev = lambda x: x.to(self.device) if x is not None else None
         model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         return x,model_kwargs,info
@@ -280,7 +282,6 @@ class DiffusionModelTrainer:
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
-
         self_cond = self.get_self_cond(info)
 
         output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs,self_cond=self_cond)
@@ -299,7 +300,7 @@ class DiffusionModelTrainer:
             self.optimize_normal()
         #logging
         metrics = get_all_metrics(output,ab=self.cgd.ab)
-        self.log_train_step(output,metrics,self.last_grad_norm,self.last_clip_ratio)
+        self.log_train_step(output,metrics)
         
         return output,metrics
     
@@ -320,15 +321,28 @@ class DiffusionModelTrainer:
         self.log_kv({prefix+"loss": output["loss"].item()})
         self.log_kv({prefix+k:v for k,v in metrics.items()})
         
-    def log_train_step(self,output,metrics,grad_norm,clip_ratio):
+    def log_train_step(self,output,metrics):
         self.log_kv({"loss": output["loss"].item()})
-        kvs_step = []
+        kvs_step = {}
         if "loss" in self.args.log_train_metrics.split(","):
-            kvs_step.append(output["loss"].item())
+            kvs_step["loss"] = output["loss"].item()
+            if np.isnan(kvs_step["loss"]):
+                self.num_nan_losses += 1
+                if self.num_nan_losses>20:
+                    self.log("Too many NaN losses, stopping training.")
+                    exit()
+            else:
+                self.num_nan_losses = 0
         if "grad_norm" in self.args.log_train_metrics.split(","):
-            kvs_step.append(grad_norm)
+            kvs_step["grad_norm"] = self.last_grad_norm
         if "clip_ratio" in self.args.log_train_metrics.split(","):
-            kvs_step.append(clip_ratio)
+            kvs_step["clip_ratio"] = self.last_clip_ratio
+        if "mem_usage" in self.args.log_train_metrics.split(","):
+            mem_usage = psutil.virtual_memory().percent
+            kvs_step["mem_usage"] = mem_usage
+            self.log_kv({"mem_usage": mem_usage})
+        #reorder to match the order in args.log_train_metrics
+        kvs_step = [kvs_step[k] for k in self.args.log_train_metrics.split(",")]
         self.log_kv_step(kvs_step)
         self.log_kv(metrics)
     
@@ -345,7 +359,7 @@ class DiffusionModelTrainer:
             param_group["lr"] = lr_new
                 
     def optimize_fp16(self):
-        if any(is_infinite_and_not_none(p) for p in self.model_params):
+        if any(is_infinite_and_not_none(p.grad) for p in self.model_params):
             self.log_loss_scale -= 1
             self.last_grad_norm = -1.0
             self.last_clip_ratio = -1.0 
@@ -404,11 +418,6 @@ class DiffusionModelTrainer:
             pbar.update(1)
 
             if self.step % self.args.log_vali_interval == 0 and self.args.log_vali_interval>0:
-                if self.args.debug_run:
-                    cpu_usage = psutil.cpu_percent(interval=1)
-                    ram_usage = psutil.virtual_memory().percent
-                    self.log_kv({"cpu_usage": cpu_usage})
-                    self.log_kv({"ram_usage": ram_usage})
                 self.evaluate_loop()
                 
             if self.step % self.args.update_forward_pass_plot_interval == 0 and self.args.update_forward_pass_plot_interval>0:
@@ -422,7 +431,7 @@ class DiffusionModelTrainer:
                 with MatplotlibTempBackend(backend="agg"):
                     make_loss_plot(self.args.save_path,self.step,plot_gen_setups=self.args.gen_setups.split(","))
 
-            if (self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(",")) and self.args.save_interval>0:
+            if ((self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(","))) and self.args.save_interval>0:
                 self.save_train_ckpt()
                 
             self.step += 1
@@ -555,7 +564,7 @@ class DiffusionModelTrainer:
         """
         if gen_tuples is None:
             gen_tuples = [(gs, {}) for gs in self.args.gen_setups.split(",")]
-
+        gen_setup_idx = 0
         for gen_setup,modified_args in gen_tuples:
             sampler = DiffusionSampler(trainer=self)
             sampler.load_gen_setup(gen_setup,modified_args)
@@ -566,7 +575,22 @@ class DiffusionModelTrainer:
             for m in max_reduction_measures:
                 metric_kvs["max_"+m] = [max(v) for v in metric_dict[m]]
             self.kvs_gen_buffer.update(metric_kvs)
+
+            #maybe save best ckpt
+            if (self.args.mode!="gen" and 
+                self.args.save_best_ckpt and 
+                self.args.best_ckpt_gen_setup_idx==gen_setup_idx):
+                metric = self.args.best_ckpt_metric
+                new_best_metric = np.array(self.kvs_gen_buffer[metric]).mean().item()
+                if new_best_metric>self.best_metric:
+                    self.best_metric = new_best_metric
+                    model_key = f"ema_{self.ema_rates[sampler.opts.ema_idx]}" if sampler.opts.ema_idx>=0 else "model"
+                    self.save_train_ckpt(delete_old=True,
+                                        name_str="best_ckpt_",
+                                        additional_str=f"{gen_setup}_{metric}={self.best_metric:.4f}_",
+                                        only_keep_keys=None if self.args.best_ckpt_full else [model_key])
             self.dump_kvs_gen()
+            gen_setup_idx += 1
 
 def main():
     import argparse

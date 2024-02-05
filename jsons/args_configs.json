@@ -144,23 +144,7 @@
     },
     "long": {
         "versions": {
-            "2": {"mode": "load", "gen_setups": "valifast,trainfast"},
-            "3": {"mode": "load", "gen_setups": "valifast,trainfast", "input_scale": 0.003},
-            "4": {"num_channels": "32", "gen_setups": "valifast,trainfast", "input_scale": 0.001, "image_size": 32, "debug_run": true},
-            "5b": {"mode": "load", "gen_setups": "valifast,trainfast", "gen_interval": 1, "max_iter": 1000},
-            "6b": {"mode": "load", "gen_setups": "valifast,trainfast", "update_forward_pass_plot_interval": 1, "max_iter": 1000},
-            "7b": {"mode": "load", "gen_setups": "valifast,trainfast", "save_interval": 1, "max_iter": 1000},
-            "8b": {"mode": "load", "gen_setups": "valifast,trainfast", "log_vali_interval": 1, "max_iter": 1000},
-            "5":  {"mode": "load", "gen_setups": "valifast,trainfast", "gen_interval": 10000, "max_iter": 50000},
-            "6":  {"mode": "load", "gen_setups": "valifast,trainfast", "update_forward_pass_plot_interval": 10000, "max_iter": 50000},
-            "7":  {"mode": "load", "gen_setups": "valifast,trainfast", "save_interval": 20000, "max_iter": 50000},
-            "8":  {"mode": "load", "gen_setups": "valifast,trainfast", "log_vali_interval": 2000, "max_iter": 50000},
-            "9": {"mode": "load", "gen_setups": "minimum_gen", "gen_interval": 1},
-            "10":  {"mode": "load", "gen_setups": "valifast,trainfast", "log_vali_interval": 999999, "max_iter": 50000, "gen_interval": 999999, "save_interval": 999999, "update_forward_pass_plot_interval": 999999, "log_train_metrics": "loss,clip_ratio"},
-            "11":  {"mode": "load", "gen_setups": "valifast,trainfast", "log_vali_interval": 10, "max_iter": 50000, 
-                    "debug_run": true,  "ckpt_name": "*long/ckpt_*.pt", "log_train_metrics": "loss,clip_ratio"},
-            "12":  {"mode": "new", "gen_setups": "valifast,trainfast", "log_vali_interval": 200, "max_iter": 50000, "ckpt_name": "*long/ckpt_*.pt", "log_train_metrics": "loss,clip_ratio", "use_fp16": false},
-            "13": {"num_channels": 16, "image_size": 1024, "channel_multiplier": "1,1,1", "lr": 0.00001, "attention_resolutions": "", "train_batch_size": 4, "num_vali_batches": 1, "debug_run": true}
+            "weak": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true, "self_cond": true, "gen_setups": "vali-ts10,train-ts10,self_cond_gw2"}
         },
         "predict": "x",
         "loss_weights": "SNR_trunc",
@@ -169,7 +153,8 @@
         "deeper_net": true,
         "num_channels": 128,
         "image_size": 256,
-        "train_batch_size": 4
+        "train_batch_size": 4,
+        "input_scale": 0.003
     },
     "+no_interval": {
         "save_interval": -1,
@@ -177,5 +162,37 @@
         "log_vali_interval": -1,
         "update_loss_plot_interval": -1,
         "update_forward_pass_plot_interval": -1
+    },
+    "num_classes": {
+        "versions": {
+            "small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 8}
+        },
+        "predict": "x",
+        "loss_weights": "SNR_trunc",
+        "max_iter": 200000,
+        "max_num_classes": 64,
+        "deeper_net": true,
+        "num_channels": 128,
+        "image_size": 256,
+        "input_scale": 0.003,
+        "weak_bbox_prob": 0.0, 
+        "weak_points_prob": 0.5, 
+        "weak_signals": true, 
+        "self_cond": true, 
+        "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
+        "class_type": "num_classes"
+    },
+    "nc": {
+        "predict": "x;v;both;eps",
+        "loss_weights": "SNR;SNR_trunc;SNR_plus1;uniform",
+        "max_iter": 30000,
+        "max_num_classes": 64,
+        "deeper_net": true,
+        "weak_bbox_prob": 0.0, 
+        "weak_points_prob": 0.5, 
+        "weak_signals": true, 
+        "self_cond": true, 
+        "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
+        "class_type": "num_classes"
     }
 }

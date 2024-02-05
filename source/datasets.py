@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 import albumentations as A
 import cv2
+import copy
 
 def points_image_from_label(label,num_points=None):
     assert torch.is_tensor(label)
@@ -102,7 +103,7 @@ class AnalogBits(object):
             was_torch = False
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
-        assert x.shape[self.bit_dim]==self.num_bits
+        assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", self.num_bits: "+str(self.num_bits)+", self.bit_dim: "+str(self.bit_dim)
         #convert to ints if necessary
         if x.dtype in [np.float32,np.float64]:
             x = (x>0).astype(np.uint8)
@@ -112,6 +113,26 @@ class AnalogBits(object):
         if was_torch:
             x = torch.from_numpy(x).to(device)
         return x
+
+    def bit2prob(self,x):
+        if isinstance(x,torch.Tensor):
+            device = x.device
+            x = x.cpu().detach().numpy()
+            was_torch = True
+        else:
+            was_torch = False
+        assert isinstance(x,np.ndarray)
+        assert len(x.shape)>=self.bit_dim+1
+        assert x.shape[self.bit_dim]==self.num_bits
+        onehot_shape = list(x.shape)
+        onehot_shape[self.bit_dim] = 2**self.num_bits
+        onehot = np.zeros(onehot_shape)
+        for i in range(2**self.num_bits):
+            pure_bits = self.int2bit(np.array([i]).reshape(1,1,1,1))
+            onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=1)
+        if was_torch:
+            onehot = torch.from_numpy(onehot).to(device)
+        return onehot
 
 class CatBallDataset(torch.utils.data.Dataset):
     def __init__(self,
@@ -417,8 +438,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image,label = self.augment(image,label,item)
         image = torch.tensor(image.astype(np.float32)*(2/255)-1).permute(2,0,1)
         label = torch.tensor(label).unsqueeze(0)
-        info = item
+        info = copy.deepcopy(item) #IMPORTANT to copy, otherwise memory leak when changing info
         info["image"] = image
+        info["num_classes"] = torch.unique(label).numel()
         return label,info
 
 def sobel1d(image,axis=0,mode="nearest"):

@@ -16,7 +16,7 @@ import warnings
 import cv2
 import datetime
 import pandas as pd
-
+import scipy.ndimage as nd
 def collect_gen_table(gen_id="many",
                    name_match_strings="*30k*",
                    saves_folder = str(Path(__file__).parent.parent / "saves"),
@@ -122,6 +122,43 @@ def get_dtype(vec):
         pass
     return str
 
+def pretty_point(im,footprint=None,radius=0.05):
+    if torch.is_tensor(im):
+        was_tensor = True
+        device = im.device
+        im = im.cpu().detach().permute(1,2,0).numpy()
+    else:
+        was_tensor = False
+    assert isinstance(im,np.ndarray), "im must be a numpy array or torch.tensor"
+    assert len(im.shape)==2 or len(im.shape)==3, "im must be a 2D or 3D torch.tensor or numpy array"
+    if footprint is None:
+        #make star-shaped footprint
+        min_sidelength = min(im.shape[0],im.shape[1])
+        rad1 = np.ceil(radius*min_sidelength*0.66666).astype(int)
+        rad2 = radius*min_sidelength*0.33333
+        rad3 = np.ceil(rad1+rad2).astype(int)
+        footprint = np.ones((2*rad3+1,2*rad3+1))
+        #make cross
+        footprint[rad3,rad3-rad1:rad3+rad1+1] = 0
+        footprint[rad3-rad1:rad3+rad1+1,rad3] = 0
+        footprint = nd.distance_transform_edt(footprint,return_indices=False)
+        footprint = (footprint<=rad2).astype(int)
+    else:
+        assert isinstance(footprint,np.ndarray), "footprint must be a numpy array or None"
+    if len(im.shape)==2:
+        im = im[:,:,np.newaxis]
+    if len(footprint.shape)==2:
+        footprint = footprint[:,:,np.newaxis]
+    #convolve image with footprint
+    conv = nd.convolve(im,footprint,mode='constant',cval=0.0)
+    conv_num = nd.convolve((np.abs(im)>1e-10).astype(float),footprint,mode='constant',cval=0.0)
+    # Same as pretty_point_image = conv/conv_num, but avoiding 0/0
+    pretty_point_image = conv
+    pretty_point_image[conv_num>0] = conv[conv_num>0]/conv_num[conv_num>0]
+    if was_tensor:
+        pretty_point_image = torch.tensor(pretty_point_image).permute(2,0,1).to(device)
+    return pretty_point_image
+
 def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
@@ -162,7 +199,7 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
                     ["gen_hiou","gen_max_hiou"],#both vali and train
                     ["gen_ari","gen_max_ari"],#both vali and train
                     ["step_loss"],
-                    ["step_grad_norm"]]
+                    ["step_mem_usage","step_grad_norm","step_clip_ratio"]]
     plot_columns_new = []
     #remove non-existent columns
     for i in range(len(plot_columns)):
@@ -329,7 +366,8 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     left = ["x","final pred_x","image"]*batch_size
     right = ["x_t","pred_x","pred_eps"]*batch_size
     t_vec = np.array(range(num_timesteps, 0, -1))/num_timesteps
-    top = bottom = ["t="]+[f"{t_vec[j]:.2f}" for j in range(num_timesteps)]
+    top = bottom = ["","t="]+[f"{t_vec[j]:.2f}" for j in range(num_timesteps)]
+    top[1] = "points"
     add_text_axis_to_image(concat_filename,left=left,top=top,right=right,bottom=bottom,xtick_kwargs={"fontsize":20})
     if remove_children:
         for filename in filenames:
@@ -357,18 +395,17 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
     image_size = sample_output["pred"].shape[-1]
     
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
-    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
-    not_nb3 = not ab.num_bits==3
-    
+    aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    
-    map_dict = {"x_t": aboi if not_nb3 else nb_3,
-                "pred": aboi if not_nb3 else nb_3,
-                "pred_x": aboi if not_nb3 else nb_3,
-                "x": aboi if not_nb3 else nb_3,
-                "pred_eps": (lambda x,i: mean_dim0(x)) if not_nb3 else nb_3,
-                "image": normal_image}
+    points_aboi = lambda x,i: aboi(pretty_point(x),i)
+
+    map_dict = {"x_t": aboi,
+                "pred": aboi,
+                "pred_x": aboi,
+                "x": aboi,
+                "pred_eps": aboi,
+                "image": normal_image,
+                "points": points_aboi}
     zero_image = np.zeros((image_size,image_size,3))
     
     if not os.path.exists(foldername):
@@ -380,7 +417,9 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
         images = [[map_dict["x"](sample_output["x"][ii],i)],
                   [map_dict["pred"](sample_output["pred"][ii],i)],
                   [map_dict["image"](model_kwargs["image"][ii],i)] if contains_key("image",model_kwargs) else [zero_image]]
-
+        images[0].append(map_dict["points"](model_kwargs["points"][ii],i) if "points" in model_kwargs.keys() else zero_image)
+        images[1].append(zero_image)
+        images[2].append(zero_image)
         text = [["x"],["final pred_x"],["image"]]
         for k_i,k in enumerate(["x_t","pred_x","pred_eps"]):
             for j in range(num_timesteps):
@@ -396,7 +435,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                         show_fig=False,
                         arr=images,
                         padding=1,
-                        n_col=num_timesteps+1,
+                        n_col=num_timesteps+2,
                         text=text,
                         text_color="red",
                         pixel_mult=max(1,128//image_size),
@@ -423,15 +462,14 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
         output[k] = output[k][:bs]
         
     im = np.zeros((bs,image_size,image_size,3))+0.5
-    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
-    aboi = aboi if (not ab.num_bits==3) else nb_3
-    
+    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
+    points_aboi = lambda x,i: aboi(pretty_point(x),i)
     map_dict = {"target_bit": aboi,
                 "pred_bit": aboi,
                 "x_init": aboi,
-                "image": nb_3,
-                "points": aboi}
+                "image": normal_image,
+                "points": points_aboi}
     
     num_votes = output["pred_bit"].shape[1]
     images = []
@@ -474,7 +512,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
 
 def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True):
     show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps"]
-    k0 = show_keys[0]
+    k0 = "x_t"
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
     if bs>max_images:
@@ -498,19 +536,19 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         
     im = np.zeros((bs,image_size,image_size,3))+0.5
     normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    nb_3 = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
-    aboi = lambda x,i: analog_bits_on_image(x,im[i],ab)
-    aboi = aboi if (not ab.num_bits==3) else nb_3
-    md0 = (lambda x,i: mean_dim0(x)) if (not ab.num_bits==3) else nb_3
+    aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
+    points_aboi = lambda x,i: aboi(pretty_point(x),i)
+    err_im = lambda x,i: error_image(x)
+
     map_dict = {"image": normal_image,
                 "x_t": aboi,
                 "pred_x": aboi,
                 "x": aboi,
-                "err_x": lambda x,i: error_image(x),
-                "pred_eps": md0,
-                "eps": md0,
+                "err_x": err_im,
+                "pred_eps": aboi,
+                "eps": aboi,
                 "self_cond": aboi,
-                "points": aboi}
+                "points": points_aboi}
     if sort_samples_by_t:
         perm = torch.argsort(output["t"]).tolist()
     else:

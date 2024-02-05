@@ -13,7 +13,7 @@
         "eval_batch_size"             : [0,               "Batch size for evaluation. 0 for same as train. TYPE: int. DEFAULT: 0"],
         "sampler_type"                : ["ddpm",          "Type of sampler to use. One of ['ddpm','ddim']. TYPE: str. DEFAULT: 'ddpm'"],
         "self_cond"                   : [false,           "Whether to use self conditioning. TYPE: bool. DEFAULT: false"],
-        "ema_model_rate"              : [0.0,             "EMA model rate to use for sampling. 0 for no EMA (normal model). TYPE: float. DEFAULT: 0.0"],
+        "ema_idx"                     : [-1,              "EMA model idx to use for sampling. negative for no EMA (normal model). TYPE: float. DEFAULT: -1"],
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
         "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. One of ['train']. TYPE: str. DEFAULT: 'train'"]
     },

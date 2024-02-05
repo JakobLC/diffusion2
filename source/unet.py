@@ -390,8 +390,8 @@ class UNetModel(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
         
-        if self.num_classes is not None and self.num_classes>0:
-            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+        if self.num_classes is not None:
+            self.class_emb = nn.Embedding(num_classes, time_embed_dim)
         
         self.input_blocks = nn.ModuleList(
             [
@@ -509,25 +509,22 @@ class UNetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
-    def forward(self, sample, timesteps, labels=None, **kwargs):
+    def forward(self, sample, timesteps, **kwargs):
         """
         Apply the model to an input batch.
 
         :param sample: an [N x C x ...] Diffusion sample tensor.
         :param timesteps: a 1-D batch of timesteps.
-        :param labels: an [N] Tensor of labels, if class-conditional.
         :param kwargs: additional kwargs for the model. see self.input_dict for available kwargs.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        h,timesteps,labels = self.prepare_inputs(sample, timesteps, labels, **kwargs)
-       # if self.debug_flag:
-            #return sample*(1+0.001*list(self.parameters())[0].mean())
+        h,timesteps,classes = self.prepare_inputs(sample, timesteps, **kwargs)
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         if self.no_diffusion:
             emb *= 0
             
         if self.num_classes is not None:
-            emb = emb + self.label_emb(labels)
+            emb = emb + self.class_emb(classes)
         
         hs = []
         for module in self.input_blocks:
@@ -541,7 +538,7 @@ class UNetModel(nn.Module):
         h = self.out(h)
         return h
     
-    def prepare_inputs(self, sample, timesteps, labels=None, **kwargs):
+    def prepare_inputs(self, sample, timesteps, **kwargs):
         """
         prepare inputs for the model.
         Each keyword argument must be either
@@ -560,31 +557,34 @@ class UNetModel(nn.Module):
         shape = [bs,self.in_channels,self.image_size,self.image_size]
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
         for k,v in kwargs.items():
-            assert k in self.input_dict.keys(), k+" is not a legal input for the model: "+str(self.input_dict.keys())
-            if torch.is_tensor(v):
-                assert len(self.input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.input_dict.keys() if len(self.input_dict[k])>0])
-                assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
-                assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
-                assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
-                h[:,self.input_dict[k],:,:] = v.type(self.inner_dtype)
-            else:
-                assert v is None, "input "+k+" must be a tensor or None"
-                
-        if (labels is not None):
-            assert self.num_classes is not None, "num_classes must be specified if labels are provided"
-            if labels.numel() == 1:
-                labels = labels.expand(bs)
-            assert 0<=labels.min() and labels.max()<self.num_classes, "labels must be in range [0,"+str(self.num_classes)+")"
-            assert labels.shape == (bs,)
+            if k!="classes":
+                assert k in self.input_dict.keys(), k+" is not a legal input for the model: "+str(self.input_dict.keys())
+                if torch.is_tensor(v):
+                    assert len(self.input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.input_dict.keys() if len(self.input_dict[k])>0])
+                    assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
+                    assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
+                    assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
+                    h[:,self.input_dict[k],:,:] = v.type(self.inner_dtype)
+                else:
+                    assert v is None, "input "+k+" must be a tensor or None"
+        has_nontrivial_classes = kwargs["classes"] is not None if "classes" in kwargs.keys() else False
+        if has_nontrivial_classes:
+            assert self.num_classes is not None, "num_classes must be specified if classes are provided"
+            classes = kwargs["classes"]
+            if classes.numel() == 1:
+                classes = classes.expand(bs)
+            assert 0<=classes.min() and classes.max()<self.num_classes, "classes must be in range [0,"+str(self.num_classes)+"). classes: "+str(classes)
+            assert classes.shape == (bs,)
         else:
+            #no classes (embedding 0)
             if self.num_classes is not None:
-                labels = torch.zeros(bs,dtype=torch.long,device=sample.device)
+                classes = torch.zeros(bs,dtype=torch.long,device=sample.device)
                 
         if timesteps.numel() == 1:
             timesteps = timesteps.expand(bs)
         assert timesteps.shape == (bs,), "timesteps must be a vector of length batch size"
         
-        return h, timesteps, labels
+        return h, timesteps, classes
 
 
 def create_unet_from_args(args):
@@ -614,6 +614,12 @@ def create_unet_from_args(args):
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
     out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
+    if args["class_type"]=="none":
+        num_classes = None
+    elif args["class_type"]=="num_classes":
+        num_classes = args["max_num_classes"]+1
+    else:
+        raise ValueError(f"unknown class_type: {args['class_type']}")
     unet = UNetModel(image_size=args["image_size"],
                      is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
@@ -623,7 +629,7 @@ def create_unet_from_args(args):
                     attention_resolutions=args["attention_resolutions"],
                     dropout=args["dropout"],
                     channel_mult=channel_mult,
-                    num_classes=None,
+                    num_classes=num_classes,
                     num_heads=args["num_heads"],
                     num_heads_upsample=args["num_heads_upsample"],
                     weak_signals=args["weak_signals"],
@@ -646,15 +652,15 @@ def main():
         bs = 2
         sample = torch.randn(bs,1,imsize,imsize).cuda()
         timesteps = torch.rand(bs).cuda()
-        labels = torch.randint(0,5,(bs,)).cuda()
+        classes = torch.randint(0,5,(bs,)).cuda()
         kwargs = {"image": torch.randn(bs,3,imsize,imsize).cuda(),
                   "bbox": torch.randn(bs,1,imsize,imsize).cuda(),
                   "points": torch.randn(bs,1,imsize,imsize).cuda(),
                   "self_cond": torch.randn(bs,3,imsize,imsize).cuda(),
                   "cond": torch.randn(bs,4,imsize,imsize).cuda(),
-                  }
+                  "classes": classes}
         print("sample.shape:",sample.shape)
-        output = model(sample, timesteps, labels, **kwargs)
+        output = model(sample, timesteps, **kwargs)
         print("output.shape:",output.shape)
     elif args.unit_test==1:
         print("UNIT TEST: try forward pass on cuda, with ugly kwargs")
@@ -665,16 +671,16 @@ def main():
         bs = 2
         sample = torch.randn(bs,1,imsize,imsize).cuda()
         timesteps = torch.rand(bs).cuda()
-        labels = torch.randint(0,5,(bs,)).cuda()
+        classes = torch.randint(0,5,(bs,)).cuda()
         kwargs = {"image": torch.randn(bs,3,imsize,imsize).cuda(),
                   "bbox": None,
                   "points": [None for _ in range(bs)],
                   "self_cond": [None]+[torch.randn(4,imsize,imsize).cuda() for _ in range(bs-1)],
                   "cond": torch.randn(bs,4,imsize,imsize).cuda(),
-                  }
+                  "classes": classes}
         kwargs = {k:unet_kwarg_to_tensor(v) for k,v in kwargs.items()}
         print("sample.shape:",sample.shape)
-        output = model(sample, timesteps, labels, **kwargs)
+        output = model(sample, timesteps, **kwargs)
         print("output.shape:",output.shape)
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")

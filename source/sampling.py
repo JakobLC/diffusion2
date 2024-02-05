@@ -49,8 +49,8 @@ class DiffusionSampler(object):
             self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
         
         if model is None:
-            if self.opts.ema_model_rate>0:
-                model = self.trainer.get_ema_model(self.opts.ema_model_rate)
+            if self.opts.ema_idx>=0:
+                model, self.swap_pointers_func = self.trainer.get_ema_model(self.opts.ema_idx)
             else:
                 model = self.trainer.model
         was_training = model.training
@@ -196,7 +196,9 @@ class DiffusionSampler(object):
         metric_output["gen_id"] = self.opts.gen_id
         #metric_output["modded_opts"] = str(modified_opts_wrt_setup)
 
-
+        if hasattr(self,"swap_pointers_func"):
+            self.swap_pointers_func()
+            del self.swap_pointers_func
         if not self.opts.return_samples:
             sample_output = None
         return sample_output, metric_output
@@ -212,7 +214,15 @@ class DiffusionSampler(object):
                     for sub_k in samples[0][k].keys():
                         if not torch.is_tensor(samples[0][k][sub_k]):
                             raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
-                        sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
+                        try:
+                            sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
+                        except KeyError:
+                            print("k="+k+"\n sub_k="+sub_k)
+                            print([k in s.keys() for s in samples])
+                            print([sub_k in s[k].keys() for s in samples])
+                            print("saving sample_output to debug.pt")
+                            torch.save(sample_output,"debug.pt")
+                            raise
                 elif torch.is_tensor(samples[0][k]):
                     sample_output[k] = torch.stack([s[k] for s in samples],dim=0)
         
@@ -279,8 +289,9 @@ class DiffusionSampler(object):
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
             x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
             if "points" in model_kwargs.keys():
-                if model_kwargs["points"] is not None:
-                    model_kwargs["points"] = model_kwargs["points"]*self.trainer.cgd.ab.int2bit(x)
+                if model_kwargs["points"] is None:
+                    model_kwargs["points"] = 0
+                model_kwargs["points"] = model_kwargs["points"]*self.trainer.cgd.ab.int2bit(x)
         elif self.opts.kwargs_mode=="none":
             x,info = batch
             x = x.to(self.device)
@@ -289,7 +300,6 @@ class DiffusionSampler(object):
             
     def form_next_batch(self):
         if self.queue is None:
-            
             self.queue = []
             for i in range(self.opts.num_samples):
                 for j in range(self.opts.num_votes):

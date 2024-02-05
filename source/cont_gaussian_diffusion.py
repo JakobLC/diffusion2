@@ -232,7 +232,7 @@ class ContinuousGaussianDiffusion():
                 model_kwargs['self_cond'] = pred_x*self_cond #not the most effecient way to do this, but easy to implement TODO
         else:
             model_kwargs['self_cond'] = None
-
+    
         output = model(x_t, t, **model_kwargs)
         
         pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)

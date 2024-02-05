@@ -14,15 +14,15 @@ from pathlib import Path
 # implement all points in arguments
 # implement forced xstart
 # implement fixed batches for long training runs
-# remove lines from dead runs in the logging files when continuing training
 # make nuke.py to remove all dead runs from the logging files
 # add SAM image features or image embedding model
-# write pretty_point() function
 # implement dummy diffusion
-# implement forward pass corruption
 # implement timestep delta from bit diffusion
+# implement better corrupt from bit diffusion
 # add option to save sampling results to sample_info.json
-# implement key checking and debugging for get_output_dict
+# make background is not special
+# loop over all data, save better masks as bitmaps
+# make num points depend on num labels
 def main(**modified_args):
     args = SmartParser().get_args(modified_args=modified_args)
     if isinstance(args,list):
