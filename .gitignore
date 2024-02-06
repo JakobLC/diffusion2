@@ -1,4 +1,5 @@
 __pycache__/
-source/__pycache__/
 saves/
-data/
+/data/*/
+!/data/*/idx_to_class.json
+!/data/*/info.jsonl
