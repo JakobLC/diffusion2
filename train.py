@@ -23,6 +23,14 @@ from pathlib import Path
 # make background is not special
 # loop over all data, save better masks as bitmaps
 # make num points depend on num labels
+# add data: VISOR, Totalsegmenter data
+# add https://github.com/lilohuang/PyTurboJPEG to load jpegs
+# add nice_colors to jlc
+#model TODO
+# loop over lr
+# loop over input scaling and image sizes
+# 
+
 def main(**modified_args):
     args = SmartParser().get_args(modified_args=modified_args)
     if isinstance(args,list):

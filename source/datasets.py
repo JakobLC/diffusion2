@@ -504,7 +504,7 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0):
             list_of_augs.extend(common_augs)
             list_of_augs.extend(geo_augs)
     else:
-        raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray','monuseg'] got "+str(augment_name))
+        raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray'] got "+str(augment_name))
     return A.Compose(list_of_augs)
 
 def main():

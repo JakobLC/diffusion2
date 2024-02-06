@@ -1,0 +1,411 @@
+[
+    {
+        "dataset_name": "coco",
+        "urls": [
+            "http://images.cocodataset.org/zips/train2017.zip",
+            "http://images.cocodataset.org/zips/val2017.zip",
+            "http://images.cocodataset.org/annotations/stuff_annotations_trainval2017.zip"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 123287,
+        "num_classes": 93,
+        "file_format": "jpg",
+        "samples_per_split": [
+            118287,
+            5000,
+            0
+        ]
+    },
+    {
+        "dataset_name": "pascal",
+        "urls": [
+            "https://cs.stanford.edu/~roozbeh/pascal-context/trainval.tar.gz",
+            "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 10102,
+        "num_classes": 460,
+        "file_format": "jpg",
+        "samples_per_split": [
+            10102,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "sa-1b",
+        "urls": [
+            "https://scontent-arn2-1.xx.fbcdn.net/m1/v/t6/An_-m2SWozW4o-FatJEIY1Anj32x8TnUqad9WMAVkMaZHkDyHfjpLcVlQoTFhgQihg8U4R5KqJvoJrtBwT3eKH-Yj5-LfY0.tar?ccb=10-5&oh=00_AfC7AUphyLXvpFPGLGMuoNcSQTW0JilGSJCdz5rSarLTvQ&oe=650E96BE&_nc_sid=0fdd51",
+            "https://www.kaggle.com/datasets/hycloud/sa-1b-part-000004?resource=download"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 10853,
+        "num_classes": 256,
+        "file_format": "jpg",
+        "samples_per_split": [
+            10853,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coift",
+        "urls": [
+            "https://drive.google.com/uc?id=1SapWK3yX2utscH8e-cJzQivp_Qp7IBQf"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 280,
+        "num_classes": 2,
+        "file_format": "jpg",
+        "samples_per_split": [
+            280,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "hrsod",
+        "urls": [
+            "https://drive.google.com/uc?id=1dLZTzQuDEuBICKtaRB03i1Mx9hOssxC4"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 287,
+        "num_classes": 2,
+        "file_format": "jpg",
+        "samples_per_split": [
+            287,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "to5k",
+        "urls": [
+            "https://drive.google.com/uc?id=1yUSNCOPwbkEyrQYr5d2OtNjRMEbuQp7O"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 5748,
+        "num_classes": 393,
+        "file_format": "jpg",
+        "samples_per_split": [
+            0,
+            5748,
+            0
+        ]
+    },
+    {
+        "dataset_name": "monuseg",
+        "urls": [
+            "https://drive.google.com/u/0/uc?id=1NKkSQ5T0ZNQ8aUhh0a8Dt2YKYCQXIViw&export=download",
+            "https://drive.google.com/u/0/uc?id=1ZgqFJomqQGNnsx7w7QBzQQMVA16lbVCA&export=download"
+        ],
+        "type": "medical",
+        "symmetries": "all",
+        "num_samples": 51,
+        "num_classes": 2,
+        "file_format": "tif",
+        "samples_per_split": [
+            37,
+            14,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ade20k",
+        "urls": [
+            "https://groups.csail.mit.edu/vision/datasets/ADE20K/ADE20K_2016_07_26.zip"
+        ],
+        "type": "pictures",
+        "symmetries": "horizontal",
+        "num_samples": 27550,
+        "num_classes": 3688,
+        "file_format": "jpg",
+        "samples_per_split": [
+            25560,
+            1990,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ade20k",
+        "urls": [],
+        "num_samples": 27574,
+        "num_classes": 3689,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            25560,
+            1990,
+            0
+        ]
+    },
+    {
+        "dataset_name": "hrsod",
+        "urls": [],
+        "num_samples": 287,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            283,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "hrsod",
+        "urls": [],
+        "num_samples": 287,
+        "num_classes": 6,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            283,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coift",
+        "urls": [],
+        "num_samples": 280,
+        "num_classes": 6,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            280,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coift",
+        "urls": [],
+        "num_samples": 280,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            280,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "monuseg",
+        "urls": [],
+        "num_samples": 51,
+        "num_classes": 2,
+        "file_format": ".tif",
+        "samples_per_split": [
+            37,
+            14,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ade20k_v2",
+        "urls": [],
+        "num_samples": 27574,
+        "num_classes": 3689,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            25564,
+            2000,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coift",
+        "urls": [],
+        "num_samples": 280,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            280,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "hrsod",
+        "urls": [],
+        "num_samples": 287,
+        "num_classes": 6,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            283,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ThinObject-5k",
+        "urls": [],
+        "num_samples": 5748,
+        "num_classes": 393,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            0,
+            5748,
+            0
+        ]
+    },
+    {
+        "dataset_name": "monuseg",
+        "urls": [],
+        "num_samples": 14,
+        "num_classes": 2,
+        "file_format": ".tif",
+        "samples_per_split": [
+            0,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "pascal",
+        "urls": [],
+        "num_samples": 10103,
+        "num_classes": 460,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10103,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coco",
+        "urls": [],
+        "num_samples": 2,
+        "num_classes": 93,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            0,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "sa-1b",
+        "urls": [],
+        "num_samples": 11186,
+        "num_classes": 256,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10853,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coco",
+        "urls": [],
+        "num_samples": 123287,
+        "num_classes": 93,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            118287,
+            5000,
+            0
+        ]
+    },
+    {
+        "dataset_name": "dram",
+        "urls": [],
+        "num_samples": 583,
+        "num_classes": 6,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            0,
+            0,
+            583
+        ]
+    },
+    {
+        "dataset_name": "ade20k_v2",
+        "urls": [],
+        "num_samples": 27574,
+        "num_classes": 3689,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            25564,
+            2000,
+            0
+        ]
+    },
+    {
+        "dataset_name": "cityscapes",
+        "urls": [],
+        "num_samples": 3475,
+        "num_classes": 34,
+        "file_format": ".png",
+        "samples_per_split": [
+            2975,
+            500,
+            0
+        ]
+    },
+    {
+        "dataset_name": "pascal",
+        "urls": [],
+        "num_samples": 10103,
+        "num_classes": 460,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10103,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "sa1b",
+        "urls": [],
+        "num_samples": 1499,
+        "num_classes": 256,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            1457,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "coco",
+        "urls": [],
+        "num_samples": 123287,
+        "num_classes": 93,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            118287,
+            5000,
+            0
+        ]
+    },
+    {
+        "dataset_name": "sa1b",
+        "urls": [],
+        "num_samples": 11186,
+        "num_classes": 256,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10853,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ade20k",
+        "urls": [],
+        "num_samples": 0,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            0,
+            0,
+            0
+        ]
+    }
+]

@@ -3,7 +3,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import jlc
-import nice_colors as nc
 import matplotlib.cm as cm
 import os
 import glob
@@ -256,6 +255,8 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             ymax += 0.1*(ymax-ymin)+1e-14
             if name.find("loss")>=0 or name.find("grad_norm")>=0:
                 plt.yscale("log")
+                if ymin<1e-8:
+                    ymin = 1e-8
             else:
                 ymin -= 0.1*(ymax-ymin)
             plt.ylim(ymin,ymax)
@@ -301,11 +302,18 @@ def mask_overlay_smooth(image,mask,
                  alpha_mask=0.4):
     assert isinstance(image,np.ndarray)
     assert isinstance(mask,np.ndarray)
-    assert len(mask.shape)==3
+    assert len(mask.shape)==3 or len(mask.shape)==2
+    mask = np.atleast_3d(mask)
     if pallete is None:
-        pallete = np.concatenate([np.array([[0,0,0]]),nc.largest_colors],axis=0)
-    if mask.shape[2]==1:
-        raise ValueError("mask_overlay_smooth expects a 1-out-of-K encoding")
+        pallete = np.concatenate([np.array([[0,0,0]]),jlc.nc.largest_colors],axis=0)
+    is_integer_type = np.issubdtype(mask.dtype,np.integer)
+    if mask.shape[2]==1 and is_integer_type:
+        #convert to onehot
+        mask_old = mask[:,:,0].copy()
+        n = mask_old.max()+1
+        mask = np.zeros((mask_old.shape[0],mask_old.shape[1],n))
+        for i in range(n):
+            mask[:,:,i] = (mask_old==i)
     if mask.dtype==np.uint8:
         mask = mask.astype(float)/255
     if isinstance(image,np.ndarray):
