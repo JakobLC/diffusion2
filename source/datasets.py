@@ -239,9 +239,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       semantic_prob=0.5,
                       label_map_method="all",
                       shuffle_nonzero_labels=True,
+                      shuffle_zero=True,
                       shuffle_datasets=True,
-                      data_root=None):
+                      data_root=None,
+                      use_pretty_data=True,
+                      geo_aug_p=0.3):
+        self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
+        self.use_pretty_data = use_pretty_data
         if data_root is None:
             data_root = str(Path(__file__).parent.parent / "data")
         self.data_root = data_root
@@ -256,6 +261,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         assert label_map_method in ["all","largest","random"]
         self.label_map_method = label_map_method
         self.shuffle_nonzero_labels = shuffle_nonzero_labels
+        self.shuffle_zero = shuffle_zero
         self.num_crops = num_crops
         self.downscale_thresholding_factor = 3
         self.datasets_info = load_json_to_dict_list(str(Path(data_root) / "datasets_info_live.json"))
@@ -317,12 +323,15 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 item = info_json[idx]
                 item["image_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_im."+file_format)
                 item["label_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_la.png")
+                if self.use_pretty_data and item["pretty"]:
+                    item["image_path"].replace("_im."+file_format,"_pim."+file_format)
+                    item["label_path"].replace("_la.png","_pla.png")
                 item["dataset_name"] = dataset_name
                 items.append(item)
         
             class_dict = load_json_to_dict_list(os.path.join(self.data_root,dataset_name,"idx_to_class.json"))[0]
             self.idx_to_class[dataset_name] = class_dict
-            self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],s=self.image_size,train=split==0)
+            self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],s=self.image_size,train=split==0,geo_aug_p=self.geo_aug_p)
 
             self.length += len(items)
             self.items.extend(items)
@@ -400,7 +409,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     old_to_new[i] = 0
         #shuffle nonzero
         if self.shuffle_nonzero_labels:
-            perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
+            if self.shuffle_zero:
+                perm = np.random.permutation(mnc)
+            else:
+                perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
             old_to_new = perm[old_to_new]
         
         label = old_to_new[label]
@@ -467,11 +479,11 @@ def label_boundaries(image,dims=[-1,-2]):
     return edge
 
 
-def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0):
+def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p=0.3):
 
     list_of_augs = []
 
-    geo_augs =  [A.ShiftScaleRotate(rotate_limit=20,p=global_p*0.3,border_mode=0)]
+    geo_augs =  [A.ShiftScaleRotate(rotate_limit=20,p=global_p*geo_aug_p,border_mode=0)]
 
     horz_sym_aug = [A.HorizontalFlip(p=global_p*0.5)]
     all_sym_aug = [A.RandomRotate90(p=global_p*0.5),

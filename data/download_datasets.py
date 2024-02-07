@@ -607,6 +607,10 @@ def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidele
         image_path = Path("./data/")/ info["dataset_name"] / info["image_path"]
         label = np.array(Image.open(label_path))
         image = np.array(Image.open(image_path))
+        if len(image.shape)==2:
+            image = image[:,:,None]
+        if image.shape[2]==1:
+            image = np.concatenate([image for _ in range(3)],axis=2)
         shape = label.shape
         if shape[0]>shape[1]:
             image = image.transpose(1,0,2)
@@ -654,6 +658,21 @@ def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidele
         dataset_counter += 1
     return dataset_counter/len(dataset)
 
+def add_existence_of_prettify_to_info_jsonl():
+    list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+    for infopath in tqdm.tqdm(list_of_info_jsons):
+        infopath = str(infopath)
+        info_list = load_json_to_dict_list(infopath)
+        for j in range(len(info_list)):
+            i = info_list[j]["i"]
+            folder_i = np.floor(i/1000).astype(int)
+            filename = Path(infopath).parent / f"f{folder_i}" / f"{i}_pla.png"
+            if filename.exists():
+                info_list[j]["pretty"] = True
+            else:
+                info_list[j]["pretty"] = False
+        save_dict_list_to_json(info_list,infopath,append=False)
+        
 def main():
     import argparse
     
@@ -665,26 +684,30 @@ def main():
         downloader = DatasetDownloader()
         downloader.process_files("pascal")
     elif args.process==1:
-        print("PROCESS 0: sa1b")
+        print("PROCESS 1: sa1b")
         downloader = DatasetDownloader()
         downloader.process_files("sa1b")
     elif args.process==2:
-        print("PROCESS 0: coco")
+        print("PROCESS 2: coco")
         downloader = DatasetDownloader()
         downloader.process_files("coco")
     elif args.process==3:
-        print("PROCESS 0: ade20k")
+        print("PROCESS 3: ade20k")
         downloader = DatasetDownloader()
         downloader.process_files("ade20k")
     elif args.process==4:
-        print("PROCESS 0: monu4")
+        print("PROCESS 4: monu4")
         downloader = DatasetDownloader()
         downloader.allowed_failure_rate = 0
         downloader.process_files("monu4")
     elif args.process==5:
-        for dataset in ["coift","cityscapes","pascal","sa1b","ade20k","coco"]:#"hrsod","to5k","dram",
+        print("PROCESS 5: prettify_data")
+        for dataset in ["coco"]:#"hrsod","to5k","dram","coift","cityscapes","pascal","sa1b","ade20k","monu4"
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
+    elif args.process==6:
+        print("PROCESS 6: add_existence_of_prettify_to_info_jsonl")
+        add_existence_of_prettify_to_info_jsonl()
     else:
         raise ValueError(f"Unknown process: {args.process}")
 if __name__=="__main__":

@@ -14,6 +14,7 @@ from scipy.optimize import linear_sum_assignment
 import matplotlib
 from functools import partial
 import jsonlines
+import shutil
 
 class AlwaysReturnsFirstItemOnNext():
     def __init__(self,iterable):
@@ -752,8 +753,62 @@ def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
 
     return all_acc, iou
 
-
-
+def nuke_saves_folder(dry_run=False, 
+         ask_for_permission=True,
+         minimum_save_iteration=1,
+         minimum_date="2024-01-019-15-00-000000"):
+    """
+    Removes folders for all training runs, under some conditions.
+    
+    Inputs:
+    dry_run (bool): If True, does not remove anything.
+    ask_for_permission (bool): If True, asks for permission before removing anything.
+    minimum_save_iterations (int): Minimum number of saves for a run to be kept.
+    minimum_date (str): Minimum date for a run to be kept.
+    """
+    rm_str = "Removing (dry)" if dry_run else "Removing"
+    minimum_date = [int(x) for x in minimum_date.split("-")]
+    saves_folder = Path("./saves")
+    folders_for_removal = []
+    for folder in sorted(os.listdir(str(saves_folder))):
+        folder_path = saves_folder/folder
+        if folder_path.is_dir():
+            name = Path(folder).name
+            date = [int(x) for x in name.split("-")[:6]]
+            date_is_good = True
+            for min_d,d in zip(minimum_date,date):
+                if d==min_d:
+                    continue
+                elif d>min_d:
+                    break
+                elif d<min_d:
+                    date_is_good = False
+                    break
+            save_files = [x for x in os.listdir(str(folder_path)) if x.endswith(".pt")]
+            max_ite = 0
+            for save_file in save_files:
+                ite_str = save_file.split("_")[-1].split(".")[0]
+                if ite_str.isdigit():
+                    ite = int(ite_str)
+                    if ite>max_ite:
+                        max_ite = ite
+            save_iteration_is_good = max_ite>=minimum_save_iteration
+            is_good = date_is_good and save_iteration_is_good
+            if not is_good:
+                folders_for_removal.append(folder_path)
+    if len(folders_for_removal)==0:
+        print("No folders to remove.")
+        return
+    if ask_for_permission:
+        print("The following folders will be removed:")
+        for folder in folders_for_removal:
+            print(folder)
+        if input("Do you want to proceed? (y/n)")!="y":
+            return
+    for folder in folders_for_removal:
+        print(f"{rm_str} {folder}")
+        if not dry_run:
+            shutil.rmtree(folder)
 
 def main():
     import argparse
@@ -762,7 +817,8 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
-        print("UNIT TEST 0: -")
+        print("UNIT TEST 0: nuke test")
+        nuke_saves_folder()
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

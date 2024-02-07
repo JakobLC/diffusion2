@@ -79,7 +79,9 @@
         "use_fp16": [true,                          "Should fp16 be used for memory reduction? TYPE: boolean. DEFAULT: true"],
         "fp16_scale_growth": [0.001,                "Growth constant for fp16 loss scale when NANs are not encountered. TYPE: float. DEFAULT: 0.001"],
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'"],
-        "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0"]
+        "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0"],
+        "shuffle_zero": [true,                      "Should the zeroth channel (background) be shuffled? TYPE: boolean. DEFAULT: true"],
+        "geo_aug_prob": [0.0,                       "Probability of geometric augmentation being used. TYPE: float. DEFAULT: 0.0"]
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'"],

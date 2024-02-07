@@ -14,18 +14,17 @@ from pathlib import Path
 # implement all points in arguments
 # implement forced xstart
 # implement fixed batches for long training runs
-# make nuke.py to remove all dead runs from the logging files
 # add SAM image features or image embedding model
 # implement dummy diffusion
 # implement timestep delta from bit diffusion
 # implement better corrupt from bit diffusion
 # add option to save sampling results to sample_info.json
-# make background is not special
-# loop over all data, save better masks as bitmaps
 # make num points depend on num labels
-# add data: VISOR, Totalsegmenter data
+# add data: VISOR, Totalsegmenter data, UVO
 # add https://github.com/lilohuang/PyTurboJPEG to load jpegs
-# add nice_colors to jlc
+# add logsnr_wrap
+# write dataset+id for each sample in forwardpass/grid
+
 #model TODO
 # loop over lr
 # loop over input scaling and image sizes

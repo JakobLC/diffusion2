@@ -194,5 +194,23 @@
         "self_cond": true, 
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
         "class_type": "num_classes"
+    },
+    "nc_big": {
+        "versions": {"128": {"input_scale": 0.01, "image_size": 128, "train_batch_size": 8}},
+        "predict": "x",
+        "loss_weights": "SNR_trunc",
+        "max_iter": 50000,
+        "max_num_classes": 64,
+        "deeper_net": true,
+        "num_channels": 128,
+        "image_size": 256,
+        "input_scale": 0.003,
+        "train_batch_size": 4,
+        "weak_bbox_prob": 0.0, 
+        "weak_points_prob": 0.5, 
+        "weak_signals": true, 
+        "self_cond": true, 
+        "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
+        "class_type": "num_classes"
     }
 }

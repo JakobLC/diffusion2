@@ -447,7 +447,8 @@ class ContinuousGaussianDiffusion():
     
 def create_diffusion_from_args(args):
     num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
-    ab = AnalogBits(num_bits=num_bits)
+    ab = AnalogBits(num_bits=num_bits,
+                    shuffle_zero=args.shuffle_zero)
 
     cgd = ContinuousGaussianDiffusion(analog_bits=ab,
                                     schedule_name=args.noise_schedule,
@@ -460,7 +461,21 @@ def create_diffusion_from_args(args):
                                     clip_min=args.gamma_clip_min,
                                     clip_max_delta=args.gamma_clip_max)
     return cgd
-    
+
+def logsnr_wrap(gamma,logsnr_min=-10,logsnr_max=10,dtype=np.float64):
+    if dtype==np.float64:
+        assert logsnr_max<=36, "numerical issues are reached with logsnr_max>36 for float64"
+    assert logsnr_min<logsnr_max, "expected logsnr_min<logsnr_max"
+    g1_old = gamma(np.array(1,dtype=dtype))
+    g0_old = gamma(np.array(0,dtype=dtype))
+    g0_new = 1/(1+np.exp(-np.array(logsnr_max,dtype=dtype)))
+    g1_new = 1/(1+np.exp(-np.array(logsnr_min,dtype=dtype)))
+    slope = (g0_new-g1_new)/(g0_old-g1_old)
+    bias = g1_new-g1_old*slope
+    gamma_wrapped = lambda t: gamma(np.array(t,dtype=dtype))*slope+bias
+    print(g0_new,g1_new,g0_old,g1_old)
+    return gamma_wrapped
+
 def main():
     import argparse
     import matplotlib.pyplot as plt

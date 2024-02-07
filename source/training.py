@@ -97,6 +97,7 @@ class DiffusionModelTrainer:
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
         self.num_nan_losses = 0
+        self.exit_flag = False
 
         #init models, optimizers etc
         self.model = self.model.to(self.device)
@@ -151,7 +152,9 @@ class DiffusionModelTrainer:
                                         image_size=self.args.image_size,
                                         datasets=self.args.datasets,
                                         min_label_size=self.args.min_label_size,
-                                        max_num_classes=self.args.max_num_classes)
+                                        max_num_classes=self.args.max_num_classes,
+                                        shuffle_zero=self.args.shuffle_zero,
+                                        geo_aug_p=self.args.geo_aug_prob)
             dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
                                         batch_size=self.args.train_batch_size,
                                         sampler=dataset.get_sampler(self.seed) if hasattr(dataset,"get_sampler") else None,
@@ -330,7 +333,7 @@ class DiffusionModelTrainer:
                 self.num_nan_losses += 1
                 if self.num_nan_losses>20:
                     self.log("Too many NaN losses, stopping training.")
-                    exit()
+                    self.exit_flag = True
             else:
                 self.num_nan_losses = 0
         if "grad_norm" in self.args.log_train_metrics.split(","):
@@ -366,7 +369,7 @@ class DiffusionModelTrainer:
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
             if self.log_loss_scale <= -20:
                 self.log("Loss scale has gotten too small, stopping training.")
-                exit()
+                self.exit_flag = True
             return
         model_grads_to_master_grads(self.model_params, self.master_params)
         self.master_params[0].grad.mul_(1.0 / (2 ** self.log_loss_scale))
@@ -431,12 +434,18 @@ class DiffusionModelTrainer:
                 with MatplotlibTempBackend(backend="agg"):
                     make_loss_plot(self.args.save_path,self.step,plot_gen_setups=self.args.gen_setups.split(","))
 
-            if ((self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(","))) and self.args.save_interval>0:
+            if (((self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(","))) 
+                and self.args.save_interval>0 
+                and self.num_nan_losses==0):
                 self.save_train_ckpt()
                 
             self.step += 1
-            
-        self.log("Training loop finished.")
+            if self.exit_flag:
+                break
+        if self.exit_flag:
+            self.log("Training loop stopped due to exit flag.")
+        else:
+            self.log("Training loop finished.")
         
     
         
