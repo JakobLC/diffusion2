@@ -7,6 +7,7 @@ conda activate diff-env
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 conda install -n diff-env -c conda-forge --file requirements.txt
 pip install git+https://github.com/JakobLC/jlc.git --no-deps
+pip install -U git+https://github.com/lilohuang/PyTurboJPEG.git
 ```
 
 Afterwards, training and sampling can respectively be done by running:
