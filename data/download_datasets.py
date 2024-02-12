@@ -585,7 +585,7 @@ def process_bg(label,
 
 def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidelength=2048):
     if isinstance(dataset,str):
-        dataset = SegmentationDataset(datasets=dataset,split="all",shuffle_datasets=False)
+        dataset = SegmentationDataset(datasets=dataset,split="all",shuffle_datasets=False,prettify_data=False)
     dataset_counter = 0
     for item in tqdm.tqdm(dataset):
         info = item[-1]
