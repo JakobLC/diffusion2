@@ -21,13 +21,19 @@ def collect_gen_table(gen_id="many",
                    saves_folder = str(Path(__file__).parent.parent / "saves"),
                    save=True,
                    return_table=False,
-                   save_name= str(Path(__file__).parent.parent / "jsons" / "gen_table.json"),
+                   save_name="",
                    do_glob_bracket_fix=False,
                    verbose=True,
                    sort_by_save_path=True,
                    make_pretty_table=True,
-                   pretty_digit_limit=5):
-    
+                   pretty_digit_limit=5,
+                   search_gen_setups=False):
+    if isinstance(save_name,str):
+        if len(save_name)==0:
+            save_name = "gen_table_"+gen_id+".json"
+        save_name = Path(__file__).parent.parent / "jsons" / save_name
+    if isinstance(save_name,Path):
+        save_name = str(save_name)
     match_save_names = []
     match_save_idxs = []
     if name_match_strings=="auto":
@@ -57,7 +63,10 @@ def collect_gen_table(gen_id="many",
                 continue
             if "gen_id" not in column_names:
                 continue
-            gen_ids = data[:,column_names.index("gen_id")].astype(str)
+            if search_gen_setups:
+                gen_ids = data[:,column_names.index("setup_name")].astype(str)
+            else:
+                gen_ids = data[:,column_names.index("gen_id")].astype(str)
             match_idx = np.where(gen_ids==gen_id)[0]
             if len(match_idx)==0:
                 if verbose and name_match_strings!="auto": print("Warning: no matches found for gen_id="+gen_id+", save_name="+s)
@@ -71,11 +80,19 @@ def collect_gen_table(gen_id="many",
                     print("Warning: multiple matches found for gen_id="+gen_id+", save_name="+s+" using the latest.")
                 
             table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
+
+    #return if empty:
+    if table.shape[0]==0:
+        if return_table:
+            return table
+        else:
+            return
     table["save_path"] = match_save_names
     table["model_name"] = ["_".join(s.split("_")[1:]) for s in match_save_names]
     if sort_by_save_path:
         table = table.sort_values(by=["save_path"])
     table = table.loc[:, (table != "").any(axis=0)]
+    table_pd = table.copy()
     table = {k: table[k].tolist() for k in table.keys()}
     if make_pretty_table:
         buffer = 2
@@ -102,7 +119,7 @@ def collect_gen_table(gen_id="many",
     if save:
         save_dict_list_to_json(table,save_name,append=True)
     if return_table:
-        return table
+        return table_pd
 #def make_gen_bar_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
 
 
@@ -448,9 +465,17 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                         text_color="red",
                         pixel_mult=max(1,128//image_size),
                         text_size=12)
-    
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False):
+def get_sample_names_from_info(info,newline=True):
+    dataset_names = [d["dataset_name"] for d in info]
+    datasets_i = [d["i"] for d in info]
+    newline = "\n" if newline else ""
+    sample_names = [f"{dataset_names[i]}/{newline}{datasets_i[i]}" for i in range(len(datasets_i))]
+    return sample_names
+
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False,sample_names=None):
+    if isinstance(sample_names,list):
+        sample_names = get_sample_names_from_info(sample_names)
     show_keys = ["x_init","image","points","target_bit","pred_bit"]
     show_keys_new = []
     for k in show_keys:
@@ -506,8 +531,11 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
                     text_color="red",
                     pixel_mult=max(1,64//image_size),
                     text_size=12)
-    if not text_inside:
+    if sample_names is None:
         sample_names = ["s#"+str(i) for i in range(bs)]
+    else:
+        pass
+    if not text_inside:
         idx = show_keys.index("pred_bit")
         show_keys2 = show_keys[:idx]+["pred_bit\n#"+str(i) for i in range(num_votes)]+show_keys[idx+1:]
         add_text_axis_to_image(filename,
@@ -518,7 +546,9 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
     if remove_old:
         clean_up(filename)
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True):
+def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True,sample_names=None):
+    if isinstance(sample_names,list):
+        sample_names = get_sample_names_from_info(sample_names)
     show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps"]
     k0 = "x_t"
     bs = len(output[k0])
@@ -584,9 +614,12 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
                     text_color="red",
                     pixel_mult=max(1,128//image_size),
                     text_size=12)
+    if sample_names is None:
+        sample_names = ["s#"+str(i) for i in perm]
+    else:
+        sample_names = [sample_names[i] for i in perm]
     if not text_inside:
         t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in perm]
-        sample_names = ["s#"+str(i) for i in perm]
         add_text_axis_to_image(filename,
                                top=sample_names,
                                bottom=t_and_mse,
@@ -656,7 +689,7 @@ def render_axis_ticks(image_width=1000,
         im = np.array(Image.open(temp_filename))
         if not im.shape[1]==image_width:
             #reshape with cv2 linear interpolation
-            warnings.warn("Image width is not as expected, likely due to too large text labels. Reshaping with cv2 linear interpolation.")
+            #warnings.warn("Image width is not as expected, likely due to too large text labels. Reshaping with cv2 linear interpolation.")
             im = cv2.resize(im, (image_width, im.shape[0]), interpolation=cv2.INTER_LINEAR)
 
         matplotlib.use(old_backend)
@@ -804,6 +837,9 @@ def main():
     elif args.unit_test==2:
         print("UNIT TEST 2: collect_gen_table")
         collect_gen_table(gen_id="many_ema")
+    elif args.unit_test==3:
+        print("UNIT TEST 2: collect_gen_table")
+        collect_gen_table(gen_id="eval2",name_match_strings="auto")
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

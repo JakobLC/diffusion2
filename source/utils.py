@@ -305,7 +305,7 @@ def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filenam
 
 
 class SmartParser():
-    def __init__(self,name="args",modify_name_str=None):
+    def __init__(self,name="args",modify_name_str=None,key_to_type={}):
         if modify_name_str is None:
             modify_name_str = {"args": True,"sample_opts": False}[name]
         self.modify_name_str = modify_name_str
@@ -319,7 +319,10 @@ class SmartParser():
         self.parser = argparse.ArgumentParser()
         for k, v in defaults.items():
             v_hat = v
-            t = self.get_type_from_default(v)
+            if k in key_to_type.keys():
+                t = key_to_type[k]
+            else:
+                t = self.get_type_from_default(v)
             if isinstance(v, str):
                 if v.endswith(","):
                     v_hat = v[:-1]
@@ -384,22 +387,11 @@ class SmartParser():
                 args = modified_args_list
         return args
     
-    def list_wrap_type(self,t):
-        def list_wrap(x):
-            if isinstance(x,str):
-                if x.find(";")>=0:
-                    return [t(y) for y in x.split(";")]
-                else:
-                    return t(x)
-            else:
-                return t(x)
-        return list_wrap
-    
     def get_type_from_default(self, default_v):
         assert isinstance(default_v,(float,int,str,bool)), f"default_v={default_v} is not a valid type."
         if isinstance(default_v, str):
             assert default_v.find(";")<0, f"semicolon not supported in default arguments"
-        t = self.list_wrap_type(str2bool if isinstance(default_v, bool) else type(default_v))
+        t = list_wrap_type(str2bool if isinstance(default_v, bool) else type(default_v))
         return t
     
     def get_description_from_key(self, k):
@@ -407,6 +399,17 @@ class SmartParser():
             return self.descriptions[k]
         else:
             return ""
+
+def list_wrap_type(t):
+    def list_wrap(x):
+        if isinstance(x,str):
+            if x.find(";")>=0:
+                return [t(y) for y in x.split(";")]
+            else:
+                return t(x)
+        else:
+            return t(x)
+    return list_wrap
 
 def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
     arch_state_dict = model_arch.state_dict()
@@ -452,9 +455,21 @@ def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=Fal
     return model_arch, load_info
 
 
+def load_old_args(args_path,defaults=load_defaults()):
+    if isinstance(args_path,str):
+        args_path = Path(args_path)
+    args = argparse.Namespace(**defaults)
+    args_loaded = json.loads(args_path.read_text())
+    for k,v in args_loaded.items():
+        try:
+            args.__dict__[k] = v
+        except AttributeError:
+            print(f"key {k} not found in defaults. Ignoring.")
+    return args
+
 def model_specific_args(args,model_dicts,name_str):
     model_name = getattr(args,name_str)
-    
+
     if "+" in model_name:
         plus_names = model_name.split("+")[1:]
         model_name = model_name.split("+")[0]

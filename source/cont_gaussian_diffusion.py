@@ -38,7 +38,7 @@ def coefs_(coefs, shape, dtype=torch.float32, device="cuda", batch_dim=0):
     view_shape[batch_dim] = -1
     return coefs.view(view_shape).to(device).to(dtype)
 
-def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9,clip_max_delta=1e-9):
+def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
     float64 = lambda x: torch.tensor(float(x),dtype=torch.float64)
     if schedule_name=="linear":
         gamma = lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
@@ -77,15 +77,30 @@ def get_named_gamma_schedule(schedule_name,b,clip_min=1e-9,clip_max_delta=1e-9):
         raise ValueError(f"Unknown schedule name: {schedule_name}, must be one of ['linear', 'cosine_[start]_[end]_[tau]', 'sigmoid_[start]_[end]_[tau]', 'linear_simple']")
     
     b = (b if torch.is_tensor(b) else torch.tensor(b)).to(torch.float64)
+    gamma_wrap1 = input_scaling_wrap(gamma,b)
+    slope,bias = logsnr_wrap(gamma_wrap1,logsnr_min,logsnr_max)
+    gamma_wrap2 = lambda t: gamma_wrap1((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64))*slope+bias
+    return gamma_wrap2
+
+def input_scaling_wrap(gamma,b=1.0):
     input_scaling = (b-1.0).abs().item()>1e-9
     if input_scaling:
         gamma_input_scaled = lambda t: b*gamma(t)/((b-1)*gamma(t)+1)
     else:
         gamma_input_scaled = gamma
-        
-    gamma_wrapped = lambda t: gamma_input_scaled((t if torch.is_tensor(t) else torch.tensor(t)).to(torch.float64)
-                                                 ).clamp(clip_min,1-clip_max_delta)
-    return gamma_wrapped
+    return gamma_input_scaled
+
+def logsnr_wrap(gamma,logsnr_min=-10,logsnr_max=10,dtype=torch.float64):
+    if dtype==torch.float64:
+        assert logsnr_max<=36, "numerical issues are reached with logsnr_max>36 for float64"
+    assert logsnr_min<logsnr_max, "expected logsnr_min<logsnr_max"
+    g1_old = gamma(torch.tensor(1,dtype=dtype))
+    g0_old = gamma(torch.tensor(0,dtype=dtype))
+    g0_new = 1/(1+torch.exp(-torch.tensor(logsnr_max,dtype=dtype)))
+    g1_new = 1/(1+torch.exp(-torch.tensor(logsnr_min,dtype=dtype)))
+    slope = (g0_new-g1_new)/(g0_old-g1_old)
+    bias = g1_new-g1_old*slope
+    return slope,bias
 
 def inter_save_map(x,save_i_idx):
     if torch.is_tensor(x):
@@ -150,11 +165,11 @@ class ContinuousGaussianDiffusion():
                  time_cond_type, 
                  sampler_type,
                  var_type, 
-                 clip_min=1e-9,
-                 clip_max_delta=1e-9):
+                 logsnr_min=-10.0,
+                 logsnr_max=10.0):
         """class to handle the diffusion process"""
         self.ab = analog_bits
-        self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,clip_min=clip_min,clip_max_delta=clip_max_delta)
+        self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
         self.var_type = type_from_maybe_str(var_type,VarType)
@@ -343,7 +358,10 @@ class ContinuousGaussianDiffusion():
         
         guidance_weight = self.transform_guidance_weight(guidance_weight,x_init)
         if self.ab is not None:
-            assert x_init.shape[self.ab.bit_dim]==self.ab.num_bits, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_bits}, got {x_init.shape[self.ab.bit_dim]}"
+            if self.ab.onehot:
+                assert x_init.shape[self.ab.bit_dim]==self.ab.num_classes, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_classes}, got {x_init.shape[self.ab.bit_dim]}"
+            else:
+                assert x_init.shape[self.ab.bit_dim]==self.ab.num_bits, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_bits}, got {x_init.shape[self.ab.bit_dim]}"
         
         if progress_bar:
             trange = tqdm.tqdm(range(num_steps-1, -1, -1), desc="Batch progress.")
@@ -448,7 +466,8 @@ class ContinuousGaussianDiffusion():
 def create_diffusion_from_args(args):
     num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
     ab = AnalogBits(num_bits=num_bits,
-                    shuffle_zero=args.shuffle_zero)
+                    shuffle_zero=args.shuffle_zero,
+                    onehot=args.onehot)
 
     cgd = ContinuousGaussianDiffusion(analog_bits=ab,
                                     schedule_name=args.noise_schedule,
@@ -458,23 +477,9 @@ def create_diffusion_from_args(args):
                                     time_cond_type=args.time_cond_type,
                                     sampler_type=args.schedule_sampler,
                                     var_type="small" if args.sigma_small else "large",
-                                    clip_min=args.gamma_clip_min,
-                                    clip_max_delta=args.gamma_clip_max)
+                                    logsnr_min=args.logsnr_min,
+                                    logsnr_max=args.logsnr_max)
     return cgd
-
-def logsnr_wrap(gamma,logsnr_min=-10,logsnr_max=10,dtype=np.float64):
-    if dtype==np.float64:
-        assert logsnr_max<=36, "numerical issues are reached with logsnr_max>36 for float64"
-    assert logsnr_min<logsnr_max, "expected logsnr_min<logsnr_max"
-    g1_old = gamma(np.array(1,dtype=dtype))
-    g0_old = gamma(np.array(0,dtype=dtype))
-    g0_new = 1/(1+np.exp(-np.array(logsnr_max,dtype=dtype)))
-    g1_new = 1/(1+np.exp(-np.array(logsnr_min,dtype=dtype)))
-    slope = (g0_new-g1_new)/(g0_old-g1_old)
-    bias = g1_new-g1_old*slope
-    gamma_wrapped = lambda t: gamma(np.array(t,dtype=dtype))*slope+bias
-    print(g0_new,g1_new,g0_old,g1_old)
-    return gamma_wrapped
 
 def main():
     import argparse

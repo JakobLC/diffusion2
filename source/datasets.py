@@ -10,6 +10,9 @@ import os
 import albumentations as A
 import cv2
 import copy
+from turbojpeg import TurboJPEG,TJPF_RGB
+
+turbo_jpeg = TurboJPEG()
 
 def points_image_from_label(label,num_points=None):
     assert torch.is_tensor(label)
@@ -42,9 +45,12 @@ class AnalogBits(object):
                  shuffle=False,
                  permanent_seed=None,
                  bit_dim=1,
-                 batch_has_different_seed=False):
+                 batch_has_different_seed=False,
+                 onehot=False):
+        self.onehot = onehot
         self.bit_dim = bit_dim
         self.num_bits = num_bits
+        self.num_classes = 2**num_bits
         if num_bits>8:
             raise NotImplementedError("num_bits>8 not implemented")
         self.shuffle_zero = shuffle_zero
@@ -56,9 +62,9 @@ class AnalogBits(object):
         if permanent_seed is not None:
             np.random.seed(permanent_seed)
             if shuffle_zero:
-                self.perm = np.random.permutation(2**num_bits)
+                self.perm = np.random.permutation(self.num_classes)
             else:
-                self.perm = np.concatenate([[0],np.random.permutation(2**num_bits-1)+1])
+                self.perm = np.concatenate([[0],np.random.permutation(self.num_classes-1)+1])
         else:
             self.perm = None
             
@@ -89,7 +95,17 @@ class AnalogBits(object):
         assert x.shape[self.bit_dim]==1
         if self.shuffle:
             x = self.get_perm(inv=False)[x]
-        x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits,bitorder="little").astype(np.float32)*2-1
+
+        if self.onehot:
+            x_new = np.zeros([x.size,self.num_classes])
+            x_new[np.arange(x.size),x.flatten()] = 1
+            x_new = x_new.reshape(list(x.shape)+[self.num_classes])
+            transpose_list = list(range(len(x_new.shape)))
+            transpose_list[-1],transpose_list[self.bit_dim] = self.bit_dim,-1
+            x = x_new.transpose(transpose_list).squeeze(-1).astype(np.float32)
+        else:
+            x = np.unpackbits(x.astype(np.uint8),axis=self.bit_dim,count=self.num_bits,bitorder="little").astype(np.float32)*2-1
+
         if was_torch:
             x = torch.from_numpy(x).to(device)
         return x
@@ -103,11 +119,17 @@ class AnalogBits(object):
             was_torch = False
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
-        assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", self.num_bits: "+str(self.num_bits)+", self.bit_dim: "+str(self.bit_dim)
+        if self.onehot:
+            assert x.shape[self.bit_dim]==self.num_classes, "x.shape: "+str(x.shape)+", self.num_classes: "+str(self.num_classes)+", self.bit_dim: "+str(self.bit_dim)
+        else:
+            assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", self.num_bits: "+str(self.num_bits)+", self.bit_dim: "+str(self.bit_dim)
         #convert to ints if necessary
         if x.dtype in [np.float32,np.float64]:
             x = (x>0).astype(np.uint8)
-        x = np.packbits(x,axis=self.bit_dim,bitorder="little")
+        if self.onehot:
+            x = np.argmax(x,axis=self.bit_dim,keepdims=True)
+        else:
+            x = np.packbits(x,axis=self.bit_dim,bitorder="little")
         if self.shuffle:
             x = self.get_perm(inv=True)[x]
         if was_torch:
@@ -123,13 +145,19 @@ class AnalogBits(object):
             was_torch = False
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
-        assert x.shape[self.bit_dim]==self.num_bits
-        onehot_shape = list(x.shape)
-        onehot_shape[self.bit_dim] = 2**self.num_bits
-        onehot = np.zeros(onehot_shape)
-        for i in range(2**self.num_bits):
-            pure_bits = self.int2bit(np.array([i]).reshape(1,1,1,1))
-            onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=1)
+        if self.onehot:
+            assert x.shape[self.bit_dim]==self.num_classes, "x.shape: "+str(x.shape)+", self.num_classes: "+str(self.num_classes)+", self.bit_dim: "+str(self.bit_dim)
+        else:
+            assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", self.num_bits: "+str(self.num_bits)+", self.bit_dim: "+str(self.bit_dim)
+        if self.onehot:
+            onehot = x
+        else:
+            onehot_shape = list(x.shape)
+            onehot_shape[self.bit_dim] = self.num_classes
+            onehot = np.zeros(onehot_shape)
+            for i in range(self.num_classes):
+                pure_bits = self.int2bit(np.array([i]).reshape(1,1,1,1))
+                onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=1)
         if was_torch:
             onehot = torch.from_numpy(onehot).to(device)
         return onehot
@@ -324,8 +352,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 item["image_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_im."+file_format)
                 item["label_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_la.png")
                 if self.use_pretty_data and item["pretty"]:
-                    item["image_path"].replace("_im."+file_format,"_pim."+file_format)
-                    item["label_path"].replace("_la.png","_pla.png")
+                    item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
+                    item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
                 item["dataset_name"] = dataset_name
                 items.append(item)
         
@@ -366,7 +394,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 crop_size = np.random.randint(min_crop,max_crop+1)
                 crop_x = np.random.randint(0,label.shape[1]-crop_size+1)+np.array([0,crop_size])
                 crop_y = np.random.randint(0,label.shape[0]-crop_size+1)+np.array([0,crop_size])
-                crop_measure = label_boundaries(label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]).sum()
+                crop_measure = total_boundary_pixels(label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]])
             elif self.crop_method=="most_classes":
                 crop_size = np.random.randint(min_crop,max_crop+1)
                 crop_x = np.random.randint(0,label.shape[1]-crop_size+1)+np.array([0,crop_size])
@@ -443,8 +471,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.items[idx]
         dataset_name = item["dataset_name"]
-        image = np.atleast_3d(np.array(Image.open(os.path.join(self.data_root,dataset_name,item["image_path"]))))
-        label = np.array(Image.open(os.path.join(self.data_root,dataset_name,item["label_path"])))
+        image_path = os.path.join(self.data_root,dataset_name,item["image_path"])
+        label_path = os.path.join(self.data_root,dataset_name,item["label_path"])
+        image = np.atleast_3d(open_image_fast(image_path))
+        label = open_image_fast(label_path)
         image,label = self.preprocess(image,label,item)
         label,item = self.map_label_to_valid_bits(label,item)
         image,label = self.augment(image,label,item)
@@ -454,6 +484,16 @@ class SegmentationDataset(torch.utils.data.Dataset):
         info["image"] = image
         info["num_classes"] = torch.unique(label).numel()
         return label,info
+
+def open_image_fast(image_path):
+    assert image_path.find(".")>=0, "image_path must contain a file extension"
+    extension = image_path.split(".")[-1]
+    if extension in ["jpg","jpeg"]:
+        with open(image_path, "rb") as f:
+            image = turbo_jpeg.decode(f.read(),pixel_format=TJPF_RGB)
+    else:
+        image = np.array(Image.open(image_path))
+    return image
 
 def sobel1d(image,axis=0,mode="nearest"):
     from scipy.ndimage import convolve1d
@@ -478,6 +518,15 @@ def label_boundaries(image,dims=[-1,-2]):
         edge = torch.from_numpy(edge).to(device)
     return edge
 
+def total_boundary_pixels(image,dims=[-1,-2]):
+    tot = 0
+    for dim in dims:
+        idx1 = [slice(None) for _ in range(len(image.shape))]
+        idx1[dim] = slice(1,-1)
+        idx2 = [slice(None) for _ in range(len(image.shape))]
+        idx2[dim] = slice(0,-2)
+        tot += (image[tuple(idx1)]!=image[tuple(idx2)]).sum()
+    return tot
 
 def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p=0.3):
 
@@ -626,6 +675,22 @@ def main():
         plt.subplot(1,2,2)
         plt.imshow(label[0])
         plt.show()
+    elif args.unit_test==5:
+        print("UNIT TEST 5: total_boundary_pixels")
+        import jlc
+        import matplotlib.pyplot as plt
+        datasets = "non-medical"
+        dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",datasets=datasets,image_size=128),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
+        x,info = next(iter(dataloader))
+        im = torch.stack([info_i["image"] for info_i in info],dim=0)
+        tot = [total_boundary_pixels(label) for label in x]
+        dataset = [info_i["dataset_name"] for info_i in info]
+        text = dataset+tot
+        maxvals_dim123 = torch.amax(x,dim=(1,2,3),keepdim=True)
+        images = torch.cat((x.repeat(1,3,1,1)/maxvals_dim123,im*0.5+0.5),dim=0).clamp(0,1)
+        jlc.montage(images,n_col=10,text=text,text_color="red")
+        plt.show()
+
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

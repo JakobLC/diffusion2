@@ -203,12 +203,13 @@ class DiffusionSampler(object):
             sample_output = None
         return sample_output, metric_output
     
-    def get_output_dict(self, metric_list, samples):
+    def get_output_dict(self, metric_list, samples, info_keys_save=["dataset_name","i"]):
         sample_output = {}
         metric_output = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
         if samples is not None:
             for k in samples[0].keys():
                 if k=="info":
+                    sample_output[k] = [{sub_k: s[k][sub_k] for sub_k in info_keys_save} for s in samples]
                     continue
                 if isinstance(samples[0][k],dict):
                     for sub_k in samples[0][k].keys():
@@ -274,7 +275,7 @@ class DiffusionSampler(object):
             assert self.opts.grid_filename.endswith(".png"), f"filename: {filename}"
             filename = self.opts.grid_filename
             max_images = min(self.opts.num_grid_samples,len(self.samples))
-            plot_grid(filename,output,self.trainer.cgd.ab,max_images=max_images,remove_old=self.opts.remove_old)
+            plot_grid(filename,output,self.trainer.cgd.ab,max_images=max_images,remove_old=self.opts.remove_old,sample_names=output["info"])
         if "concat" in self.opts.plotting_functions.split(","):
             assert self.opts.concat_inter_filename.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.inter_folder,
@@ -282,7 +283,6 @@ class DiffusionSampler(object):
                                num_timesteps = len(self.save_i_steps),
                                remove_children="inter" not in self.opts.plotting_functions.split(","),
                                remove_old = self.opts.remove_old)
-        
 
     def get_kwargs(self,batch):
         if self.opts.kwargs_mode=="train":

@@ -5,7 +5,7 @@ sys.path.append(os.path.abspath('./source/'))
 
 from source.utils import SmartParser
 from source.training import DiffusionModelTrainer
-from pathlib import Path
+
 #import warnings
 #warnings.filterwarnings('ignore', category=DeprecationWarning)
 
@@ -21,14 +21,14 @@ from pathlib import Path
 # add option to save sampling results to sample_info.json
 # make num points depend on num labels
 # add data: VISOR, Totalsegmenter data, UVO
-# add https://github.com/lilohuang/PyTurboJPEG to load jpegs
-# add logsnr_wrap
-# write dataset+id for each sample in forwardpass/grid
+# make table formatter for copy paste
+# add tanh activation to model
+# CE loss
 
-#model TODO
+#training TODO
 # loop over lr
 # loop over input scaling and image sizes
-# 
+# train model with low logsnr_max and v prediction (logsnr_max=5)
 
 def main(**modified_args):
     args = SmartParser().get_args(modified_args=modified_args)

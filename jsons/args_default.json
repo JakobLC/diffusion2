@@ -7,8 +7,8 @@
         "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false"],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
         "input_scale": [0.01,                       "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float"],
-        "gamma_clip_min": [1e-9,                    "Minimum value for gamma (to avoid singularities). TYPE: float. DEFAULT: 1e-9"],
-        "gamma_clip_max": [1e-9,                    "Maximum value for gamma (to avoid singularities). TYPE: float. DEFAULT: 1e-9"]
+        "logsnr_min": [-20.0,                       "Minimum value for logsnr. TYPE: float. DEFAULT: -10.0"],
+        "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 10.0"]
     },
     "model": {
         "use_checkpoint": [false,                   "Should gradient checkpointing be used (reduced memory usage, more flops)? TYPE: boolean. DEFAULT: false"],
@@ -28,10 +28,12 @@
         "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false"],
         "max_num_classes": [8,                      "Maximum number of class labels. TYPE: positive integer or 0 (no maximum). DEFAULT: 0"],
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'"],
-        "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"]
+        "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'"],
+        "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false"],
+        "final_activation": ["none",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'"]
     },
     "meta": {
-        "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 5000"],
+        "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000"],
         "gen_setups": ["vali,train",                "Which sampler setups to use for evaluation? TYPE: comma separated list of strings. DEFAULT: 'vali,train'"],
         "remove_old_plots": [true,                  "Should old plots be removed? TYPE: boolean. DEFAULT: true"],
         "save_ckpt_steps": ["-1,",                  "Save checkpoint when reaching step number in training. TYPE: comma separated list of integers or -1 (no saving). DEFAULT: '-1,'"],
@@ -55,7 +57,7 @@
     "training": {
         "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false"],
         "lr": [0.0001,                              "Learning rate. TYPE: float. DEFAULT: 0.0001"],
-        "loss_weights": ["SNR",                     "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc']. DEFAULT: 'SNR'"],
+        "loss_weights": ["SNR_plus1",               "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc']. DEFAULT: 'SNR'"],
         "betas": ["0.9,0.999",                      "Adam betas. TYPE: comma separated list of floats. DEFAULT: '0.9,0.999'"],
         "bce_loss": [false,                         "Should BCE loss be used? TYPE: boolean. DEFAULT: false"],
         "min_label_size": [0.0,                     "Minimum relative label mask size in relation to the image. TYPE: float. DEFAULT: 0.01"],

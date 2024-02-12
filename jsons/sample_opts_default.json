@@ -25,7 +25,7 @@
         "save_raw_samples"            : [false,           "Whether to save raw samples. TYPE: bool. DEFAULT: false"],
         "save_sample_opts"            : [true,            "Whether to save the sample options in the default_save_folder. TYPE: bool. DEFAULT: true"],
         "return_samples"              : [false,           "Whether to return samples. TYPE: bool. DEFAULT: false"],
-        "remove_old"                  : [true,            "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: false"],
+        "remove_old"                  : [true,            "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: true"],
         "plotting_functions"          : ["grid,concat",   "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter','concat']. TYPE: str. DEFAULT: 'grid,concat'"]
     },
     "how much to sample": {

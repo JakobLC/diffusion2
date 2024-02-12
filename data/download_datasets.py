@@ -145,22 +145,8 @@ class DatasetDownloader:
             root_ade20k_dir = os.path.join(folder_path,"ADE20K_2016_07_26","images","ADE",)
             search_path = os.path.join(root_ade20k_dir,"*","*","*","*.jpg")
             file_name_list = glob.glob(search_path)
-            
-            folder_path = os.path.abspath("./ade20k")
             category_filename = os.path.join(folder_path,"ADE20K_2016_07_26","index_ade20k.mat")
-            cats = loadmat(category_filename)["index"]
-            """print("\n\n")
-            print(type(cats[0][0]),len(cats[0][0]))
-            print([len(c) for c in cats[0][0]])
-            k = 6
-            print(type(cats[0][0][k]),cats[0][0][k].shape)
-            print(cats[0][0][k][:10])
-            print("\n\n")
-            assert 1<0#TODO"""
-            print([len(c) for c in cats[0][0]])
-            #cats = [str(c) for c in cats[0][0][6]]
-            print(cats[0][0][8][:10])
-            assert 1<0
+            cats = [str(c) for c in cats[0][0][6]]
             class_dict = {i+1: cats[i] for i in range(len(cats))}
             class_dict[0] = "background"
             def load_image_label_info(file_name2):
@@ -173,11 +159,11 @@ class DatasetDownloader:
                 label = np.zeros((image.size[1],image.size[0]),dtype=np.uint8)
 
                 info = {"classes": [0],
-                        "split_idx": ["training","validation"].index(file_name.split("\\")[0])}
+                        "split_idx": ["training","validation"].index(file_name.split("/")[0])}
                 assert len(info_json["annotation"]["object"])<=256, "uint8 format fails if more than 256 classes are present."
                 for i,d in enumerate(info_json["annotation"]["object"]):
                     if do_step["save_images"]:
-                        label_i = np.array(Image.open(os.path.join(root_ade20k_dir,*file_name.split("\\")[:-1],d["instance_mask"])))
+                        label_i = np.array(Image.open(os.path.join(root_ade20k_dir,*file_name.split("/")[:-1],d["instance_mask"])))
                         label[label_i==255] = i+1
                     info["classes"].append(d["name_ndx"])
                 label = Image.fromarray(label)
@@ -702,12 +688,18 @@ def main():
         downloader.process_files("monu4")
     elif args.process==5:
         print("PROCESS 5: prettify_data")
-        for dataset in ["coco"]:#"hrsod","to5k","dram","coift","cityscapes","pascal","sa1b","ade20k","monu4"
+        for dataset in ["coco","hrsod","to5k","dram","coift","cityscapes","pascal","sa1b","ade20k","monu4"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
     elif args.process==6:
         print("PROCESS 6: add_existence_of_prettify_to_info_jsonl")
         add_existence_of_prettify_to_info_jsonl()
+    elif args.process==7:
+        print("PROCESS 7: prettify dram")
+        for dataset in ["dram"]:
+            prop = prettify_data(dataset)
+            print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
+
     else:
         raise ValueError(f"Unknown process: {args.process}")
 if __name__=="__main__":

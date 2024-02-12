@@ -346,6 +346,7 @@ class UNetModel(nn.Module):
         cond=False,
         is_pred_both=False,
         debug_flag=False,
+        final_act="none"
     ):
         super().__init__()
         self.debug_flag = debug_flag
@@ -480,10 +481,14 @@ class UNetModel(nn.Module):
                     resolution -= 1
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
         both_mult = 2 if is_pred_both else 1
+        final_act_dict = {"none": nn.Identity(),
+                        "softmax": nn.Softmax(dim=1),
+                        "tanh": nn.Tanh()}
         self.out = nn.Sequential(
             normalization(ch),
             SiLU(),
             zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
+            final_act_dict[final_act.lower()]
         )
 
     def convert_to_fp16(self):
@@ -579,6 +584,8 @@ class UNetModel(nn.Module):
             #no classes (embedding 0)
             if self.num_classes is not None:
                 classes = torch.zeros(bs,dtype=torch.long,device=sample.device)
+            else:
+                classes = None
                 
         if timesteps.numel() == 1:
             timesteps = timesteps.expand(bs)
@@ -613,7 +620,10 @@ def create_unet_from_args(args):
             raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
-    out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
+    if args["onehot"]:
+        out_channels = args["max_num_classes"]
+    else:
+        out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
     if args["class_type"]=="none":
         num_classes = None
     elif args["class_type"]=="num_classes":
@@ -635,7 +645,8 @@ def create_unet_from_args(args):
                     weak_signals=args["weak_signals"],
                     self_cond=args["self_cond"],
                     cond=args["cond_type"]!="none",
-                    debug_flag=args["debug_run"])
+                    debug_flag=args["debug_run"],
+                    final_act=args["final_activation"])
     return unet
 
 def main():

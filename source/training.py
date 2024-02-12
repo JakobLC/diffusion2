@@ -91,7 +91,8 @@ class DiffusionModelTrainer:
             
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
-            
+        if self.args.debug_run=="no_dl":
+            self.train_dl=AlwaysReturnsFirstItemOnNext(self.train_dl)
 
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
@@ -425,7 +426,8 @@ class DiffusionModelTrainer:
                 
             if self.step % self.args.update_forward_pass_plot_interval == 0 and self.args.update_forward_pass_plot_interval>0:
                 with MatplotlibTempBackend(backend="agg"):
-                    plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",output,metrics,self.cgd.ab)
+                    plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",
+                                      output,metrics,ab=self.cgd.ab,sample_names=batch[-1])
             
             if self.step % self.args.gen_interval == 0 and self.args.gen_interval>0:
                 self.generate_samples()
@@ -434,11 +436,14 @@ class DiffusionModelTrainer:
                 with MatplotlibTempBackend(backend="agg"):
                     make_loss_plot(self.args.save_path,self.step,plot_gen_setups=self.args.gen_setups.split(","))
 
-            if (((self.step % self.args.save_interval == 0) or (str(self.step) in self.args.save_ckpt_steps.split(","))) 
+            if ((self.step % self.args.save_interval) == 0 
                 and self.args.save_interval>0 
                 and self.num_nan_losses==0):
                 self.save_train_ckpt()
-                
+
+            if str(self.step) in self.args.save_ckpt_steps.split(","):
+                self.save_train_ckpt(delete_old=False,name_str="savesteps_ckpt_",)
+
             self.step += 1
             if self.exit_flag:
                 break
