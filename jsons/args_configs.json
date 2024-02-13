@@ -218,6 +218,10 @@
         "class_type": "num_classes"
     },
     "nc2": {
+        "versions": {
+            "tanh": {"final_activation": "tanh", "input_scale": "0.003"},
+            "lr": {"lr": "0.001;0.0005;0.0002;0.0001;0.00005;0.00002;0.00001", "input_scale": "0.003"}
+        },
         "predict": "x",
         "loss_weights": "SNR_plus1",
         "max_iter": 50000,

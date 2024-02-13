@@ -35,7 +35,7 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 
 class DiffusionModelTrainer:
     def __init__(self,args):
-        
+        self.exit_flag = False
         self.args = args
 
         self.seed = set_random_seed(args.seed)
@@ -57,6 +57,8 @@ class DiffusionModelTrainer:
             self.log("Starting new training run with loaded ckpt from: "+self.args.ckpt_name)
         elif self.args.mode=="cont":
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            if self.exit_flag:
+                return
             ckpt = torch.load(self.args.ckpt_name)
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
@@ -98,7 +100,6 @@ class DiffusionModelTrainer:
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
         self.num_nan_losses = 0
-        self.exit_flag = False
 
         #init models, optimizers etc
         self.model = self.model.to(self.device)
@@ -179,7 +180,9 @@ class DiffusionModelTrainer:
         saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
         ckpt_matches = list(Path(saves_folder).glob(bracket_glob_fix(ckpt_name)))
         if len(ckpt_matches)==0:
-            raise ValueError("No ckpts found. Please specify a valid ckpt_name. ckpt_name: "+ckpt_name)
+            self.exit_flag = True
+            self.log("WARNING: No ckpts found. Please specify a valid ckpt_name. ckpt_name: "+ckpt_name)
+            return ""
         elif len(ckpt_matches)>1:
             raise ValueError("Multiple ckpts found. Please specify a more specific ckpt_name. ckpt_name: "+ckpt_name+" ckpt_matches: "+str(ckpt_matches))
         else:
@@ -408,6 +411,9 @@ class DiffusionModelTrainer:
         self.log_kv({"clip_ratio": self.last_clip_ratio})
         
     def train_loop(self):
+        if self.exit_flag:
+            self.log("Training loop stopped due to exit flag.")
+            return
         self.step += 1
         self.log("Starting training loop...")
         #pbar = tqdm(unit='ims', unit_scale=self.args.train_batch_size)
@@ -457,14 +463,15 @@ class DiffusionModelTrainer:
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
-        if not filepath.exists():
-            self.check_save_path(self.args.save_path)
-            os.makedirs(self.args.save_path, exist_ok=True)
-            with open(str(filepath), "w") as f:
-                f.write(msg + "\n")
-        else:
-            with open(str(filepath), "a") as f:
-                f.write(msg + "\n")
+        if (not self.exit_flag) or self.args.save_path!="":
+            if not filepath.exists():
+                self.check_save_path(self.args.save_path)
+                os.makedirs(self.args.save_path, exist_ok=True)
+                with open(str(filepath), "w") as f:
+                    f.write(msg + "\n")
+            else:
+                with open(str(filepath), "a") as f:
+                    f.write(msg + "\n")
             
         if also_print:
             print(msg)

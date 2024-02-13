@@ -146,6 +146,7 @@ class DatasetDownloader:
             search_path = os.path.join(root_ade20k_dir,"*","*","*","*.jpg")
             file_name_list = glob.glob(search_path)
             category_filename = os.path.join(folder_path,"ADE20K_2016_07_26","index_ade20k.mat")
+            cats = loadmat(category_filename)["index"]
             cats = [str(c) for c in cats[0][0][6]]
             class_dict = {i+1: cats[i] for i in range(len(cats))}
             class_dict[0] = "background"
