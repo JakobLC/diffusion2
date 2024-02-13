@@ -262,7 +262,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       min_label_size=0.0,
                       min_crop=0.5,
                       max_num_classes=8,
-                      crop_method="most_border",
+                      crop_method="multicrop_most_border",
                       num_crops=3,
                       semantic_prob=0.5,
                       label_map_method="all",
@@ -284,7 +284,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.max_num_classes = max_num_classes
         self.datasets = datasets
         self.semantic_prob = semantic_prob
-        assert crop_method in ["most_border","most_classes","full_image"]
+        assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
         self.crop_method = crop_method
         assert label_map_method in ["all","largest","random"]
         self.label_map_method = label_map_method
@@ -390,12 +390,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
         min_crop = min(max(self.image_size,min_image_sidelegth*self.min_crop),max_crop)
         crop_measure_best = 0
         for i in range(self.num_crops):
-            if self.crop_method=="most_border":
+            if self.crop_method=="multicrop_most_border":
                 crop_size = np.random.randint(min_crop,max_crop+1)
                 crop_x = np.random.randint(0,label.shape[1]-crop_size+1)+np.array([0,crop_size])
                 crop_y = np.random.randint(0,label.shape[0]-crop_size+1)+np.array([0,crop_size])
                 crop_measure = total_boundary_pixels(label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]])
-            elif self.crop_method=="most_classes":
+            elif self.crop_method=="multicrop_most_classes":
                 crop_size = np.random.randint(min_crop,max_crop+1)
                 crop_x = np.random.randint(0,label.shape[1]-crop_size+1)+np.array([0,crop_size])
                 crop_y = np.random.randint(0,label.shape[0]-crop_size+1)+np.array([0,crop_size])
@@ -448,20 +448,27 @@ class SegmentationDataset(torch.utils.data.Dataset):
 
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
-        if any([image.shape[i]<self.image_size for i in range(2)]):
-            pad_y = max(0,self.image_size-image.shape[0])
-            pad_y = (pad_y//2,pad_y-pad_y//2)
-            pad_x = max(0,self.image_size-image.shape[1])
-            pad_x = (pad_x//2,pad_x-pad_x//2)
-            image = np.pad(image,(pad_y,pad_x,(0,0)))
-            label = np.pad(label,(pad_y,pad_x))
-        if not image.shape[2]==3:
-            image = np.repeat(image,3,axis=-1)
-        crop_x,crop_y = self.get_crop_params(label)
-        image = image[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]
-        label = label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]
-        image = cv2.resize(image,(self.image_size,self.image_size),interpolation=cv2.INTER_AREA)
-        label = cv2.resize(label,(self.image_size,self.image_size),interpolation=cv2.INTER_NEAREST)
+        if self.crop_method.startswith("sam"):
+            if self.crop_method=="sam_small":
+
+            elif self.crop_method=="sam_big":
+            augmented = sam_aug(image=image,mask=label)
+            image,label = augmented["image"],augmented["mask"]
+        else:
+            if any([image.shape[i]<self.image_size for i in range(2)]):
+                pad_y = max(0,self.image_size-image.shape[0])
+                pad_y = (pad_y//2,pad_y-pad_y//2)
+                pad_x = max(0,self.image_size-image.shape[1])
+                pad_x = (pad_x//2,pad_x-pad_x//2)
+                image = np.pad(image,(pad_y,pad_x,(0,0)))
+                label = np.pad(label,(pad_y,pad_x))
+            if not image.shape[2]==3:
+                image = np.repeat(image,3,axis=-1)
+            crop_x,crop_y = self.get_crop_params(label)
+            image = image[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]
+            label = label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]
+            image = cv2.resize(image,(self.image_size,self.image_size),interpolation=cv2.INTER_AREA)
+            label = cv2.resize(label,(self.image_size,self.image_size),interpolation=cv2.INTER_NEAREST)
         return image,label
 
     def augment(self,image,label,item):
@@ -484,6 +491,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         info["image"] = image
         info["num_classes"] = torch.unique(label).numel()
         return label,info
+
+sam_aug = A.Compose([A.LongestMaxSize(max_size=1024, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
+                     A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, same as Albumentations
+                     A.PadIfNeeded(min_height=1024, min_width=1024, border_mode=cv2.BORDER_CONSTANT, value=[0, 0, 0], mask_value=0, always_apply=True, p=1, position=A.PadIfNeeded.PositionType.TOP_LEFT)])
+
 
 def open_image_fast(image_path):
     assert image_path.find(".")>=0, "image_path must contain a file extension"

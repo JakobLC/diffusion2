@@ -696,8 +696,8 @@ def main():
         print("PROCESS 6: add_existence_of_prettify_to_info_jsonl")
         add_existence_of_prettify_to_info_jsonl()
     elif args.process==7:
-        print("PROCESS 7: prettify dram")
-        for dataset in ["dram"]:
+        print("PROCESS 7: prettify ade20k")
+        for dataset in ["ade20k"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
 
