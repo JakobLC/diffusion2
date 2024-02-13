@@ -285,6 +285,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.datasets = datasets
         self.semantic_prob = semantic_prob
         assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
+        if crop_method.startswith("sam"):
+            self.sam_aug_small = get_sam_aug(image_size)
+            self.sam_aug_big = get_sam_aug(1024)
         self.crop_method = crop_method
         assert label_map_method in ["all","largest","random"]
         self.label_map_method = label_map_method
@@ -449,10 +452,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
         if self.crop_method.startswith("sam"):
-            if self.crop_method=="sam_small":
-
-            elif self.crop_method=="sam_big":
-            augmented = sam_aug(image=image,mask=label)
+            if self.crop_method=="sam_big":
+                info["image_sam"] = self.sam_aug_big(image=image)["image"]
+            augmented = self.sam_aug_small(image=image,mask=label)
             image,label = augmented["image"],augmented["mask"]
         else:
             if any([image.shape[i]<self.image_size for i in range(2)]):
@@ -492,10 +494,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         info["num_classes"] = torch.unique(label).numel()
         return label,info
 
-sam_aug = A.Compose([A.LongestMaxSize(max_size=1024, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
+def get_sam_aug(size):
+    sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
                      A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, same as Albumentations
-                     A.PadIfNeeded(min_height=1024, min_width=1024, border_mode=cv2.BORDER_CONSTANT, value=[0, 0, 0], mask_value=0, always_apply=True, p=1, position=A.PadIfNeeded.PositionType.TOP_LEFT)])
-
+                     A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT, value=[0, 0, 0], mask_value=0, always_apply=True, p=1, position=A.PadIfNeeded.PositionType.TOP_LEFT)])
+    return sam_aug
 
 def open_image_fast(image_path):
     assert image_path.find(".")>=0, "image_path must contain a file extension"

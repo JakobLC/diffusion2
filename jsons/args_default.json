@@ -83,7 +83,8 @@
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'"],
         "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0"],
         "shuffle_zero": [true,                      "Should the zeroth channel (background) be shuffled? TYPE: boolean. DEFAULT: true"],
-        "geo_aug_prob": [0.0,                       "Probability of geometric augmentation being used. TYPE: float. DEFAULT: 0.0"]
+        "geo_aug_prob": [0.0,                       "Probability of geometric augmentation being used. TYPE: float. DEFAULT: 0.0"],
+        "crop_method": ["multicrop_most_border",    "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big']. DEFAULT: 'multicrop_most_border'"]
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'"],
