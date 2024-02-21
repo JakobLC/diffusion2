@@ -4,7 +4,7 @@ import enum
 import numpy as np
 import torch
 from datasets import AnalogBits
-from utils import normal_kl,mse_loss
+from utils import normal_kl,mse_loss,ce1_loss,ce2_loss
 import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):
@@ -131,6 +131,12 @@ class ModelPredType(enum.Enum):
     V = enum.auto()
     BOTH = enum.auto()
 
+class LossType(enum.Enum):
+    """Which type of loss the model uses."""
+    MSE = enum.auto()  
+    CE1 = enum.auto()
+    CE2 = enum.auto()
+
 class WeightsType(enum.Enum):
     """Which type of output the model predicts."""
     SNR = enum.auto()
@@ -164,11 +170,13 @@ class ContinuousGaussianDiffusion():
                  weights_type, 
                  time_cond_type, 
                  sampler_type,
-                 var_type, 
+                 var_type,
+                 loss_type,
                  logsnr_min=-10.0,
                  logsnr_max=10.0):
         """class to handle the diffusion process"""
         self.ab = analog_bits
+        self.loss_type = type_from_maybe_str(loss_type,LossType)
         self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
@@ -226,6 +234,7 @@ class ContinuousGaussianDiffusion():
 
         if self.ab is not None:
             assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must have size 1, got {x.shape[self.ab.bit_dim]}"
+            loss_mask = torch.logical_not(self.ab.int2pad(x).cpu()).float()
             x = self.ab.int2bit(x)
         if "points" in model_kwargs.keys():
             if model_kwargs["points"] is not None:
@@ -251,9 +260,15 @@ class ContinuousGaussianDiffusion():
         output = model(x_t, t, **model_kwargs)
         
         pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
-        losses = mult_(loss_weights,mse_loss(pred_x,x))
+        if self.loss_type==LossType.MSE:
+            losses = mult_(loss_weights,mse_loss(pred_x,x,loss_mask))
+        elif self.loss_type==LossType.CE1:
+            losses = mult_(loss_weights,ce1_loss(pred_x,x,loss_mask))
+        elif self.loss_type==LossType.CE2:
+            losses = mult_(loss_weights,ce2_loss(pred_x,x,loss_mask))
         loss = torch.mean(losses)
         out =  {"loss_weights": loss_weights,
+                "loss_mask": loss_mask,
                 "loss": loss,
                 "losses": losses, 
                 "pred_x": pred_x,
@@ -477,6 +492,7 @@ def create_diffusion_from_args(args):
                                     time_cond_type=args.time_cond_type,
                                     sampler_type=args.schedule_sampler,
                                     var_type="small" if args.sigma_small else "large",
+                                    loss_type=args.loss_type,
                                     logsnr_min=args.logsnr_min,
                                     logsnr_max=args.logsnr_max)
     return cgd

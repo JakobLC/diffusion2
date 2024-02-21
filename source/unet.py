@@ -6,6 +6,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from segment_anything import sam_model_registry
+import os
 
 from fp16_util import convert_module_to_f16, convert_module_to_f32
 from nn import (
@@ -346,7 +348,9 @@ class UNetModel(nn.Module):
         cond=False,
         is_pred_both=False,
         debug_flag=False,
-        final_act="none"
+        final_act="none",
+        image_encoder_shape=(256,64,64),
+        image_encoder_depth=-1,
     ):
         super().__init__()
         self.debug_flag = debug_flag
@@ -371,7 +375,31 @@ class UNetModel(nn.Module):
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
         self.no_diffusion = no_diffusion
-        
+        self.image_encoder_depth = image_encoder_depth
+        self.use_image_features = image_encoder_depth >= 0
+        self.fp16_attrs = ["input_blocks","middle_block","output_blocks"]
+
+        if self.use_image_features:
+            self.fp16_attrs.append("preprocess_img_enc")
+
+            s_in = image_encoder_shape
+            d = self.image_size//(2**image_encoder_depth)
+            s_out = (channel_mult[image_encoder_depth]*model_channels,d,d)
+            self.preprocess_img_enc = [conv_nd(2,in_channels=s_in[0],out_channels=s_out[0],kernel_size=3,padding=1)]
+            
+            if s_in[1] == s_out[1]:
+                pass
+            elif s_in[1] > s_out[1]:
+                if np.isclose(s_in[1]/s_out[1],int(s_in[1]/s_out[1])):
+                    self.preprocess_img_enc.append(avg_pool_nd(2,s_in[1]//s_out[1]))
+                else:
+                    #ugly downsampling due to non-integer ratio
+                    self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
+            else:
+                #Bilinear upsampling is as good as it gets
+                self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
+            self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
+
         self.input_dict = {"sample": out_channels if not self.no_diffusion else 0,
                            "image": image_channels,
                            "bbox": int(weak_signals),
@@ -495,17 +523,15 @@ class UNetModel(nn.Module):
         """
         Convert the torso of the model to float16.
         """
-        self.input_blocks.apply(convert_module_to_f16)
-        self.middle_block.apply(convert_module_to_f16)
-        self.output_blocks.apply(convert_module_to_f16)
+        for attr in self.fp16_attrs:
+            getattr(self,attr).apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
         """
         Convert the torso of the model to float32.
         """
-        self.input_blocks.apply(convert_module_to_f32)
-        self.middle_block.apply(convert_module_to_f32)
-        self.output_blocks.apply(convert_module_to_f32)
+        for attr in self.fp16_attrs:
+            getattr(self,attr).apply(convert_module_to_f32)
 
     @property
     def inner_dtype(self):
@@ -523,7 +549,7 @@ class UNetModel(nn.Module):
         :param kwargs: additional kwargs for the model. see self.input_dict for available kwargs.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        h,timesteps,classes = self.prepare_inputs(sample, timesteps, **kwargs)
+        h,timesteps,classes,image_features = self.prepare_inputs(sample, timesteps, **kwargs)
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         if self.no_diffusion:
             emb *= 0
@@ -532,9 +558,11 @@ class UNetModel(nn.Module):
             emb = emb + self.class_emb(classes)
         
         hs = []
-        for module in self.input_blocks:
+        for depth,module in enumerate(self.input_blocks):
             h = module(h, emb)
             hs.append(h)
+            if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
+                h = h + self.preprocess_img_enc(image_features.type(h.dtype))
         h = self.middle_block(h, emb)
         for module in self.output_blocks:
             cat_in = torch.cat([h, hs.pop()], dim=1)
@@ -562,7 +590,7 @@ class UNetModel(nn.Module):
         shape = [bs,self.in_channels,self.image_size,self.image_size]
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
         for k,v in kwargs.items():
-            if k!="classes":
+            if k not in ["classes","image_features"]:
                 assert k in self.input_dict.keys(), k+" is not a legal input for the model: "+str(self.input_dict.keys())
                 if torch.is_tensor(v):
                     assert len(self.input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.input_dict.keys() if len(self.input_dict[k])>0])
@@ -586,12 +614,17 @@ class UNetModel(nn.Module):
                 classes = torch.zeros(bs,dtype=torch.long,device=sample.device)
             else:
                 classes = None
-                
+        if "image_features" in kwargs.keys():
+            assert self.use_image_features, "image_features provided but model has does not use image features"
+            image_features = kwargs["image_features"]
+        else:
+            image_features = None
+        
         if timesteps.numel() == 1:
             timesteps = timesteps.expand(bs)
         assert timesteps.shape == (bs,), "timesteps must be a vector of length batch size"
         
-        return h, timesteps, classes
+        return h, timesteps, classes, image_features
 
 
 def create_unet_from_args(args):
@@ -646,8 +679,33 @@ def create_unet_from_args(args):
                     self_cond=args["self_cond"],
                     cond=args["cond_type"]!="none",
                     debug_flag=args["debug_run"],
-                    final_act=args["final_activation"])
+                    final_act=args["final_activation"],
+                    image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1)
     return unet
+
+def get_sam_image_encoder(model_type="vit_b",device="cuda"):
+    if isinstance(model_type,int):
+        assert model_type in [0,1,2]
+        model_type = ["vit_h","vit_l","vit_b"][model_type]
+    elif isinstance(model_type,str):
+        model_type = model_type.replace("-","_").lower()
+        if model_type.startswith("sam_"):
+            model_type = model_type[4:]
+        elif model_type.startswith("sam"):
+            model_type = model_type[3:]
+        assert model_type in ["vit_h","vit_l","vit_b"]
+    else:
+        raise ValueError("model_type must be int or str")
+    checkpoint_idx = ["vit_h","vit_l","vit_b"].index(model_type)
+    sam_checkpoint = ["sam_vit_h_4b8939.pth","sam_vit_l_0b3195.pth","sam_vit_b_01ec64.pth"][checkpoint_idx]
+    sam_checkpoint = os.path.join(os.path.abspath(".."),"segment-anything","segment_anything","checkpoint",sam_checkpoint)
+    sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+    sam.to(device=device)
+    sam_image_encoder = sam.image_encoder
+    sam_image_encoder.eval()
+    for p in sam_image_encoder.parameters():
+        p.requires_grad = False
+    return sam_image_encoder
 
 def main():
     import argparse

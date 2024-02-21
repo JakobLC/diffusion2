@@ -5,8 +5,9 @@ from argparse import Namespace
 from collections import defaultdict
 import os
 import tqdm
-from utils import get_segment_metrics,SmartParser,bracket_glob_fix,get_save_name_str
+from utils import get_segment_metrics,bracket_glob_fix,get_save_name_str
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
+from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
 #from cont_gaussian_diffusion import DummyDiffusion TODO
 
@@ -16,21 +17,14 @@ class DiffusionSampler(object):
         super().__init__()
         self.is_dummy_diffusion = False#isinstance(diffusion,DummyDiffusion) TODO
         if opts is None:
-            opts = SmartParser("sample_opts").get_args([])
+            opts = TieredParser("sample_opts").get_args([])
         self.opts = opts
         self.trainer = trainer
-        self.setup_name = "vali"
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             print("WARNING: CUDA not available. Using CPU.")
             self.device = torch.device("cpu")
-    
-    def load_gen_setup(self,setup_name,modified_args={}):
-        self.setup_name = setup_name
-        self.opts = SmartParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
-        for k,v in modified_args.items():
-            self.opts.__dict__[k] = v
 
     def prepare_sampling(self,model=None):
         #init variables
@@ -62,14 +56,11 @@ class DiffusionSampler(object):
         else:
             old_backend = None
 
-        output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
-        if not self.opts.remove_old and self.opts.gen_id=="":
-            self.opts.gen_id = self.get_unique_gen_id(output_folder)
-
-        def_save_name = get_save_name_str(self.setup_name,self.opts.gen_id,self.trainer.step)
+        self.opts.default_save_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
+        def_save_name = f"{self.opts.gen_id}_{self.trainer.step:06d}"
         if "grid" in self.opts.plotting_functions.split(",") and self.opts.num_grid_samples>0:
             if self.opts.grid_filename=="":
-                self.opts.grid_filename = os.path.join(output_folder,f"grid_{def_save_name}.png")
+                self.opts.grid_filename = os.path.join(self.opts.default_save_folder,f"grid_{def_save_name}.png")
         inter_is_used = self.opts.num_inter_samples>0
         inter_is_used = inter_is_used and (("inter" in self.opts.plotting_functions.split(",")) or ("concat" in self.opts.plotting_functions.split(",")))
         inter_is_used = inter_is_used or (self.opts.save_raw_inter and self.opts.save_raw_samples)
@@ -80,16 +71,15 @@ class DiffusionSampler(object):
             idx = [idx[i] for i in range(len(idx)) if (i==0) or (idx[i]!=idx[i-1])]
             self.save_i_steps = [legal_timesteps[i] for i in idx]
             if self.opts.inter_folder=="":
-                self.opts.inter_folder = os.path.join(output_folder,f"inter_{def_save_name}")
+                self.opts.inter_folder = os.path.join(self.opts.default_save_folder,f"inter_{def_save_name}")
             if "concat" in self.opts.plotting_functions.split(","):
                 if self.opts.concat_inter_filename=="":
-                    self.opts.concat_inter_filename = os.path.join(output_folder,f"concat_{def_save_name}.png")
+                    self.opts.concat_inter_filename = os.path.join(self.opts.default_save_folder,f"concat_{def_save_name}.png")
         else:
             self.save_i_steps = []
         if self.opts.save_raw_samples:
             if self.opts.raw_samples_folder=="":
-                output_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
-                self.opts.raw_samples_folder = os.path.join(output_folder,f"raw_samples_{def_save_name}")
+                self.opts.raw_samples_folder = os.path.join(self.opts.default_save_folder,f"raw_samples_{def_save_name}")
 
         if self.opts.raw_samples_folder!="":
             os.makedirs(self.opts.raw_samples_folder,exist_ok=True)
@@ -101,24 +91,6 @@ class DiffusionSampler(object):
             os.makedirs(os.path.dirname(self.opts.grid_filename),exist_ok=True)
 
         return model, was_training, old_backend
-
-    def get_unique_gen_id(self,output_folder,max_iter=1000):
-        if not os.path.exists(output_folder):
-            return self.opts.gen_id
-        elif os.listdir(output_folder)==[]:
-            return self.opts.gen_id
-        else:
-            for iter in range(max_iter):
-                gen_id = str(iter).zfill(3)
-                def_save_name = get_save_name_str(self.setup_name,gen_id,self.trainer.step)
-                grid_safe = not os.path.exists(os.path.join(output_folder,f"grid_{def_save_name}.png"))
-                concat_safe = not os.path.exists(os.path.join(output_folder,f"concat_{def_save_name}.png"))
-                inter_safe = not os.path.exists(os.path.join(output_folder,f"inter_{def_save_name}"))
-                raw_safe = not os.path.exists(os.path.join(output_folder,f"raw_samples_{def_save_name}"))
-                if all([grid_safe,inter_safe,raw_safe,concat_safe]):
-                    return gen_id
-        raise ValueError(f"Could not find a safe save name in {max_iter} iterations.")
-        
 
     def verify_valid_opts(self):
         inter_is_used = ("inter" in self.opts.plotting_functions.split(",") and self.opts.num_inter_samples>0) or (self.opts.save_raw_inter and self.opts.save_raw_samples)
@@ -133,12 +105,12 @@ class DiffusionSampler(object):
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
         
-        modified_opts_wrt_setup = {}
-        ref_opts = SmartParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
+        """modified_opts_wrt_setup = {}
+        ref_opts = TieredParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
         for k,v in self.opts.__dict__.items():
             if v!=ref_opts.__dict__[k]:
                 modified_opts_wrt_setup[k] = v
-        return modified_opts_wrt_setup
+        return modified_opts_wrt_setup"""
 
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
@@ -192,9 +164,8 @@ class DiffusionSampler(object):
         if was_training:
             model.train()
         
-        metric_output["setup_name"] = self.setup_name
+        metric_output["gen_setup"] = self.opts.gen_setup
         metric_output["gen_id"] = self.opts.gen_id
-        #metric_output["modded_opts"] = str(modified_opts_wrt_setup)
 
         if hasattr(self,"swap_pointers_func"):
             self.swap_pointers_func()
@@ -215,15 +186,7 @@ class DiffusionSampler(object):
                     for sub_k in samples[0][k].keys():
                         if not torch.is_tensor(samples[0][k][sub_k]):
                             raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
-                        try:
-                            sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
-                        except KeyError:
-                            print("k="+k+"\n sub_k="+sub_k)
-                            print([k in s.keys() for s in samples])
-                            print([sub_k in s[k].keys() for s in samples])
-                            print("saving sample_output to debug.pt")
-                            torch.save(sample_output,"debug.pt")
-                            raise
+                        sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
                 elif torch.is_tensor(samples[0][k]):
                     sample_output[k] = torch.stack([s[k] for s in samples],dim=0)
         
@@ -271,6 +234,13 @@ class DiffusionSampler(object):
         return metrics
     
     def run_on_finished(self,output):
+        if self.trainer.args.mode!="gen":
+            try:
+                overwrite_existing_args(self.opts)
+            except ValueError:
+                save_args(self.opts)
+        else:
+            save_args(self.opts)
         if "grid" in self.opts.plotting_functions.split(",") and self.opts.num_grid_samples>0:
             assert self.opts.grid_filename.endswith(".png"), f"filename: {filename}"
             filename = self.opts.grid_filename

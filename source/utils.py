@@ -4,17 +4,41 @@ import random
 from pathlib import Path
 import csv
 import os
-import copy
-import sys
-import argparse
 import json
-from collections import OrderedDict
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix, pair_confusion_matrix
 from scipy.optimize import linear_sum_assignment
 import matplotlib
-from functools import partial
 import jsonlines
 import shutil
+import datetime
+from functools import partial
+
+def imagenet_preprocess(x,inv=False,dim=1):
+    """Normalizes a torch tensor or numpy array with 
+    the imagenet mean and std. Can also be used to
+    invert the normalization. Assumes the input is
+    in the range [0,1]."""
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    assert x.shape[dim]==3, f"x must have 3 channels in the specified dim={dim}, x.shape: {str(x.shape)}"
+    shape = [1 for _ in range(len(x.shape))]
+    shape[dim] = 3
+    assert torch.is_tensor(x) or isinstance(x,np.ndarray), "x must be a torch tensor or numpy array"
+    if torch.is_tensor(x):
+        mean = torch.tensor(mean).to(x.device).reshape(shape)
+        std = torch.tensor(std).to(x.device).reshape(shape)
+    else:
+        mean = np.array(mean).reshape(shape)
+        std = np.array(std).reshape(shape)
+    if inv:
+        #y = (x-mean)/std <=> x = y*std + mean
+        m = std
+        b = mean
+    else:
+        #y = (x-mean)/std = x*1/std - mean/std
+        m = 1/std
+        b = -mean/std
+    return x*m+b
 
 class AlwaysReturnsFirstItemOnNext():
     def __init__(self,iterable):
@@ -32,6 +56,7 @@ def is_infinite_and_not_none(x):
         return torch.isinf(x).any()
 
 def save_dict_list_to_json(data_list, file_path, append=False):
+    assert isinstance(file_path,str), "file_path must be a string"
     assert len(file_path)>=5, "File path must end with .json or .jsonl"
     assert file_path[-5:] in ["jsonl",".json"], "File path must end with .json or .jsonl"
     if file_path[-5:] == "jsonl":
@@ -75,9 +100,20 @@ def load_json_to_dict_list(file_path):
                 data_list.append(line)
     return data_list
 
-def get_model_name_from_written_args(filename):
-    loaded = json.loads(Path(filename).read_text())
-    return loaded["model_name"]
+def longest_common_substring(str1, str2):
+    dp = [[0] * (len(str2) + 1) for _ in range(len(str1) + 1)]
+    max_length = 0
+    end_position = 0
+    for i in range(1, len(str1) + 1):
+        for j in range(1, len(str2) + 1):
+            if str1[i - 1] == str2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+                if dp[i][j] > max_length:
+                    max_length = dp[i][j]
+                    end_position = i
+            else:
+                dp[i][j] = 0
+    return str1[end_position - max_length: end_position]
 
 def fancy_print_kvs(kvs, atmost_digits=5, s="#"):
         """prints kvs in a nice format like
@@ -121,19 +157,48 @@ def get_all_metrics(output,ignore_idx=0,ab=None):
     assert isinstance(output,dict), "output must be an output dict"
     assert "pred_x" in output.keys(), "output must have a pred_x key"
     assert "x" in output.keys(), "output must have an x key"
-    metrics = {**get_segment_metrics(output["pred_x"],output["x"],ignore_idx=ignore_idx,ab=ab),
+    mask = output["loss_mask"] if "loss_mask" in output.keys() else None
+    metrics = {**get_segment_metrics(output["pred_x"],output["x"],mask=mask,ignore_idx=ignore_idx,ab=ab),
                **get_mse_metrics(output)}
+    metrics["likelihood"] = get_likelihood(output["pred_x"],output["x"],output["loss_mask"],ab)[1]
     return metrics
 
 def get_mse_metrics(output):
     metrics = {}
     if ("pred_x" in output.keys()) and ("x" in output.keys()):
-        metrics["mse_x"] = mse_loss(output["pred_x"],output["x"]).tolist()
+        metrics["mse_x"] = mse_loss(output["pred_x"],output["x"],output["loss_mask"]).tolist()
     if ("pred_eps" in output.keys()) and ("eps" in output.keys()):
-        metrics["mse_eps"] = mse_loss(output["pred_eps"],output["eps"]).tolist()
+        metrics["mse_eps"] = mse_loss(output["pred_eps"],output["eps"],output["loss_mask"]).tolist()
     return metrics
 
-def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None,reduce_to_mean=True):
+def get_likelihood(pred,target,mask,ab,outside_mask_fill_value=0.0,clamp=True):
+    assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
+    assert isinstance(target,torch.Tensor), "target must be a torch tensor"
+    assert len(pred.shape)==len(target.shape), "pred and target must be 3D or 4D torch tensors. got pred.shape: "+str(pred.shape)+", target.shape: "+str(target.shape)
+    if len(pred.shape)==3:
+        was_single = True
+        pred = pred.unsqueeze(0)
+        target = target.unsqueeze(0)
+    else:
+        was_single = False
+    if mask is None:
+        mask = torch.ones_like(pred)
+    else:
+        mask = mask.to(pred.device)
+    bs = pred.shape[0]
+    likelihood_images = ab.likelihood(pred,target)
+    if clamp:
+        likelihood_images = likelihood_images.clamp(min=0.0,max=1.0)
+    likelihood_images = likelihood_images*mask + outside_mask_fill_value*(1-mask)
+    likelihood = []
+    for i in range(bs):
+        lh = likelihood_images[i][mask[i]>0].mean().item()
+        likelihood.append(lh)
+    if was_single:
+        likelihood_images = likelihood_images[0]
+    return likelihood_images, likelihood
+
+def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None,reduce_to_mean=True):
     assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
     assert isinstance(target,torch.Tensor), "target must be a torch tensor"
     if len(pred.shape)==len(target.shape)==3:
@@ -154,17 +219,24 @@ def get_segment_metrics(pred,target,metrics=["iou","hiou","ari","mi"],ignore_idx
     metric_dict = {"iou": standard_iou,
                    "hiou": hungarian_iou,
                    "ari": adjusted_rand_score_stable,
-                   "mi": adjusted_mutual_info_score}
+                   "mi": adjusted_mutual_info_score,}
+    #has to be defined inline for ab to be implicitly passed
+
+
     #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
     out = {metric: [] for metric in metrics}
     for i in range(bs):
-        pred_i,target_i = metric_preprocess(pred[i],target[i])
+        pred_i,target_i = metric_preprocess(pred[i],target[i],mask=mask[i] if mask is not None else None)
         for metric in metrics:
             out[metric].append(metric_dict[metric](pred_i,target_i))
     if was_single:
         for metric in metrics:
             out[metric] = out[metric][0]
+    if reduce_to_mean:
+        for metric in metrics:
+            out[metric] = np.mean(out[metric])
     return out
+
 
 def adjusted_rand_score_stable(target,pred):
     (tn, fp), (fn, tp) = pair_confusion_matrix(target.astype(np.uint64),pred.astype(np.uint64))
@@ -184,15 +256,21 @@ def handle_empty(metric_func):
             return metric_func(target,pred,*args,**kwargs)
     return wrapped
 
-def metric_preprocess(target,pred,dtype=np.int64):
+def metric_preprocess(target,pred,mask=None,dtype=np.int64):
     assert isinstance(target,np.ndarray) or isinstance(target,torch.Tensor), "target must be a torch tensor or numpy array"
     assert isinstance(pred,np.ndarray) or isinstance(pred,torch.Tensor), "pred must be a torch tensor or numpy array"
     if isinstance(target,torch.Tensor):
         target = target.cpu().detach().numpy()
     if isinstance(pred,torch.Tensor):
         pred = pred.cpu().detach().numpy()
-    target = target.flatten()
-    pred = pred.flatten()
+    if mask is None:
+        target = target.flatten()
+        pred = pred.flatten()
+    else:
+        if isinstance(mask,torch.Tensor):
+            mask = mask.cpu().detach().numpy()>0.5
+        target = target[mask]
+        pred = pred[mask]
     return target,pred
 
 def extend_shorter_vector(vec1,vec2,fill_value=0):
@@ -280,136 +358,37 @@ def get_save_name_str(setup_name,gen_id,step):
     else:
         return f"{setup_name}_{gen_id}_{step:06d}"
 
-def mse_loss(pred_x, x, batch_dim=0):
+def mse_loss(pred_x, x, loss_mask=None, batch_dim=0):
     """mean squared error loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
-    return torch.mean((pred_x-x)**2, dim=non_batch_dims)
-
-def load_defaults(idx=0,ordered_dict=False,return_deprecated_keys=False, filename="jsons/args_default.json"):
-    default_path = Path(__file__).parent.parent/filename
-    if ordered_dict:
-        args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
+    if loss_mask is None:
+        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(pred_x.device)
     else:
-        args_dicts = json.loads(default_path.read_text())
-    if return_deprecated_keys:
-        return args_dicts["deprecated"].keys()
-    args_dict = {}
-    for k,v in args_dicts.items():
-        if isinstance(v,dict):
-            if k!="deprecated":
-                for k2,v2 in v.items():
-                    args_dict[k2] = v2[idx]
-        else:
-            args_dict[k] = v[idx]
-    return args_dict
+        div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
+        loss_mask = (loss_mask/div).to(pred_x.device)
+    return torch.sum(loss_mask*(pred_x-x)**2, dim=non_batch_dims)
 
+def ce1_loss(pred_x, x, loss_mask=None, batch_dim=0):
+    """crossentropy loss reduced over all dimensions except batch"""
+    non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
+    if loss_mask is None:
+        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(pred_x.device)
+    else:
+        div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
+        loss_mask = (loss_mask/div).to(pred_x.device)
+    likelihood = torch.prod(1-0.5*torch.abs(pred_x-x),axis=1,keepdims=True)
+    return -torch.sum(loss_mask*torch.log(likelihood), dim=non_batch_dims)
 
-class SmartParser():
-    def __init__(self,name="args",modify_name_str=None,key_to_type={}):
-        if modify_name_str is None:
-            modify_name_str = {"args": True,"sample_opts": False}[name]
-        self.modify_name_str = modify_name_str
-        self.name_str = {"args": "model_name","sample_opts": "gen_setup"}[name]
-        self.filename_def   = "jsons/"+name+"_default.json"
-        self.filename_model = "jsons/"+name+"_configs.json"
-        self.defaults_func = partial(load_defaults,filename=self.filename_def)
-        self.descriptions = self.defaults_func(idx=1)
-        defaults = self.defaults_func()
-        self.type_dict = {}
-        self.parser = argparse.ArgumentParser()
-        for k, v in defaults.items():
-            v_hat = v
-            if k in key_to_type.keys():
-                t = key_to_type[k]
-            else:
-                t = self.get_type_from_default(v)
-            if isinstance(v, str):
-                if v.endswith(","):
-                    v_hat = v[:-1]
-            self.parser.add_argument(f"--{k}", 
-                                     default=v_hat, 
-                                     type=t, 
-                                     help=self.get_description_from_key(k))
-            self.type_dict[k] = t
-            
-    def parse_types(self, args):
-        args_dict = {k: v if isinstance(v,list) else self.type_dict[k](v) for k,v in args.__dict__.items()}
-        args = argparse.Namespace(**args_dict)
-        return args
-        
-    def get_args(self,alt_parse_args=None,modified_args={}):
-        if alt_parse_args is None:
-            args = self.parser.parse_args()
-            postprocess_args = sys.argv[1:]
-        else:
-            assert isinstance(alt_parse_args,list), f"alt_parse_args must be a list or None. alt_parse_args={alt_parse_args}"
-            args = self.parser.parse_args(alt_parse_args)
-            postprocess_args = alt_parse_args
-        model_dicts = json.loads((Path(__file__).parent.parent/self.filename_model).read_text())
-        args = model_specific_args(args,model_dicts,self.name_str)
-        deprecated_keys = self.defaults_func(return_deprecated_keys=True)
-        for k in args.__dict__.keys():
-            if k in deprecated_keys:
-                raise ValueError(f"key {k} is deprecated.")
-        if len(postprocess_args)>0:
-            for k,v in zip(postprocess_args[:-1],postprocess_args[1:]):
-                if k.startswith("--") and not v.startswith("--"):
-                    if k[2:] in args.__dict__.keys():
-                        args.__dict__[k[2:]] = self.type_dict[k[2:]](v)
-        args = self.parse_types(args)
-        for k,v in modified_args.items():
-            assert k in args.__dict__.keys(), f"key {k} not found in args.__dict__.keys()={args.__dict__.keys()}"
-            assert not isinstance(v,list), f"list not supported in modified_args to avoid recursion."
-            if isinstance(v,str):
-                assert v.find(";")<0, f"semicolon not supported in modified_args to avoid recursion."
-            args.__dict__[k] = v
-        if any([isinstance(v,list) for v in args.__dict__.values()]):
-            modified_args_list = []
-            num_modified_args = 1
-            for k,v in args.__dict__.items():
-                if isinstance(v,list):
-                    if len(v)>1:
-                        num_modified_args *= len(v)
-                        if num_modified_args>100:
-                            raise ValueError(f"Too many modified args. num_modified_args={num_modified_args}")
-                        if len(modified_args_list)==0:
-                            modified_args_list.extend([{k: v2} for v2 in v])
-                        else:
-                            modified_args_list = [{**d, k: v2} for d in modified_args_list for v2 in v]
-            
-            if num_modified_args>1:
-                for i in range(num_modified_args):
-                    model_name_new = getattr(args,self.name_str)
-                    for k,v in modified_args_list[i].items():
-                        model_name_new += f"_({k}={v})"
-                    if self.modify_name_str:
-                        modified_args_list[i][self.name_str] = model_name_new
-                args = modified_args_list
-        return args
-    
-    def get_type_from_default(self, default_v):
-        assert isinstance(default_v,(float,int,str,bool)), f"default_v={default_v} is not a valid type."
-        if isinstance(default_v, str):
-            assert default_v.find(";")<0, f"semicolon not supported in default arguments"
-        t = list_wrap_type(str2bool if isinstance(default_v, bool) else type(default_v))
-        return t
-    
-    def get_description_from_key(self, k):
-        if k in self.descriptions.keys():
-            return self.descriptions[k]
-        else:
-            return ""
-
-def list_wrap_type(t):
-    def list_wrap(x):
-        if isinstance(x,str):
-            if x.find(";")>=0:
-                return [t(y) for y in x.split(";")]
-            else:
-                return t(x)
-        else:
-            return t(x)
-    return list_wrap
+def ce2_loss(pred_x, x, loss_mask=None, batch_dim=0):
+    """crossentropy loss reduced over all dimensions except batch"""
+    non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
+    if loss_mask is None:
+        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(pred_x.device)
+    else:
+        div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
+        loss_mask = (loss_mask/div).to(pred_x.device)
+    likelihood = 1-0.5*torch.abs(pred_x-x)
+    return -torch.sum(loss_mask*torch.log(likelihood), dim=non_batch_dims)
 
 def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
     arch_state_dict = model_arch.state_dict()
@@ -455,82 +434,6 @@ def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=Fal
     return model_arch, load_info
 
 
-def load_old_args(args_path,defaults=load_defaults()):
-    if isinstance(args_path,str):
-        args_path = Path(args_path)
-    args = argparse.Namespace(**defaults)
-    args_loaded = json.loads(args_path.read_text())
-    for k,v in args_loaded.items():
-        try:
-            args.__dict__[k] = v
-        except AttributeError:
-            print(f"key {k} not found in defaults. Ignoring.")
-    return args
-
-def model_specific_args(args,model_dicts,name_str):
-    model_name = getattr(args,name_str)
-
-    if "+" in model_name:
-        plus_names = model_name.split("+")[1:]
-        model_name = model_name.split("+")[0]
-    else:
-        plus_names = []
-    ver_names = []
-    if ("[" in model_name) and ("]" in model_name):
-        for _ in range(model_name.count("[")):
-            idx0 = model_name.find("[")
-            idx1 = model_name.find("]")
-            assert idx0<idx1, f"{name_str}={model_name} has mismatched brackets."
-            ver_names.append(model_name[idx0+1:idx1])
-            model_name = model_name[:idx0] + model_name[idx1+1:]
-        
-    if not model_name in model_dicts.keys():
-        raise ValueError(f"{name_str}={model_name} not found in model_dicts")
-    for k,v in model_dicts[model_name].items():
-        if k!="versions":
-            args.__dict__[k] = v
-    if len(ver_names)>0:
-        assert "versions" in model_dicts[model_name].keys(), f"{name_str}={model_name} does not have versions."
-        for k,v in model_dicts[model_name]["versions"].items():
-            if k in ver_names:
-                for k2,v2 in v.items():
-                    args.__dict__[k2] = v2
-    for mn in plus_names:
-        assert "+"+mn in model_dicts.keys(), f"{name_str}={'+'+mn} not found in model_dicts."
-        for k,v in model_dicts["+"+mn].items():
-            args.__dict__[k] = v
-    return args
-
-def write_args(args, save_path, match_keys=True):
-    if isinstance(save_path,str):
-        if not save_path.endswith(".json"):
-            save_path += ".json"
-        save_path = Path(save_path)
-    ref_args = load_defaults(idx=0,ordered_dict=True)
-    args_dict = args.__dict__
-    if match_keys:
-        ref_to_save = all([k in args_dict.keys() for k in ref_args.keys()])
-        save_to_ref = all([k in ref_args.keys() for k in args_dict.keys()])
-        all_keys_are_there = ref_to_save and save_to_ref
-        assert all_keys_are_there, f"args and ref_args do not have the same keys. mismatched keys: {[k for k in ref_args.keys() if not k in args_dict.keys()] + [k for k in args_dict.keys() if not k in ref_args.keys()]}"
-        
-    args_dict = {k:args_dict[k] for k in ref_args.keys()}
-    save_path.write_text(json.dumps(args_dict,indent=4))
-
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    elif isinstance(v, (int,float)):
-        return bool(v)
-    elif isinstance(v, str):
-        if v.lower() in ["yes", "true", "t", "y", "1"]:
-            return True
-        elif v.lower() in ["no", "false", "f", "n", "0"]:
-            return False
-        else:
-            raise argparse.ArgumentTypeError("Cannot convert string: {} to bool".format(v))
-    else:
-        raise argparse.ArgumentTypeError("boolean value expected")
 
 
 def dump_kvs(filename, kvs, sep=","):
@@ -709,32 +612,6 @@ def set_random_seed(seed, deterministic=False):
         torch.backends.cudnn.benchmark = False
     return seed
 
-def num_of_params(model,print_numbers=True):
-    """
-    Prints and returns the number of paramters for a pytorch model.
-    Args:
-        model (torch.nn.module): Pytorch model which you want to extract the number of 
-        trainable parameters from.
-        print_numbers (bool, optional): Prints the number of parameters. Defaults to True.
-
-    Returns:
-        n_trainable (int): Number of trainable parameters.
-        n_not_trainable (int): Number of not trainable parameters.
-        n_total (int): Total parameters.
-    """
-    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    n_not_trainable = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    n_total = n_trainable+n_not_trainable
-    if print_numbers:
-        s = ("The model has:"
-            +"\n"+str(n_trainable)+" trainable parameters"
-            +"\n"+str(n_not_trainable)+" untrainable parameters"
-            +"\n"+str(n_total)+" total parameters")
-        print(s)
-    return n_trainable,n_not_trainable,n_total
-
-import numpy as np
-
 def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
             label_map=dict(), reduce_zero_label=False):
     total_intersect, total_union, _, _ = np.zeros((num_classes,)), np.zeros((num_classes,)), np.zeros((num_classes,)), np.zeros((num_classes,))
@@ -824,6 +701,13 @@ def nuke_saves_folder(dry_run=False,
         print(f"{rm_str} {folder}")
         if not dry_run:
             shutil.rmtree(folder)
+
+def format_save_path(args):
+    save_path = str(Path("./saves/") / f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}_{args.model_id}")
+    for k,v in args.origin.items():
+        if v=="modified_args" and (k not in ["model_id","origin","model_name","save_path"]):
+            save_path += f"_({k}={getattr(args,k)})"
+    return save_path
 
 def main():
     import argparse

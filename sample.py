@@ -2,11 +2,12 @@
 
 import sys, os
 sys.path.append(os.path.abspath('./source/'))
-from source.utils import SmartParser,bracket_glob_fix,get_model_name_from_written_args,list_wrap_type,load_old_args
+from source.utils import bracket_glob_fix
 from source.training import DiffusionModelTrainer
 import warnings
 from pathlib import Path
 warnings.filterwarnings('ignore', category=DeprecationWarning)
+from source.argparse_utils import TieredParser, save_args, load_existing_args
 
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     assert len(s)>0, "name_match_str must be specified"
@@ -34,8 +35,9 @@ def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     return s
 
 def main(**modified_args):
-    sample_opts = SmartParser("sample_opts",
-                              key_to_type={"name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True)}
+    sample_opts = TieredParser("sample_opts",
+                              key_to_type={"name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True),
+                                           "origin": dict}
                               ).get_args(modified_args=modified_args)
     if isinstance(sample_opts,list):
         #sample_opts, modified_args_list = sample_opts
@@ -43,18 +45,17 @@ def main(**modified_args):
         for modified_args in modified_args_list:
             main(**modified_args)
         return
-    
     ckpt_name = get_ckpt_name(sample_opts.name_match_str,return_multiple_matches=False)
     print("\nckpt_name:",ckpt_name)
     args_path = str((Path("./saves/")/ckpt_name).parent / "args.json")
-    args = load_old_args(args_path)
+    print("\nargs_path:",args_path)
+    args = load_existing_args(args_path,"args")
     if sample_opts.seed>=0:
         args.seed = sample_opts.seed
     args.mode = "gen"
     args.ckpt_name = ckpt_name
     trainer = DiffusionModelTrainer(args)
-    gen_tuples = [(sample_opts.gen_setup,sample_opts.__dict__)]
-    trainer.generate_samples(gen_tuples)
+    trainer.generate_samples([sample_opts])
 
 if __name__ == "__main__":
     main()

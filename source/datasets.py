@@ -46,11 +46,13 @@ class AnalogBits(object):
                  permanent_seed=None,
                  bit_dim=1,
                  batch_has_different_seed=False,
-                 onehot=False):
+                 onehot=False,
+                 padding_idx=255):
         self.onehot = onehot
         self.bit_dim = bit_dim
         self.num_bits = num_bits
         self.num_classes = 2**num_bits
+        self.padding_idx = padding_idx
         if num_bits>8:
             raise NotImplementedError("num_bits>8 not implemented")
         self.shuffle_zero = shuffle_zero
@@ -82,7 +84,10 @@ class AnalogBits(object):
         if inv:
             perm = np.argsort(perm)
         return perm
-        
+    
+    def int2pad(self,x):
+        return x==self.padding_idx
+    
     def int2bit(self,x):
         if isinstance(x,torch.Tensor):
             device = x.device
@@ -93,9 +98,11 @@ class AnalogBits(object):
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
         assert x.shape[self.bit_dim]==1
+        x[self.int2pad(x)] = 0
+        assert x.max()<=self.num_classes
         if self.shuffle:
             x = self.get_perm(inv=False)[x]
-
+        
         if self.onehot:
             x_new = np.zeros([x.size,self.num_classes])
             x_new[np.arange(x.size),x.flatten()] = 1
@@ -136,6 +143,33 @@ class AnalogBits(object):
             x = torch.from_numpy(x).to(device)
         return x
 
+    def likelihood(self,x,x_gt):
+        if isinstance(x,torch.Tensor):
+            device = x.device
+            x = x.cpu().detach().numpy()
+            x_gt = x_gt.cpu().detach().numpy()
+            was_torch = True
+        else:
+            was_torch = False
+        assert isinstance(x,np.ndarray)
+        assert len(x.shape)>=self.bit_dim+1
+        if self.onehot:
+            assert x.shape[self.bit_dim]==self.num_classes, "x.shape: "+str(x.shape)+", self.num_classes: "+str(self.num_classes)+", self.bit_dim: "+str(self.bit_dim)
+        else:
+            assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", self.num_bits: "+str(self.num_bits)+", self.bit_dim: "+str(self.bit_dim)
+        if self.onehot:
+            raise NotImplementedError("onehot likelihood not implemented")
+        else:
+            if x_gt.shape[self.bit_dim]==1:
+                true_bits = self.int2bit(x_gt)
+            else:
+                true_bits = x_gt
+                assert x_gt.shape[self.bit_dim]==self.num_bits
+            likelihood = np.prod(1-0.5*np.abs(true_bits-x),axis=self.bit_dim,keepdims=True)
+        if was_torch:
+            likelihood = torch.from_numpy(likelihood).to(device)
+        return likelihood
+
     def bit2prob(self,x):
         if isinstance(x,torch.Tensor):
             device = x.device
@@ -156,8 +190,8 @@ class AnalogBits(object):
             onehot_shape[self.bit_dim] = self.num_classes
             onehot = np.zeros(onehot_shape)
             for i in range(self.num_classes):
-                pure_bits = self.int2bit(np.array([i]).reshape(1,1,1,1))
-                onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=1)
+                pure_bits = self.int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]))
+                onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=self.bit_dim)
         if was_torch:
             onehot = torch.from_numpy(onehot).to(device)
         return onehot
@@ -271,7 +305,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       shuffle_datasets=True,
                       data_root=None,
                       use_pretty_data=True,
-                      geo_aug_p=0.3):
+                      geo_aug_p=0.3,
+                      label_padding_val=255):
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -284,10 +319,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.max_num_classes = max_num_classes
         self.datasets = datasets
         self.semantic_prob = semantic_prob
+        self.label_padding_val = label_padding_val
         assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
         if crop_method.startswith("sam"):
-            self.sam_aug_small = get_sam_aug(image_size)
-            self.sam_aug_big = get_sam_aug(1024)
+            self.sam_aug_small = get_sam_aug(image_size,padval=label_padding_val)
+            self.sam_aug_big = get_sam_aug(1024,padval=label_padding_val)
         self.crop_method = crop_method
         assert label_map_method in ["all","largest","random"]
         self.label_map_method = label_map_method
@@ -414,6 +450,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         return crop_x_best,crop_y_best
     
     def map_label_to_valid_bits(self,label,info):
+        """takes a uint8 label map and depending on the method, maps
+        each label to a number between 0 and max_num_classes-1"""
         is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
         if is_semantic:
             for i in np.unique(info["classes"]):
@@ -421,9 +459,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     idx_of_uq_i = np.where(info["classes"]==i)[0]
                     for j in idx_of_uq_i[1:]:
                         label[label==j] = idx_of_uq_i[0]
-        counts = np.bincount(label.flatten())
+        counts = np.bincount(label.flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
         nnz = len(counts)-1
         mnc = self.max_num_classes
+
         if self.label_map_method=="largest":
             old_to_new = np.array([0]+list(np.argsort(np.argsort(-counts[1:]))+1),dtype=int)
             old_to_new[old_to_new>=mnc] = 0
@@ -445,16 +484,21 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
             old_to_new = perm[old_to_new]
-        
+        if self.label_padding_val==255:
+            pad_mask = label==255
         label = old_to_new[label]
+        if self.label_padding_val==255:
+            label[pad_mask] = 255
         return label,info
 
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
         if self.crop_method.startswith("sam"):
             if self.crop_method=="sam_big":
-                info["image_sam"] = self.sam_aug_big(image=image)["image"]
-            augmented = self.sam_aug_small(image=image,mask=label)
+                augmented = self.sam_aug_big(image=image,mask=label)
+            else:
+                assert self.crop_method=="sam_small"
+                augmented = self.sam_aug_small(image=image,mask=label)
             image,label = augmented["image"],augmented["mask"]
         else:
             if any([image.shape[i]<self.image_size for i in range(2)]):
@@ -478,26 +522,34 @@ class SegmentationDataset(torch.utils.data.Dataset):
         return augmented["image"],augmented["mask"]
     
     def __getitem__(self, idx):
-        item = self.items[idx]
-        dataset_name = item["dataset_name"]
-        image_path = os.path.join(self.data_root,dataset_name,item["image_path"])
-        label_path = os.path.join(self.data_root,dataset_name,item["label_path"])
+        info = copy.deepcopy(self.items[idx])
+        dataset_name = info["dataset_name"]
+        image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
+        label_path = os.path.join(self.data_root,dataset_name,info["label_path"])
         image = np.atleast_3d(open_image_fast(image_path))
         label = open_image_fast(label_path)
-        image,label = self.preprocess(image,label,item)
-        label,item = self.map_label_to_valid_bits(label,item)
-        image,label = self.augment(image,label,item)
-        image = torch.tensor(image.astype(np.float32)*(2/255)-1).permute(2,0,1)
+        image,label = self.preprocess(image,label,info)
+        label,info = self.map_label_to_valid_bits(label,info)
+        if not self.crop_method.startswith("sam"): #TODO
+            image,label = self.augment(image,label,info)
+            image = image.astype(np.float32)*(2/255)-1
+        image = torch.tensor(image).permute(2,0,1)
         label = torch.tensor(label).unsqueeze(0)
-        info = copy.deepcopy(item) #IMPORTANT to copy, otherwise memory leak when changing info
         info["image"] = image
         info["num_classes"] = torch.unique(label).numel()
         return label,info
 
-def get_sam_aug(size):
+def get_sam_aug(size,padval=255):
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
                      A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, same as Albumentations
-                     A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT, value=[0, 0, 0], mask_value=0, always_apply=True, p=1, position=A.PadIfNeeded.PositionType.TOP_LEFT)])
+                     A.PadIfNeeded(min_height=size, 
+                                   min_width=size, 
+                                   border_mode=cv2.BORDER_CONSTANT, 
+                                   value=[0, 0, 0], 
+                                   mask_value=padval, 
+                                   always_apply=True, 
+                                   p=1, 
+                                   position=A.PadIfNeeded.PositionType.TOP_LEFT)])
     return sam_aug
 
 def open_image_fast(image_path):
@@ -546,9 +598,10 @@ def total_boundary_pixels(image,dims=[-1,-2]):
 def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p=0.3):
 
     list_of_augs = []
-
-    geo_augs =  [A.ShiftScaleRotate(rotate_limit=20,p=global_p*geo_aug_p,border_mode=0)]
-
+    if geo_aug_p>0:
+        geo_augs =  [A.ShiftScaleRotate(rotate_limit=20,p=global_p*geo_aug_p,border_mode=0)]
+    else:
+        geo_augs = []
     horz_sym_aug = [A.HorizontalFlip(p=global_p*0.5)]
     all_sym_aug = [A.RandomRotate90(p=global_p*0.5),
                    A.HorizontalFlip(p=global_p*0.5),

@@ -1,10 +1,17 @@
 {
-    "gen_setup"                       : ["vali",           "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
-    "options for pure generation (sample.py)": {
-        "gen_id"                      : ["",              "id of the generation to use. TYPE: str. DEFAULT: ''"],
+    "gen_setup"                       : ["vali",          "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
+    "gen_version"                     : ["1.0.0",         "version of the generation to use. TYPE: str. DEFAULT: '1.0.0'"],
+    "dynamic": {
+        "gen_id"                      : ["[gen_setup]_*", "Unique id of the generation. Replaces [key] with corrspnd str. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[gen_setup]_*'"],
         "name_match_str"              : ["*weak30k[7]",   "string to search for models when in pure sampling mode. TYPE: str. DEFAULT: '*weak30k[7]'"],
-        "seed"                        : [-1,              "Seed to use for sampling. New random seed if <0. TYPE: int. DEFAULT: -1"]
-    },    
+        "seed"                        : [-1,              "Seed to use for sampling. New random seed if <0. TYPE: int. DEFAULT: -1"],
+        "grid_filename"               : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "inter_folder"                : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "raw_samples_folder"          : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "origin"                      : ["",              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
+        "default_save_folder"         : ["samples",       "Default folder to save samples in, as a relative path wrt. the model save_path. TYPE: str. DEFAULT: 'samples'"]
+    },
     "model options": {
         "clip_denoised"               : [true,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: true"],
         "num_timesteps"               : [100,             "Number of timesteps to use for sampling. TYPE: int. DEFAULT: 100"],
@@ -29,19 +36,17 @@
         "plotting_functions"          : ["grid,concat",   "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter','concat']. TYPE: str. DEFAULT: 'grid,concat'"]
     },
     "how much to sample": {
-        "num_votes"                   : [5,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
+        "num_votes"                   : [3,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
         "num_samples"                 : [8,               "Number of samples (unique images) to produce votes for. TYPE: int. DEFAULT: 8"],
         "num_inter_steps"             : [10,              "Number of unique intermediate steps to save for saving/plotting (limited by num_timesteps also). TYPE: int. DEFAULT: 10"],
         "num_inter_samples"           : [8,               "Number of intermediate samples to save for saving/plotting. TYPE: int. DEFAULT: 8"],
         "num_grid_samples"            : [8,               "Number of samples to use for a grid plot. TYPE: int. DEFAULT: 8"],
         "inter_votes_per_sample"      : [1,               "How many votes per image (e.g. 1=only first vote) should intermediate steps be saved for. TYPE: int. DEFAULT: 1"]
     },
-    "where to save things": {
-        "grid_filename"               : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "inter_folder"                : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "raw_samples_folder"          : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
-        "default_save_folder"         : ["samples",       "Default folder to save samples in, as a relative path wrt. the model save_path. TYPE: str. DEFAULT: 'samples'"]
+    "version_backwards_compatability": {
+        "num_votes": {"<1.0.0": 5}
     },
-    "deprecated": {}
+    "deprecated": {
+        
+    }
 }

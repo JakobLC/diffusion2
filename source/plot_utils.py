@@ -8,7 +8,7 @@ import os
 import glob
 from pathlib import Path
 from PIL import Image
-from utils import bracket_glob_fix, save_dict_list_to_json
+from utils import bracket_glob_fix, save_dict_list_to_json, imagenet_preprocess, get_likelihood
 import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
@@ -16,6 +16,7 @@ import cv2
 import datetime
 import pandas as pd
 import scipy.ndimage as nd
+
 def collect_gen_table(gen_id="many",
                    name_match_strings="*30k*",
                    saves_folder = str(Path(__file__).parent.parent / "saves"),
@@ -75,7 +76,6 @@ def collect_gen_table(gen_id="many",
                 match_save_names.append(s)
                 match_save_idxs.append(match_idx[-1])
                 match_data_s = data[match_idx]
-                #match_data_s = np.array([get_dtype([di])(di) for di in match_data_s.flatten()]).reshape(match_data_s.shape)
                 if verbose and len(match_idx)>1: 
                     print("Warning: multiple matches found for gen_id="+gen_id+", save_name="+s+" using the latest.")
                 
@@ -125,7 +125,7 @@ def collect_gen_table(gen_id="many",
 
 def get_dtype(vec):
     vec0 = vec[0]
-    assert isinstance(vec0,(str,int,float,bytes)), f"expected vec0 to be a str, int, float, or bytes, found {type(vec0)}" 
+    assert isinstance(vec0,(str,int,float,bytes)), f"expected vec0 to be a str, int, float, or bytes, found {type(vec0)}"
     try:
         int(vec0)
         return int
@@ -175,7 +175,7 @@ def pretty_point(im,footprint=None,radius=0.05):
         pretty_point_image = torch.tensor(pretty_point_image).permute(2,0,1).to(device)
     return pretty_point_image
 
-def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
+def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
     filename_step = os.path.join(save_path,"logging_step.csv")
@@ -194,6 +194,7 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
         with open(fn,"r") as f:
             column_names = f.readline()[:-1].split(",")
         data = np.genfromtxt(fn, dtype=object, delimiter=",")[1:]
+        data[data==b''] = b'nan'
         if data.size==0:
             continue
         if len(data.shape)==1:
@@ -215,7 +216,7 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
                     ["gen_hiou","gen_max_hiou"],#both vali and train
                     ["gen_ari","gen_max_ari"],#both vali and train
                     ["step_loss"],
-                    ["step_mem_usage","step_grad_norm","step_clip_ratio"]]
+                    ["likelihood","vali_likelihood"]]
     plot_columns_new = []
     #remove non-existent columns
     for i in range(len(plot_columns)):
@@ -231,6 +232,9 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
     n1 = min(4,n)
     n2 = int(max(1,np.ceil(n/4)))
     
+    if "gen_gen_setup" in all_logging.keys():
+        plot_gen_setups = np.unique(all_logging["gen_gen_setup"])
+    
     figsize = (figsize_per_subplot[0]*n2,figsize_per_subplot[1]*n1)
     fig = plt.figure(figsize=figsize)
     for i in range(n):
@@ -241,24 +245,23 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             y = all_logging[name]
             x = all_logging[gls(name)+"step"]
             nan_or_inf_mask = np.logical_or(np.isnan(y),np.isinf(y))
-            
             if gls(name)=="gen_":
-                for gen_setup in plot_gen_setups:
-                    setup_mask = np.array(all_logging["gen_setup_name"])==gen_setup
-                    gen_id_mask = np.array(all_logging["gen_gen_id"])==""
-                    setup_mask = np.logical_and(np.logical_and(setup_mask,~nan_or_inf_mask),gen_id_mask)
+                for k,gen_setup in enumerate(plot_gen_setups):
+                    setup_mask = np.array(all_logging["gen_gen_setup"])==gen_setup
+                    #gen_id_mask = np.array(all_logging["gen_gen_id"])==""
+                    setup_mask = np.logical_and(setup_mask,~nan_or_inf_mask)
                     y2 = y[setup_mask]
                     x2 = x[setup_mask]
                     if len(y2)>0:
                         Y.append(y2)
-                        plot_kwargs = get_plot_kwargs(gen_setup+"_"+name,j,y2)
+                        plot_kwargs = get_plot_kwargs(gen_setup+"_"+name,idx=k,y=y2)
                         plt.plot(x2,y2,**plot_kwargs)
             else:
                 y = y[~nan_or_inf_mask]
                 x = x[~nan_or_inf_mask]
                 if len(y)>0:
                     Y.append(y)
-                    plot_kwargs = get_plot_kwargs(name,j,y)
+                    plot_kwargs = get_plot_kwargs(name,idx=None,y=y)
                     plt.plot(x,y,**plot_kwargs)
         if len(Y)>0:
             plt.legend()
@@ -289,11 +292,12 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
         clean_up(save_name)    
     plt.close(fig)
 
-def get_plot_kwargs(name,j,y):
+def get_plot_kwargs(name,idx,y):
     plot_kwargs = {"color": None,
                    "label": name}
     if name.find("gen_")>=0:
-        plot_kwargs["color"] = "C3" if name.find("vali")>=0 else [0.1,0.2,0.9]
+        if idx is not None:
+            plot_kwargs["color"] = f"C{idx}"
     if name.find("max_")>=0:
         plot_kwargs["linestyle"] = "--"
     if len(y)<=25:
@@ -368,8 +372,21 @@ def mean_dim0(x):
     assert isinstance(x,torch.Tensor), "mean_dim2 expects a torch.Tensor"
     return (x*0.5+0.5).clamp(0,1).mean(0).cpu().detach().numpy()
 
+def replace_nan_inf(x,replace_nan=0,replace_inf=0):
+    if torch.is_tensor(x):
+        x = x.clone()
+        x[torch.isnan(x)] = replace_nan
+        x[torch.isinf(x)] = replace_inf
+    elif isinstance(x,np.ndarray):
+        x = x.copy()
+        x[np.isnan(x)] = replace_nan
+        x[np.isinf(x)] = replace_inf
+    else:
+        raise ValueError(f"expected x to be a torch.Tensor or np.ndarray, found {type(x)}")
+    return x
+
 def error_image(x):
-    return cm.RdBu((mean_dim0(x)*255).astype(np.uint8))[:,:,:3]
+    return cm.RdBu(replace_nan_inf(255*mean_dim0(x)).astype(np.uint8))[:,:,:3]
 
 def contains_key(key,dictionary,ignore_none=True):
     has_key = key in dictionary.keys()
@@ -402,6 +419,13 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     if remove_old:
         clean_up(concat_filename)
 
+def normal_image(x,i,imagenet_stats=True): 
+    if imagenet_stats:
+        x2 = imagenet_preprocess(x.unsqueeze(0),inv=True)
+        return x2.squeeze(0).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+    else:
+        return (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
+
 def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_text=False):
     t = sample_output["inter"]["t"]
     num_timesteps = len(t)
@@ -421,7 +445,6 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
     
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
-    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
 
     map_dict = {"x_t": aboi,
@@ -495,7 +518,6 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
         output[k] = output[k][:bs]
         
     im = np.zeros((bs,image_size,image_size,3))+0.5
-    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
     map_dict = {"target_bit": aboi,
@@ -546,16 +568,21 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
     if remove_old:
         clean_up(filename)
 
+def likelihood_image(x):
+    return cm.inferno(replace_nan_inf(255*mean_dim0(x*2-1)).astype(np.uint8))[:,:,:3]
+
 def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True,sample_names=None):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
-    show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps"]
+    show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps","likelihood"]
     k0 = "x_t"
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
     if bs>max_images:
         bs = max_images
-    output["err_x"] = output["pred_x"]-output["x"]
+    mask = (output["loss_mask"].to(output["x"].device) if "loss_mask" in output.keys() else 1.0)
+    output["err_x"] = (output["pred_x"]-output["x"])*mask
+    output["likelihood"] = get_likelihood(output["pred_x"],output["x"],mask,ab)[0]
     if "mse_x" not in metrics.keys():
         metrics["mse_x"] = torch.mean(output["err_x"]**2,dim=[1,2,3]).tolist()
     if "self_cond" in output.keys():
@@ -573,10 +600,10 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         output[k] = output[k][:bs]
         
     im = np.zeros((bs,image_size,image_size,3))+0.5
-    normal_image = lambda x,i: (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
     err_im = lambda x,i: error_image(x)
+    lik_im = lambda x,i: likelihood_image(x)
 
     map_dict = {"image": normal_image,
                 "x_t": aboi,
@@ -586,7 +613,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
                 "pred_eps": aboi,
                 "eps": aboi,
                 "self_cond": aboi,
-                "points": points_aboi}
+                "points": points_aboi,
+                "likelihood": lik_im}
     if sort_samples_by_t:
         perm = torch.argsort(output["t"]).tolist()
     else:
@@ -832,7 +860,7 @@ def main():
                                new_file=True)
     elif args.unit_test==1:
         print("UNIT TEST 1: make_loss_plot")
-        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-01-29-16-51-36-055665_long[13]"
+        save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-02-19-17-16-55-965746_sam[128]"
         make_loss_plot(save_path,11,remove_old=False)
     elif args.unit_test==2:
         print("UNIT TEST 2: collect_gen_table")
