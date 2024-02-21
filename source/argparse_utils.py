@@ -329,6 +329,7 @@ class TieredParser():
         for item in id_list:
             id_of_item = item[self.id_key]
             id_dict[id_of_item] = item
+            
         return id_dict
     
     def get_unique_id(self, args):
@@ -373,7 +374,8 @@ def list_wrap_type(t):
 def load_existing_args(path_or_id,
                   name_key="args",
                   verify_keys=True,
-                  origin_replace_keys=["commandline","modified_args"]):
+                  origin_replace_keys=["commandline","modified_args"],
+                  use_loaded_dynamic_args=True):
     tp = TieredParser(name_key)
     if str(path_or_id).endswith(".json"):
         args_loaded = json.loads(Path(path_or_id).read_text())
@@ -398,6 +400,11 @@ def load_existing_args(path_or_id,
     for k in all_keys:
         if k in tp.dynamic_args:
             #dynamic args are allowed to be different
+            if (k in theo_keys) and (k in load_keys):
+                if use_loaded_dynamic_args:
+                    pass
+                else:
+                    args_loaded[k] = args_theoretical.__dict__[k]
             if (k in theo_keys) and (k not in load_keys):
                 args_loaded[k] = args_theoretical.__dict__[k]
         else:

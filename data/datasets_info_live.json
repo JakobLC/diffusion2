@@ -107,8 +107,8 @@
         "bg_prob": 0.2,
         "overlap": false,
         "samples_per_split": [
-            0,
             5748,
+            0,
             0
         ],
         "thin_bg": "never"
@@ -201,9 +201,9 @@
         "bg_prob": 0.2,
         "overlap": false,
         "samples_per_split": [
+            583,
             0,
-            0,
-            583
+            0
         ],
         "thin_bg": "never"
     },

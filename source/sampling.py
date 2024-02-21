@@ -34,7 +34,9 @@ class DiffusionSampler(object):
         self.source_batch = None
         self.queue = None
         if self.opts.eval_batch_size==0:
-            self.opts.eval_batch_size = self.trainer.args.train_batch_size
+            self.eval_batch_size = self.trainer.args.train_batch_size
+        else:
+            self.eval_batch_size = self.opts.eval_batch_size
 
         if hasattr(self.trainer,f"{self.opts.split}_dl"):
             self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
@@ -55,8 +57,8 @@ class DiffusionSampler(object):
             matplotlib.use("agg")
         else:
             old_backend = None
-
-        self.opts.default_save_folder = os.path.join(self.trainer.args.save_path,self.opts.default_save_folder)
+        if self.opts.default_save_folder=="":
+            self.opts.default_save_folder = os.path.join(self.trainer.args.save_path,"samples")
         def_save_name = f"{self.opts.gen_id}_{self.trainer.step:06d}"
         if "grid" in self.opts.plotting_functions.split(",") and self.opts.num_grid_samples>0:
             if self.opts.grid_filename=="":
@@ -120,7 +122,7 @@ class DiffusionSampler(object):
         self.queue = None
         metric_list = []
         votes = []
-        num_batches = np.ceil(self.opts.num_samples*self.opts.num_votes/self.opts.eval_batch_size).astype(int)
+        num_batches = np.ceil(self.opts.num_samples*self.opts.num_votes/self.eval_batch_size).astype(int)
         if num_batches==0:
             print("WARNING: num_batches==0.")
             return None
@@ -276,7 +278,7 @@ class DiffusionSampler(object):
                     save_inter_steps = (i<self.opts.num_inter_samples) and (j<self.opts.inter_votes_per_sample)
                     self.queue.append({"sample":i,"vote":j,"save_inter_steps": save_inter_steps, "save_grid": (i<self.opts.num_grid_samples)})
         
-        bs = min(self.opts.eval_batch_size,len(self.queue))
+        bs = min(self.eval_batch_size,len(self.queue))
         if self.source_idx >= self.bss:
             self.source_batch = self.get_kwargs(next(self.dataloader))
             self.bss = self.source_batch[0].shape[0]

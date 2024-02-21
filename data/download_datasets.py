@@ -297,12 +297,14 @@ class DatasetDownloader:
             file_name_list = trainval_names+test_names
             dataset_idx_dict = {}
             for file_name in file_name_list:
-                if name in train_names:
+                dataset_idx_dict[file_name] = 0
+                #code below: not used since all are trainval
+                """if name in train_names:
                     dataset_idx_dict[file_name] = 0
                 elif name in test_names:
                     dataset_idx_dict[file_name] = 2
                 else:
-                    dataset_idx_dict[file_name] = 1
+                    dataset_idx_dict[file_name] = 1"""
             class_dict = {0: "background"}
             class_dict_inv = {"background": 0}
             i = 1
@@ -382,7 +384,7 @@ class DatasetDownloader:
                 label_path = file_name+".png"
                 image = Image.open(image_path)
                 label = np.array(Image.open(label_path))
-                info = {"classes": list(range(len(np.unique(label)))),"split_idx": 2}
+                info = {"classes": list(range(len(np.unique(label)))),"split_idx": 0}
                 label2 = np.zeros_like(label)
                 k = 0
                 for u in np.unique(label):

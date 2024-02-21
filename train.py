@@ -30,6 +30,8 @@ from source.training import DiffusionModelTrainer
 # fix loss plot generation for many setups
 # try binary sampled and thresholded stepper
 # make so if you do --model_name m1;m1 --some_other_arg arg1;arg2, it will also loop when followed up with --mode cont
+# make K-means clustering of SAM features for comparison
+
 #training TODO
 # loop over lr
 # loop over input scaling and image sizes

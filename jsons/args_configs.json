@@ -251,11 +251,14 @@
     },
     "sam": {
         "versions": {"1": {"lr": 1}, "2": {"lr": 2}, "128": {"image_size": 128, "train_batch_size": 4},
-        "contest": {"mode": "load", "ckpt_name": "*325058_sam/ckpt_*.pt"},
-        "ce1": {"final_activation": "tanh", "loss_type": "ce1"},
-        "ce2": {"final_activation": "tanh", "loss_type": "ce2"},
-        "ce3": {"final_activation": "tanh", "loss_type": "ce1", "lr": 0.00001},
-        "ce4": {"final_activation": "tanh", "loss_type": "ce2", "lr": 0.00001}
+            "128_slow": {"image_size": 128, "train_batch_size": 4, "lr": 0.00001, "input_scale": 0.003},
+            "contest": {"mode": "load", "ckpt_name": "*325058_sam/ckpt_*.pt"},
+            "tanh": {"final_activation": "tanh"},
+            "ce1": {"final_activation": "tanh", "loss_type": "ce1"},
+            "ce2": {"final_activation": "tanh", "loss_type": "ce2"},
+            "ce3": {"final_activation": "tanh", "loss_type": "ce1", "lr": 0.00001},
+            "ce4": {"final_activation": "tanh", "loss_type": "ce2", "lr": 0.00001},
+            "256": {"image_size": 256, "train_batch_size": 2, "input_scale": 0.003}
     },
         "image_encoder": "sam_vit_b",
         "crop_method": "sam_big",

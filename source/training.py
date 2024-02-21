@@ -19,7 +19,7 @@ from fp16_util import (
     zero_grad,
 )
 import datetime
-from argparse_utils import save_args, TieredParser, load_existing_args, overwrite_existing_args
+from argparse_utils import save_args, TieredParser, load_existing_args, overwrite_existing_args, load_defaults
 from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
 from datasets import (CatBallDataset, custom_collate_with_info, 
@@ -139,6 +139,7 @@ class DiffusionModelTrainer:
         for gen_setup in self.args.gen_setups.split(","):
             sample_opts = TieredParser("sample_opts").get_args(alt_parse_args=[],modified_args={"gen_setup": gen_setup})
             self.list_of_sample_opts.append(sample_opts)
+
         if self.args.mode in ["load","new"]:
             save_args(args)
             self.step = 0
@@ -149,10 +150,18 @@ class DiffusionModelTrainer:
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
             #if sample_opts file exists, replace the gen_ids with the ones from the file
-            id_dicts = TieredParser("sample_opts").load_and_format_id_dict()
-            for k,v in id_dicts.items():
-                if Path(v["name_match_str"]).parent==Path(self.args.ckpt_name).parent:
-                    self.list_of_sample_opts.gen_id = v["gen_id"]
+            id_dict = TieredParser("sample_opts").load_and_format_id_dict()
+            for i in range(len(self.list_of_sample_opts)):
+                #look through existing sample_opts and make sure it is associated with our model, and has the same gen_setup
+                gen_id_matched = None
+                for k,v in id_dict.items():
+                    if Path(v["name_match_str"]).parent.absolute()==Path(self.args.save_path).absolute():
+                        if v["gen_setup"]==self.list_of_sample_opts[i].gen_setup:
+                            gen_id_matched = k
+                            break
+                if gen_id_matched is not None:
+                    self.list_of_sample_opts[i] = load_existing_args(gen_id_matched,name_key="sample_opts",use_loaded_dynamic_args=False)
+                    self.list_of_sample_opts[i].gen_id = gen_id_matched
         self.log("Init complete.")
 
     def create_datasets(self,split_list=["train","vali"]):

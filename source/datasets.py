@@ -306,7 +306,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       data_root=None,
                       use_pretty_data=True,
                       geo_aug_p=0.3,
-                      label_padding_val=255):
+                      label_padding_val=255,
+                      use_native_splits=False):
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -382,7 +383,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 randperm = np.arange(N)
             start = max(0,np.floor(self.split_start_and_stop[0]*N).astype(int))
             stop = min(N,np.floor(self.split_start_and_stop[1]*N).astype(int))
-            use_idx = randperm[start:stop]
+            if use_native_splits:
+                use_idx = self.get_use_idx_from_native_split(randperm,info_json,num=stop-start)
+            else:
+                use_idx = randperm[start:stop]
             items = []
             
             file_format = self.datasets_info[dataset_name]["file_format"]
@@ -422,6 +426,16 @@ class SegmentationDataset(torch.utils.data.Dataset):
             generator = torch.Generator().manual_seed(seed)
         p = np.array([self.dataset_weights[item["dataset_name"]] for item in self.items])
         return torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=True,generator=generator)
+
+    def get_use_idx_from_native_split(self,randperm,info_json,num):
+        """Returns a random subset of indices based on the native 
+        splits of the datasets. The indices are selected from sets
+        with too many indices, based on the following priorities:
+        train use_idx:  1. train
+        vali  use_idx:  1. vali 2.train
+        test  use_idx:  1. test 2. vali 3. train
+        
+        """
 
     def get_crop_params(self,label):
         min_image_sidelegth = min(label.shape[:2])

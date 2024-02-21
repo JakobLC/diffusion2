@@ -10,7 +10,7 @@
         "raw_samples_folder"          : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "origin"                      : ["",              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
-        "default_save_folder"         : ["samples",       "Default folder to save samples in, as a relative path wrt. the model save_path. TYPE: str. DEFAULT: 'samples'"]
+        "default_save_folder"         : ["",              "Default folder to save samples in, empty string defaults to [model_folder]/samples/. TYPE: str. DEFAULT: ''"]
     },
     "model options": {
         "clip_denoised"               : [true,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: true"],
