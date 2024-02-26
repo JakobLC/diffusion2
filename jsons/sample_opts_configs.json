@@ -19,6 +19,7 @@
     "gen1": {"num_timesteps": 2, "num_samples": 8,"num_grid_samples": 8, "num_inter_samples": 8, "eval_batch_size": 1, "num_votes": 1},
     "gen2": {"num_timesteps": 2},
     "self_cond_gw2_ema": {"guidance_weight": 2.0, "self_cond": true, "ema_idx": 0},
-    "big_eval_ema": {"num_timesteps": 100, "num_samples": 100, "ema_idx": 0, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3},
-    "big_eval": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3}
+    "big_eval_ema": {"num_timesteps": 100, "num_samples": 100, "ema_idx": 0, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3, "kwargs_mode": "only_image"},
+    "big_eval": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3, "kwargs_mode": "only_image"},
+    "gw_sweep": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "guidance_weight": "-1.0;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "split": "vali", "num_votes": 1, "kwargs_mode": "only_image"}
 }

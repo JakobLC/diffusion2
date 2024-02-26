@@ -11,26 +11,26 @@ from source.training import DiffusionModelTrainer
 #warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
-#TODO
-# implement all points in arguments
-# implement forced xstart
-# implement fixed batches for long training runs
-# add SAM image features or image embedding model
-# implement dummy diffusion
-# implement timestep delta from bit diffusion
-# implement better corrupt from bit diffusion
-# add option to save sampling results to sample_info.json
-# make num points depend on num labels
-# add data: VISOR, Totalsegmenter data, UVO
-# fix SAM augmentations
-# add native train/test/vali splits
-# add model_name[ver1;ver2] argparsing
-# make seeding reproducible
-# add time, step saving to args
-# fix loss plot generation for many setups
-# try binary sampled and thresholded stepper
-# make so if you do --model_name m1;m1 --some_other_arg arg1;arg2, it will also loop when followed up with --mode cont
-# make K-means clustering of SAM features for comparison
+#TODO [priority]
+# [1] make K-means clustering of SAM features for comparison
+# [2] implement dummy diffusion
+# [2] make so if you do --model_name m1;m1 --some_other_arg arg1;arg2, it will also loop when followed up with --mode cont
+# [3] fix SAM augmentations
+# [3] add model_name[ver1;ver2] argparsing
+# [3] try binary sampled and thresholded stepper
+# [3] implement forced xstart
+# [3] implement fixed batches for long training runs
+# [4] make MSE plot in forward pass show multiplied with loss weight but "MSE=" not multiplied
+# [4] add split_idx to datasets lacking them
+# [4] implement timestep delta from bit diffusion
+# [4] implement better corrupt from bit diffusion
+# [4] make num points depend on num labels
+# [4] add data: VISOR, Totalsegmenter data, UVO
+# [5] make continuing training easier
+# [5] add time, step saving to args
+# [5] implement all points in arguments
+# [5] check multiple workers works
+# [5] add num classes to image renderings
 
 #training TODO
 # loop over lr

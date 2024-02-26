@@ -12,6 +12,12 @@ import jsonlines
 import shutil
 import datetime
 from functools import partial
+import re
+
+def format_relative_path(path):
+    if path is None:
+        return path
+    return str(Path(path).resolve().relative_to(Path(".").resolve()))
 
 def imagenet_preprocess(x,inv=False,dim=1):
     """Normalizes a torch tensor or numpy array with 
@@ -645,10 +651,40 @@ def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
 
     return all_acc, iou
 
+def wildcard_match(pattern, text):
+    """
+    Perform wildcard pattern matching.
+
+    Parameters:
+        pattern (str): The wildcard pattern to match against. '*' matches any character
+                      zero or more times.
+        text (str): The text to check for a match against the specified pattern.
+
+    Returns:
+        bool: True if the text matches the pattern, False otherwise."""
+    pattern = re.escape(pattern)
+    pattern = pattern.replace(r'\*', '.*')
+    regex = re.compile(pattern)
+    return bool(regex.search(text))
+
+def get_time(verbosity=2,sep="-"):
+    if verbosity==0:
+        s = datetime.datetime.now().strftime('%y-%m-%d-%H-%M')
+    elif verbosity==1:
+        s = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
+    elif verbosity==2:
+        s = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")
+    elif verbosity==3:
+        s = datetime.datetime.now().strftime('%m-%d')
+    else:
+        raise ValueError("verbosity must be 0, 1 or 2")
+    if sep!="-":
+        s = s.replace("-",sep)
+    return s
+
 def nuke_saves_folder(dry_run=False, 
          ask_for_permission=True,
-         minimum_save_iteration=1,
-         minimum_date="2024-01-019-15-00-000000"):
+         minimum_save_iteration=1):
     """
     Removes folders for all training runs, under some conditions.
     
@@ -656,26 +692,13 @@ def nuke_saves_folder(dry_run=False,
     dry_run (bool): If True, does not remove anything.
     ask_for_permission (bool): If True, asks for permission before removing anything.
     minimum_save_iterations (int): Minimum number of saves for a run to be kept.
-    minimum_date (str): Minimum date for a run to be kept.
     """
     rm_str = "Removing (dry)" if dry_run else "Removing"
-    minimum_date = [int(x) for x in minimum_date.split("-")]
     saves_folder = Path("./saves")
+    folders = saves_folder.glob("*/*/")
     folders_for_removal = []
-    for folder in sorted(os.listdir(str(saves_folder))):
-        folder_path = saves_folder/folder
+    for folder_path in folders:
         if folder_path.is_dir():
-            name = Path(folder).name
-            date = [int(x) for x in name.split("-")[:6]]
-            date_is_good = True
-            for min_d,d in zip(minimum_date,date):
-                if d==min_d:
-                    continue
-                elif d>min_d:
-                    break
-                elif d<min_d:
-                    date_is_good = False
-                    break
             save_files = [x for x in os.listdir(str(folder_path)) if x.endswith(".pt")]
             max_ite = 0
             for save_file in save_files:
@@ -685,8 +708,7 @@ def nuke_saves_folder(dry_run=False,
                     if ite>max_ite:
                         max_ite = ite
             save_iteration_is_good = max_ite>=minimum_save_iteration
-            is_good = date_is_good and save_iteration_is_good
-            if not is_good:
+            if not save_iteration_is_good:
                 folders_for_removal.append(folder_path)
     if len(folders_for_removal)==0:
         print("No folders to remove.")
@@ -695,7 +717,11 @@ def nuke_saves_folder(dry_run=False,
         print("The following folders will be removed:")
         for folder in folders_for_removal:
             print(folder)
-        if input("Do you want to proceed? (y/n)")!="y":
+        if dry_run:
+            q_str = "Do you want to proceed (dry, does nothing) ? (y/n)"
+        else:
+            q_str = "Do you want to proceed? (y/n)"
+        if input(q_str)!="y":
             return
     for folder in folders_for_removal:
         print(f"{rm_str} {folder}")
@@ -703,7 +729,7 @@ def nuke_saves_folder(dry_run=False,
             shutil.rmtree(folder)
 
 def format_save_path(args):
-    save_path = str(Path("./saves/") / f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}_{args.model_id}")
+    save_path = str(Path("./saves/") / f"ver-{args.model_version}" / f"{get_time(1)}_{args.model_id}")
     for k,v in args.origin.items():
         if v=="modified_args" and (k not in ["model_id","origin","model_name","save_path"]):
             save_path += f"_({k}={getattr(args,k)})"
@@ -721,5 +747,4 @@ def main():
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         
-if __name__=="__main__":
-    main()
+if __name__=="__main__":nuke_saves_folder

@@ -3,7 +3,9 @@
     "gen_version"                     : ["1.0.0",         "version of the generation to use. TYPE: str. DEFAULT: '1.0.0'"],
     "dynamic": {
         "gen_id"                      : ["[gen_setup]_*", "Unique id of the generation. Replaces [key] with corrspnd str. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[gen_setup]_*'"],
-        "name_match_str"              : ["*weak30k[7]",   "string to search for models when in pure sampling mode. TYPE: str. DEFAULT: '*weak30k[7]'"],
+        "model_id"                    : ["",              "Id of the model of the ckpt used sampling. TYPE: str. DEFAULT: ''"],
+        "name_match_str"              : ["",              "string to search for models when in pure sampling mode. TYPE: str. DEFAULT: ''"],
+        "time"                        : ["",              "Time of the generation. TYPE: str. DEFAULT: ''"],
         "seed"                        : [-1,              "Seed to use for sampling. New random seed if <0. TYPE: int. DEFAULT: -1"],
         "grid_filename"               : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "inter_folder"                : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
@@ -22,7 +24,7 @@
         "self_cond"                   : [false,           "Whether to use self conditioning. TYPE: bool. DEFAULT: false"],
         "ema_idx"                     : [-1,              "EMA model idx to use for sampling. negative for no EMA (normal model). TYPE: float. DEFAULT: -1"],
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
-        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. One of ['train']. TYPE: str. DEFAULT: 'train'"]
+        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. One of ['train', 'only_image']. TYPE: str. DEFAULT: 'train'"]
     },
     "meta options": {
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],

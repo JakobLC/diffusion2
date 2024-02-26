@@ -28,8 +28,8 @@ from nn import update_ema
 from unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from cont_gaussian_diffusion import create_diffusion_from_args
 from utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
-                   fancy_print_kvs,set_random_seed,bracket_glob_fix,
-                   set_random_seed,is_infinite_and_not_none,
+                   fancy_print_kvs,bracket_glob_fix,format_relative_path,
+                   set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -40,6 +40,13 @@ class DiffusionModelTrainer:
         self.args = args
 
         self.seed = set_random_seed(args.seed)
+        if self.args.debug_run=="seed":
+            print("Seed: "+str(self.seed))
+            print("numpy random state: "+str(np.random.get_state()))
+            print("torch random state: "+str(torch.random.get_rng_state()))
+            print("torch cuda random state: "+str(torch.cuda.get_rng_state()))
+            print("torch cuda random state (manual_seed): "+str(torch.cuda.manual_seed(self.seed)))
+            exit()
         args.seed = self.seed
 
         self.cgd = create_diffusion_from_args(args)
@@ -141,12 +148,13 @@ class DiffusionModelTrainer:
             self.list_of_sample_opts.append(sample_opts)
 
         if self.args.mode in ["load","new"]:
-            save_args(args)
             self.step = 0
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
             self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
+            self.args.step_and_time = [[self.step,datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")]]
+            save_args(args)
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
             #if sample_opts file exists, replace the gen_ids with the ones from the file
@@ -162,6 +170,12 @@ class DiffusionModelTrainer:
                 if gen_id_matched is not None:
                     self.list_of_sample_opts[i] = load_existing_args(gen_id_matched,name_key="sample_opts",use_loaded_dynamic_args=False)
                     self.list_of_sample_opts[i].gen_id = gen_id_matched
+            if self.args.mode=="cont":
+                if isinstance(self.args.step_and_time,list):
+                    self.args.step_and_time.append([self.step,get_time()])
+                else:
+                    self.args.step_and_time = [[self.step,get_time()]]
+                overwrite_existing_args(self.args)
         self.log("Init complete.")
 
     def create_datasets(self,split_list=["train","vali"]):
@@ -178,7 +192,8 @@ class DiffusionModelTrainer:
                                         shuffle_zero=self.args.shuffle_zero,
                                         geo_aug_p=self.args.geo_aug_prob,
                                         crop_method=self.args.crop_method,
-                                        label_padding_val=255 if self.args.ignore_padded else 0)
+                                        label_padding_val=255 if self.args.ignore_padded else 0,
+                                        split_method=self.args.split_method)
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size}[split]
@@ -202,15 +217,14 @@ class DiffusionModelTrainer:
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
-            ckpt_name = "*"+self.args.model_name+"/ckpt_*.pt"
-        saves_folder = Path(os.path.abspath(__file__)).parent.parent/"saves"
-        ckpt_matches = list(Path(saves_folder).glob(bracket_glob_fix(ckpt_name)))
+            ckpt_name = "./saves/ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
+        ckpt_matches = list(Path(os.path.abspath(__file__)).parent.parent.glob(bracket_glob_fix(ckpt_name)))
         if len(ckpt_matches)==0:
             self.exit_flag = True
             self.log("WARNING: No ckpts found. Please specify a valid ckpt_name. ckpt_name: "+ckpt_name)
             return ""
         elif len(ckpt_matches)>1:
-            raise ValueError("Multiple ckpts found. Please specify a more specific ckpt_name. ckpt_name: "+ckpt_name+" ckpt_matches: "+str(ckpt_matches))
+            raise ValueError("Multiple ckpts found. Please specify a more specific ckpt_name. ckpt_name: "+ckpt_name+", ckpt_matches: "+str(ckpt_matches))
         else:
             ckpt_name = ckpt_matches[0]
         if check_valid_args:
@@ -220,7 +234,7 @@ class DiffusionModelTrainer:
                 if k not in ["save_path","ckpt_name","mode"]:
                     assert k in self.args.__dict__.keys(), f"could not find key {k} from ckpt_args in current args"
                     assert self.args.__dict__[k]==v, f"ckpt args and current args differ for key {k}: {v} vs {self.args.__dict__[k]}"
-        return str(ckpt_name)
+        return format_relative_path(ckpt_name)
         
     def save_train_ckpt(self,delete_old=True,name_str="ckpt_",additional_str="",only_keep_keys=None):
         save_dict = {"step": self.step,
@@ -619,7 +633,6 @@ class DiffusionModelTrainer:
             parent = parent.parent
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
     
-    
     def generate_samples(self, list_of_sample_opts=None, max_reduction_measures=["hiou","ari"]):
         """
         Inputs:
@@ -628,7 +641,7 @@ class DiffusionModelTrainer:
         """
         if list_of_sample_opts is None:
             for i in range(len(self.list_of_sample_opts)):
-                self.list_of_sample_opts[i].name_match_str = str(Path(self.args.save_path)/f"ckpt_{self.step:06d}.pt")
+                self.list_of_sample_opts[i].name_match_str = format_relative_path(Path(self.args.save_path)/f"ckpt_{self.step:06d}.pt")
             list_of_sample_opts = self.list_of_sample_opts
         gen_setup_idx = 0
         for opts in list_of_sample_opts:

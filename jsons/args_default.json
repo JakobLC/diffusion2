@@ -1,11 +1,11 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.0.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.0. "],
+    "model_version": ["1.0.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.1."],
     "dynamic": {
-        "model_id": ["[model_name]_*",               "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
+        "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
         "seed": [-1,                                "Seed for random number generator. TYPE: non-negative integer or -1 (random). DEFAULT: -1. "],
-        "step_time": ["",                           "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "],
+        "step_and_time": ["",                       "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "],
         "origin": ["",                              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "]
     },
     "diffusion": {
@@ -37,9 +37,9 @@
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
-        "final_activation": ["none",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
+        "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_h','sam_vit_l','sam_vit_b']. DEFAULT: 'none'. "],
-        "image_encoder_depth": [0,                  "Depth of the image encoder. TYPE: positive integer. DEFAULT: 0"]
+        "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"]
     },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],
@@ -55,7 +55,7 @@
         "num_vali_batches": [8,                     "Number of batches to use for validation each vali_interval. TYPE: positive integer or 0 (no validation). DEFAULT: 8. "],
         "run_without_test": [false,                 "Should all evaluation be skipped? TYPE: boolean. DEFAULT: false. "],
         "mode": ["new",                             "Which mode to run in? new: new training, cont: continue from ckpt, load: load ckpt and make new TYPE: One of ['new','cont','load']. DEFAULT: 'new'. "],
-        "ckpt_name": ["",                           "Relative name to ./saves/ to load ckpt from. Empty string for ckpt_name='*[model_name]/ckpt_*.pt'. TYPE: DEFAULT: '' . "],
+        "ckpt_name": ["",                           "Path to load ckpt from. Empty string for ckpt_name='./saves/ver-*/*[model_name]*/ckpt_*.pt'. TYPE: DEFAULT: '' . "],
         "save_best_ckpt": [true,                    "Should the best checkpoint be tracked and saved? TYPE: boolean. DEFAULT: false. "],
         "best_ckpt_metric": ["max_ari",             "Which metric to use for best checkpoint tracking. TYPE: string. DEFAULT: 'max_ari'. "],
         "best_ckpt_gen_setup_idx": [0,              "Which gen setup idx to use for best checkpoint tracking. TYPE: integer. DEFAULT: 0. "],
@@ -95,14 +95,17 @@
         "geo_aug_prob": [0.0,                       "Probability of geometric augmentation being used. TYPE: float. DEFAULT: 0.0. "],
         "crop_method": ["multicrop_most_border",    "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big']. DEFAULT: 'multicrop_most_border'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
-        "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "]
+        "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
+        "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "]
     },
     "version_backwards_compatability": {
         "classes_prob" : {"<1.0.0": 0.9},
         "weak_bbox_prob": {"<1.0.0": 0.25},
         "weak_points_prob": {"<1.0.0": 0.25},
         "dl_num_workers": {"<1.0.0": 0},
-        "ignore_padded": {"<1.0.0": false}
+        "ignore_padded": {"<1.0.0": false},
+        "final_activation": {"<1.0.1": "none"},
+        "split_method": {"<1.0.1": "random"}
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'. "],

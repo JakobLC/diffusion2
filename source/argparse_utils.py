@@ -5,7 +5,39 @@ import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
-from utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring
+from utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
+
+def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
+    if len(s)==0:
+        return s
+    assert not s.find("./")>=0, "name_match_str is already relative to saves_folder. Do not use ./ in name_match_str."
+    # converts to format:  ver*/*/*.pt
+    num_sep = s.count("/")
+    if num_sep==0:
+        s = "ver-*/"+s+"/ckpt_*.pt"
+    elif num_sep==1:
+        if s.endswith(".pt"):
+            s = "ver-*/"+s
+        else:
+            s = s+"/ckpt_*.pt"        
+    elif num_sep==2:
+        if not s.endswith(".pt"):
+            s = s+".pt"
+    if s.find("*") >= 0:
+        matching_paths = list(Path(saves_folder).glob(bracket_glob_fix(s)))
+        if len(matching_paths) == 0:
+            raise ValueError("No models match the expression: "+s+", consider using a starred expression")
+        elif len(matching_paths)==1:
+            s = str(matching_paths[0])
+        else:
+            if return_multiple_matches:
+                s = sorted([str(x) for x in matching_paths])
+            else:
+                raise ValueError("Multiple models match the expression. Be more specific than name_match_str="+s+"\n matches listed below: \n"+str([str(x) for x in matching_paths]))
+    else:
+        assert Path(s).exists(), "model path does not exist. Use starred expressions to search s="+s
+        s = str(s)
+    return s
 
 def load_defaults(idx=0,ordered_dict=False,filename="jsons/args_default.json",
                   return_special_argkey=None,
@@ -152,7 +184,8 @@ class TieredParser():
                     deprecated_argkey="deprecated",
                     backwards_comp_argkey="version_backwards_compatability",
                     dynamic_argkey="dynamic",
-                    key_to_type={"origin": dict}):
+                    key_to_type={"origin": dict,
+                                 "name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True)}):
         self.tiers_dict = tiers_dict
         assert name in ["args","sample_opts"], f"name={name} not supported."
         self.name_key = {"args": "model_name","sample_opts": "gen_setup"}[name]
@@ -379,6 +412,9 @@ def load_existing_args(path_or_id,
     tp = TieredParser(name_key)
     if str(path_or_id).endswith(".json"):
         args_loaded = json.loads(Path(path_or_id).read_text())
+        if isinstance(args_loaded,list):
+            assert len(args_loaded)==1, f"Expected len(args_loaded)==1, but len(args_loaded)={len(args_loaded)}."
+            args_loaded = args_loaded[0]
     else:
         id_dict = tp.load_and_format_id_dict()
         assert path_or_id in id_dict.keys(), f"path_or_id={path_or_id} not found in id_dict.keys()."

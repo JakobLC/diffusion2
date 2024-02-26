@@ -37,12 +37,12 @@ def collect_gen_table(gen_id="many",
         save_name = str(save_name)
     match_save_names = []
     match_save_idxs = []
-    if name_match_strings=="auto":
-        all_save_names = os.listdir(saves_folder)
+    if name_match_strings=="auto" or name_match_strings=="*":
+        all_save_names = Path(saves_folder).glob("*/*/") 
         matching_save_names = all_save_names
     else:
         if not isinstance(name_match_strings,list):
-            assert isinstance(name_match_strings,str), f"expected name_match_strings to be a list of strings or 'auto', found {type(name_match_strings)}"
+            assert isinstance(name_match_strings,str), f"expected name_match_strings to be a list of strings or str, found {type(name_match_strings)}"
             name_match_strings = [name_match_strings]
         matching_save_names = []
         for s in name_match_strings:
@@ -455,7 +455,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                 "image": normal_image,
                 "points": points_aboi}
     zero_image = np.zeros((image_size,image_size,3))
-    
+    has_classes = contains_key("classes",model_kwargs)
     if not os.path.exists(foldername):
         os.makedirs(foldername)
     filenames = []
@@ -478,7 +478,11 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
         filename = os.path.join(foldername,f"intermediate_{i+num_inter_exists:03d}.png")
         filenames.append(filename)
         images = sum(images,[])
-        text = sum(text,[]) if plot_text else []
+        text = sum(text,[])
+        if not plot_text:
+            text = ["" for _ in range(len(text))]
+        if has_classes:
+            text[num_timesteps+3] = f"class={model_kwargs['classes'][ii].item()}"
         jlc.montage_save(save_name=filename,
                         show_fig=False,
                         arr=images,
@@ -525,7 +529,11 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
                 "x_init": aboi,
                 "image": normal_image,
                 "points": points_aboi}
-    
+    has_classes = False
+    if "classes" in output.keys():
+        if output["classes"] is not None:
+            has_classes = True
+        
     num_votes = output["pred_bit"].shape[1]
     images = []
     text = []
@@ -542,6 +550,8 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
             else:
                 text.extend([k if text_inside else ""]+[""]*(bs-1))
                 images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
+                if k=="points" and text_inside:
+                    text[-1] += f"\nclass={output['classes'][i].item()}" if has_classes else ""
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
@@ -560,9 +570,13 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
     if not text_inside:
         idx = show_keys.index("pred_bit")
         show_keys2 = show_keys[:idx]+["pred_bit\n#"+str(i) for i in range(num_votes)]+show_keys[idx+1:]
+        if has_classes:
+            bottom_names = [f"class={output['classes'][i].item()}" for i in range(bs)]
+        else:
+            bottom_names = ["" for i in range(bs)]
         add_text_axis_to_image(filename,
                                top=sample_names,
-                               bottom=sample_names,
+                               bottom=bottom_names,
                                left=show_keys2,
                                right=show_keys2)
     if remove_old:
@@ -604,7 +618,7 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
     err_im = lambda x,i: error_image(x)
     lik_im = lambda x,i: likelihood_image(x)
-
+    
     map_dict = {"image": normal_image,
                 "x_t": aboi,
                 "pred_x": aboi,
@@ -624,6 +638,12 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         if k in output.keys():
             images.append([map_dict[k](output[k][i],i) for i in perm])
     text = sum([[k if text_inside else ""]+[""]*(bs-1) for k in show_keys],[])
+
+    has_classes = False
+    if "classes" in output.keys():
+        if output["classes"] is not None:
+            has_classes = True
+
     if text_inside:
         err_idx = show_keys.index("err_x")*bs
         for i in perm:
@@ -631,6 +651,10 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         x_t_idx = show_keys.index("x_t")*bs
         for i in perm:
             text[i+x_t_idx] += f"\nt={output['t'][i].item():.3f}"
+        if has_classes:
+            points_idx = show_keys.index("points")*bs
+            for i in perm:
+                text[i+points_idx] += f"\nclass={output['classes'][i].item()}"
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
@@ -648,6 +672,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         sample_names = [sample_names[i] for i in perm]
     if not text_inside:
         t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in perm]
+        if has_classes:
+            t_and_mse = [f"class={output['classes'][i].item()}\n"+t for i,t in zip(perm,t_and_mse)]
         add_text_axis_to_image(filename,
                                top=sample_names,
                                bottom=t_and_mse,
@@ -848,18 +874,11 @@ def main():
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
     if args.unit_test==0:
-        print("UNIT TEST 0: add_text_axis_to_image")
-        test_filename = "./saves/test2/forward_pass_000010.png"
-        add_text_axis_to_image(test_filename,
-                               n_horz=4,
-                               n_vert=7,
-                               top=["abc","","abc"],
-                               bottom=["bottom1","bottom2"],
-                               left=["left1","left2"],
-                               right=["right1","right2"],
-                               new_file=True)
+        print("UNIT TEST 0:")
+        raise ValueError("This test is not implemented")
     elif args.unit_test==1:
         print("UNIT TEST 1: make_loss_plot")
+        raise ValueError("This test is not implemented")
         save_path = "/home/jloch/Desktop/diff/diffusion2/saves/2024-02-19-17-16-55-965746_sam[128]"
         make_loss_plot(save_path,11,remove_old=False)
     elif args.unit_test==2:

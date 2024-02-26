@@ -5,7 +5,7 @@ from argparse import Namespace
 from collections import defaultdict
 import os
 import tqdm
-from utils import get_segment_metrics,bracket_glob_fix,get_save_name_str
+from utils import get_segment_metrics,get_time
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
 from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
@@ -20,6 +20,7 @@ class DiffusionSampler(object):
             opts = TieredParser("sample_opts").get_args([])
         self.opts = opts
         self.trainer = trainer
+        self.opts.seed = self.trainer.args.seed
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -106,17 +107,11 @@ class DiffusionSampler(object):
         assert self.opts.num_samples>=0, "num_samples must be non-negative."
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
-        
-        """modified_opts_wrt_setup = {}
-        ref_opts = TieredParser("sample_opts").get_args(alt_parse_args=["--gen_setup",self.setup_name])
-        for k,v in self.opts.__dict__.items():
-            if v!=ref_opts.__dict__[k]:
-                modified_opts_wrt_setup[k] = v
-        return modified_opts_wrt_setup"""
 
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
-        modified_opts_wrt_setup = self.verify_valid_opts()
+        self.verify_valid_opts()
+        print("Sampling with gen_id:",self.opts.gen_id)
         model,was_training,old_backend = self.prepare_sampling(model)
         
         self.queue = None
@@ -236,6 +231,8 @@ class DiffusionSampler(object):
         return metrics
     
     def run_on_finished(self,output):
+        self.opts.model_id = self.trainer.args.model_id
+        self.opts.time = get_time()
         if self.trainer.args.mode!="gen":
             try:
                 overwrite_existing_args(self.opts)
@@ -268,6 +265,11 @@ class DiffusionSampler(object):
             x,info = batch
             x = x.to(self.device)
             model_kwargs = {}
+        elif self.opts.kwargs_mode=="only_image":
+            x,info = batch
+            x = x.to(self.device)
+            x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
+            model_kwargs = {k: v for k,v in model_kwargs.items() if k in ["image","image_features"]}
         return x,model_kwargs,info
             
     def form_next_batch(self):

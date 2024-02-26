@@ -11,6 +11,7 @@ import albumentations as A
 import cv2
 import copy
 from turbojpeg import TurboJPEG,TJPF_RGB
+import warnings
 
 turbo_jpeg = TurboJPEG()
 
@@ -307,7 +308,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       use_pretty_data=True,
                       geo_aug_p=0.3,
                       label_padding_val=255,
-                      use_native_splits=False):
+                      split_method="random"):
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -359,7 +360,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         assert split in list(range(-1,4)), "invalid split input. must be one of [0,1,2,3] or ['train','vali','test','all']"
         sr = split_ratio
         sr = np.array(sr)/sum(sr)
-        self.split_start_and_stop = [[0,sr[0]],[sr[0],sr[0]+sr[1]],[sr[0]+sr[1],1.0],[0,1]][split]
+        self.split_start_and_stop = [[0,sr[0]],[sr[0],sr[0]+sr[1]],[sr[0]+sr[1],1.0],[0,1]]
         
         self.split = split
         
@@ -368,6 +369,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.idx_to_class = {}
         self.augment_per_dataset = {}
         self.datasets_info = {d["dataset_name"]: d for d in self.datasets_info if d["dataset_name"] in self.dataset_list}
+
+        assert split_method in ["random","native","native_train"]
+        self.split_method = split_method
 
         for dataset_name in self.dataset_list:
             print("processing dataset: ",dataset_name)
@@ -381,14 +385,21 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 np.random.seed(previous_seed)
             else:
                 randperm = np.arange(N)
-            start = max(0,np.floor(self.split_start_and_stop[0]*N).astype(int))
-            stop = min(N,np.floor(self.split_start_and_stop[1]*N).astype(int))
-            if use_native_splits:
-                use_idx = self.get_use_idx_from_native_split(randperm,info_json,num=stop-start)
-            else:
+            
+            
+            if split_method=="native_train":
+                use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
+            elif split_method=="native":
+                use_idx = np.array([i for i in range(N) if info_json[i]["split"]==split])
+                use_idx = randperm[use_idx]
+            elif split_method=="random":
+                start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
+                stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
                 use_idx = randperm[start:stop]
             items = []
-            
+            if len(use_idx)==0:
+                warnings.warn("no data in dataset "+dataset_name+" satisfying the criteria")
+                continue
             file_format = self.datasets_info[dataset_name]["file_format"]
             for idx in use_idx:
                 item = info_json[idx]
@@ -427,15 +438,52 @@ class SegmentationDataset(torch.utils.data.Dataset):
         p = np.array([self.dataset_weights[item["dataset_name"]] for item in self.items])
         return torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=True,generator=generator)
 
-    def get_use_idx_from_native_split(self,randperm,info_json,num):
-        """Returns a random subset of indices based on the native 
-        splits of the datasets. The indices are selected from sets
-        with too many indices, based on the following priorities:
-        train use_idx:  1. train
-        vali  use_idx:  1. vali 2.train
-        test  use_idx:  1. test 2. vali 3. train
-        
-        """
+    def get_use_idx_native_train(self,randperm,info_json,dataset_name):
+        """Returns a training set of indices based on the native 
+        splits of the datasets. Samples are only allowed to migrate from
+        lower to higher splits. i.e train->vali->test.
+        This only works if the target #train>=#vali+#test, allowing us
+        to use native training data as vali/test data."""
+        N = len(info_json)
+        native_split = []
+        for i in range(N):
+            native_split.append(info_json[i].get("split_idx",0))
+        native = []
+        target = []
+        for split in range(3):
+            start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
+            stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
+            target.append(stop-start)
+            native.append(sum([x==split for x in native_split]))
+        assert N==sum(native)==sum(target), "dataset_name: "+dataset_name+"N: "+str(N)+", native: "+str(native)+", target: "+str(target)
+        #native to actual split. upper triangular matrix to avoid migration from higher to lower splits
+        n_to_a = np.zeros((3,3),dtype=int)
+        n_to_a[2,2] = native[2]
+        n_to_a[1,1] = native[1]
+        #take from train to fill up vali and test
+        missing_vali = max(0, target[1]-native[1])
+        n_to_a[0,1] = missing_vali
+        missing_test = max(0,target[2]-native[2])
+        n_to_a[0,2] = missing_test
+        #remainder goes to train
+        assert native[0]>=missing_vali+missing_test, "dataset_name: "+dataset_name+"N: "+str(N)+", native: "+str(native)+", target: "+str(target)
+        n_to_a[0,0] = native[0]-missing_test-missing_vali
+        assert np.all(n_to_a>=0)
+        assert n_to_a.sum()==N, str(n_to_a)+", "+str(n_to_a.sum())+", "+str(N)
+        assert np.all(n_to_a.sum(1)==native), str(n_to_a)+", "+str(n_to_a.sum())+", "+str(N)
+        #now select indices for the current split of interest based on their ordering in randperm
+        target_split = -np.ones(N,dtype=int)
+        for i in randperm:
+            native_split_i = native_split[i]
+            for j in range(3):
+                if n_to_a[native_split_i,j]>0:
+                    n_to_a[native_split_i,j] -= 1
+                    target_split[i] = j
+                    break
+        assert np.all(target_split>=0), "num fails: "+str(np.sum(target_split==-1))+", dataset_name: "+dataset_name
+
+        use_idx = np.where(target_split==self.split)[0]
+        return use_idx
 
     def get_crop_params(self,label):
         min_image_sidelegth = min(label.shape[:2])

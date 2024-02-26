@@ -1,5 +1,6 @@
 __pycache__/
 saves/
+saves_old/
 /data/*/
 !/data/*/idx_to_class.json
 !/data/*/info.jsonl
