@@ -5,7 +5,8 @@ from argparse import Namespace
 from collections import defaultdict
 import os
 import tqdm
-from utils import get_segment_metrics,get_time
+from unet import unet_kwarg_to_tensor
+from utils import get_segment_metrics,get_time,save_dict_list_to_json,check_keys_are_same
 from plot_utils import plot_grid,plot_inter,concat_inter_plots
 from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
@@ -30,6 +31,7 @@ class DiffusionSampler(object):
     def prepare_sampling(self,model=None):
         #init variables
         self.samples = []
+        self.light_stats = []
         self.source_idx = 0
         self.bss = 0
         self.source_batch = None
@@ -38,13 +40,23 @@ class DiffusionSampler(object):
             self.eval_batch_size = self.trainer.args.train_batch_size
         else:
             self.eval_batch_size = self.opts.eval_batch_size
-
-        if hasattr(self.trainer,f"{self.opts.split}_dl"):
-            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
+        if len(self.opts.datasets)>0:
+            if not isinstance(self.opts.datasets,list):
+                self.opts.datasets = [self.opts.datasets]
+        if len(self.opts.datasets)>0:
+            self.trainer.create_datasets(self.opts.split,gen_datasets=self.opts.datasets)
+            lpd = getattr(self.trainer,f"{self.opts.split}_dl").dataloader.dataset.len_per_dataset
+            max_num_samples = sum([lpd[dataset] for dataset in self.opts.datasets])
+            if self.opts.num_samples<0:
+                self.opts.num_samples = max_num_samples
+            elif self.opts.num_samples>max_num_samples:
+                print(f"WARNING: num_samples={self.opts.num_samples} is larger than the maximum number of samples in the specified datasets: {max_num_samples}. Setting num_samples to the maximum.")
+                self.opts.num_samples = max_num_samples
         else:
-            self.trainer.create_datasets(self.opts.split)
-            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
-        
+            if not hasattr(self.trainer,f"{self.opts.split}_dl"):
+                self.trainer.create_datasets(self.opts.split)
+        self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
+
         if model is None:
             if self.opts.ema_idx>=0:
                 model, self.swap_pointers_func = self.trainer.get_ema_model(self.opts.ema_idx)
@@ -61,6 +73,9 @@ class DiffusionSampler(object):
         if self.opts.default_save_folder=="":
             self.opts.default_save_folder = os.path.join(self.trainer.args.save_path,"samples")
         def_save_name = f"{self.opts.gen_id}_{self.trainer.step:06d}"
+        if self.opts.save_light_stats:
+            if self.opts.light_stats_filename=="":
+                self.opts.light_stats_filename = os.path.join(self.opts.default_save_folder,f"light_stats_{def_save_name}.json")
         if "grid" in self.opts.plotting_functions.split(",") and self.opts.num_grid_samples>0:
             if self.opts.grid_filename=="":
                 self.opts.grid_filename = os.path.join(self.opts.default_save_folder,f"grid_{def_save_name}.png")
@@ -110,9 +125,10 @@ class DiffusionSampler(object):
 
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
-        self.verify_valid_opts()
+        
         print("Sampling with gen_id:",self.opts.gen_id)
         model,was_training,old_backend = self.prepare_sampling(model)
+        self.verify_valid_opts()
         
         self.queue = None
         metric_list = []
@@ -148,7 +164,10 @@ class DiffusionSampler(object):
                 for i in range(sample_output["pred"].shape[0]):
                     votes.append(sample_output["pred"][i])
                     if batch_queue[i]["vote"]==self.opts.num_votes-1:
-                        model_kwargs_i = {k: model_kwargs[k][i] for k in model_kwargs.keys() if model_kwargs[k] is not None}
+                        model_kwargs_i = {k: 
+                                          (model_kwargs[k][i] if model_kwargs[k] is not None else None) 
+                                          for k in model_kwargs.keys()}
+                        print("model_kwargs_i.keys():",model_kwargs_i.keys())
                         metrics = self.run_on_full_votes(votes,x_true[i],x_true_bit[i],info[i],model_kwargs_i,x_init[i],batch_queue[i])
                         votes = []
                         metric_list.append(metrics)
@@ -174,18 +193,21 @@ class DiffusionSampler(object):
     def get_output_dict(self, metric_list, samples, info_keys_save=["dataset_name","i"]):
         sample_output = {}
         metric_output = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
+        #check for key conflicts
         if samples is not None:
+            assert check_keys_are_same(samples)
             for k in samples[0].keys():
                 if k=="info":
                     sample_output[k] = [{sub_k: s[k][sub_k] for sub_k in info_keys_save} for s in samples]
                     continue
                 if isinstance(samples[0][k],dict):
                     for sub_k in samples[0][k].keys():
-                        if not torch.is_tensor(samples[0][k][sub_k]):
-                            raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
-                        sample_output[sub_k] = torch.stack([s[k][sub_k] for s in samples],dim=0)
+                        assert check_keys_are_same([s[k] for s in samples])
+                        #if not torch.is_tensor(samples[0][k][sub_k]):
+                        #    raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
+                        sample_output[sub_k] = unet_kwarg_to_tensor([s[k][sub_k] for s in samples])
                 elif torch.is_tensor(samples[0][k]):
-                    sample_output[k] = torch.stack([s[k] for s in samples],dim=0)
+                    sample_output[k] = unet_kwarg_to_tensor([s[k] for s in samples])
         
         return sample_output, metric_output
             
@@ -228,6 +250,13 @@ class DiffusionSampler(object):
                                 "x_init": x_init,
                                 "info": info,
                                 "model_kwargs": model_kwargs})
+        if self.opts.save_light_stats:
+            light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","image_path","label_path","fn","num_classes"]},
+                           "model_kwargs_abs_sum": {k: 
+                                                    (v.abs().sum().item() if torch.is_tensor(v) else 0) 
+                                                    for k,v in model_kwargs.items()},
+                           "metrics": dict(metrics)}
+            self.light_stats.append(light_stats)
         return metrics
     
     def run_on_finished(self,output):
@@ -252,6 +281,8 @@ class DiffusionSampler(object):
                                num_timesteps = len(self.save_i_steps),
                                remove_children="inter" not in self.opts.plotting_functions.split(","),
                                remove_old = self.opts.remove_old)
+        if self.opts.save_light_stats:
+            save_dict_list_to_json(self.light_stats,self.opts.light_stats_filename)
 
     def get_kwargs(self,batch):
         if self.opts.kwargs_mode=="train":
@@ -286,7 +317,8 @@ class DiffusionSampler(object):
             self.bss = self.source_batch[0].shape[0]
             self.source_idx = 0
         batch_x = []
-        use_kwargs = [k for k,v in self.source_batch[1].items() if v is not None]
+        #use_kwargs = [k for k,v in self.source_batch[1].items() if v is not None]
+        use_kwargs = list(self.source_batch[1].keys())
         batch_kwargs = {k: [] for k in use_kwargs}
         batch_info = []
         batch_queue = []
@@ -294,7 +326,10 @@ class DiffusionSampler(object):
             batch_queue.append(self.queue.pop(0))
             batch_x.append(self.source_batch[0][self.source_idx])
             for k in use_kwargs:
-                batch_kwargs[k].append(self.source_batch[1][k][self.source_idx])
+                if self.source_batch[1][k] is None:
+                    batch_kwargs[k].append(None)
+                else:
+                    batch_kwargs[k].append(self.source_batch[1][k][self.source_idx])
             batch_info.append(self.source_batch[2][self.source_idx])
             
             if batch_queue[-1]["vote"]==self.opts.num_votes-1:
@@ -306,7 +341,7 @@ class DiffusionSampler(object):
 
         for k in batch_kwargs.keys():
             if batch_kwargs[k] is not None:
-                batch_kwargs[k] = torch.stack(batch_kwargs[k],dim=0)
+                batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k])
         batch_x = torch.stack(batch_x,dim=0)
         return batch_x, batch_kwargs, batch_info, batch_queue
     

@@ -14,12 +14,27 @@ import datetime
 from functools import partial
 import re
 
+def check_keys_are_same(list_of_dicts,verbose=True):
+    assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
+    keys = [sorted(list(d.keys())) for d in list_of_dicts]
+    if len(keys)==0:
+        return True
+    else:
+        uq_keys = set(sum(keys,[]))
+        for k in uq_keys:
+            keys_found_k = [int(k in d) for d in keys]
+            if not all(keys_found_k):
+                if verbose:
+                    print(f"Key {k} not found in all dictionaries keys_found_k={keys_found_k}")
+                return False
+        return True
+            
 def format_relative_path(path):
     if path is None:
         return path
     return str(Path(path).resolve().relative_to(Path(".").resolve()))
 
-def imagenet_preprocess(x,inv=False,dim=1):
+def imagenet_preprocess(x,inv=False,dim=1,maxval=1.0):
     """Normalizes a torch tensor or numpy array with 
     the imagenet mean and std. Can also be used to
     invert the normalization. Assumes the input is
@@ -38,13 +53,19 @@ def imagenet_preprocess(x,inv=False,dim=1):
         std = np.array(std).reshape(shape)
     if inv:
         #y = (x-mean)/std <=> x = y*std + mean
-        m = std
-        b = mean
+        m = std*maxval
+        b = mean*maxval
     else:
         #y = (x-mean)/std = x*1/std - mean/std
-        m = 1/std
+        m = 1/std/maxval
         b = -mean/std
-    return x*m+b
+    out = x*m+b
+    if abs(255-maxval)<1e-6:
+        if isinstance(x,np.ndarray):
+            out = np.clip(out,0,255).astype(np.uint8)
+        else:
+            out = torch.clamp(out,0,255).to(torch.uint8)
+    return out
 
 class AlwaysReturnsFirstItemOnNext():
     def __init__(self,iterable):
@@ -203,6 +224,16 @@ def get_likelihood(pred,target,mask,ab,outside_mask_fill_value=0.0,clamp=True):
     if was_single:
         likelihood_images = likelihood_images[0]
     return likelihood_images, likelihood
+
+def get_segment_metrics_np(pred,target,**kwargs):
+    #simple wrapper for get_segment_metrics
+    assert isinstance(pred,np.ndarray), "pred must be a numpy array"
+    assert isinstance(target,np.ndarray), "target must be a numpy array"
+    if "mask" in kwargs:
+        if kwargs["mask"] is not None:
+            assert isinstance(kwargs["mask"],np.ndarray), "mask must be a numpy array"
+            kwargs["mask"] = torch.tensor(kwargs["mask"].copy())
+    return get_segment_metrics(torch.tensor(pred),torch.tensor(target),**kwargs)
 
 def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None,reduce_to_mean=True):
     assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
@@ -667,17 +698,19 @@ def wildcard_match(pattern, text):
     regex = re.compile(pattern)
     return bool(regex.search(text))
 
-def get_time(verbosity=2,sep="-"):
+def get_time(verbosity=4,sep="-"):
     if verbosity==0:
-        s = datetime.datetime.now().strftime('%y-%m-%d-%H-%M')
-    elif verbosity==1:
-        s = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    elif verbosity==2:
-        s = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")
-    elif verbosity==3:
         s = datetime.datetime.now().strftime('%m-%d')
+    elif verbosity==1:
+        s = datetime.datetime.now().strftime('%m-%d-%H-%M')
+    elif verbosity==2:
+        s = datetime.datetime.now().strftime('%y-%m-%d-%H-%M')
+    elif verbosity==3:
+        s = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
+    elif verbosity==4:
+        s = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")
     else:
-        raise ValueError("verbosity must be 0, 1 or 2")
+        raise ValueError("Unknown verbosity level: "+str(verbosity))
     if sep!="-":
         s = s.replace("-",sep)
     return s

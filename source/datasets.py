@@ -335,18 +335,20 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.downscale_thresholding_factor = 3
         self.datasets_info = load_json_to_dict_list(str(Path(data_root) / "datasets_info_live.json"))
         available_datasets = [d["dataset_name"] for d in self.datasets_info if d["live"]]
-        if self.datasets == "non-medical":
+        if self.datasets==["non-medical"] or self.datasets=="non-medical":
             self.dataset_list = []
             for d in self.datasets_info:
                 if d["live"]:
                     if d["type"]=="pictures":
                         self.dataset_list.append(d["dataset_name"])
-        elif self.datasets == "medical":
+        elif self.datasets==["medical"] or self.datasets=="medical":
             self.dataset_list = []
             for d in self.datasets_info:
                 if d["live"]:
                     if d["type"]=="medical":
                         self.dataset_list.append(d["dataset_name"])
+        elif self.datasets==["all"] or self.datasets=="all":
+            self.dataset_list = available_datasets
         else:
             if isinstance(self.datasets,list):
                 self.dataset_list = self.datasets
@@ -390,8 +392,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
             if split_method=="native_train":
                 use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
             elif split_method=="native":
-                use_idx = np.array([i for i in range(N) if info_json[i]["split"]==split])
-                use_idx = randperm[use_idx]
+                use_idx = np.array([i for i in range(N) if info_json[i].get("split_idx",0)==split])
+                if len(use_idx)>0:
+                    use_idx = randperm[use_idx]
             elif split_method=="random":
                 start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
                 stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
@@ -437,6 +440,23 @@ class SegmentationDataset(torch.utils.data.Dataset):
             generator = torch.Generator().manual_seed(seed)
         p = np.array([self.dataset_weights[item["dataset_name"]] for item in self.items])
         return torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=True,generator=generator)
+
+    def get_gen_dataset_sampler(self,datasets,seed=None):
+        if isinstance(datasets,str):
+            datasets = datasets.split(",")
+        assert all([d in self.dataset_list for d in datasets]), "Unrecognized dataset. Available datasets are: "+str(self.dataset_list)+" got "+str(datasets)
+        if seed is None:
+            generator = None
+        else:
+            generator = torch.Generator().manual_seed(seed)
+        p = []
+        for item in self.items:
+            if item["dataset_name"] in datasets:
+                p.append(self.dataset_weights[item["dataset_name"]])
+            else:
+                p.append(0)
+        p = np.array(p)
+        return torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=False,generator=generator)
 
     def get_use_idx_native_train(self,randperm,info_json,dataset_name):
         """Returns a training set of indices based on the native 
@@ -598,7 +618,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image = torch.tensor(image).permute(2,0,1)
         label = torch.tensor(label).unsqueeze(0)
         info["image"] = image
-        info["num_classes"] = torch.unique(label).numel()
+        info["num_classes"] = len([uq for uq in torch.unique(label) if uq!=255])
         return label,info
 
 def get_sam_aug(size,padval=255):

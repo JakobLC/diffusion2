@@ -31,6 +31,8 @@ from source.training import DiffusionModelTrainer
 # [5] implement all points in arguments
 # [5] check multiple workers works
 # [5] add num classes to image renderings
+# [5] resume training by model_id
+# [5] add continue training on nan losses, max resumed trainings argument
 
 #training TODO
 # loop over lr

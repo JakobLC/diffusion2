@@ -282,7 +282,7 @@ def unet_kwarg_to_tensor(kwarg):
         pass
     elif isinstance(kwarg, list):
         assert all([(isinstance(kw, torch.Tensor) or kw is None) for kw in kwarg]), f"If kwarg is a list, all elements must be torch.Tensor or None. kwarg={kwarg}"
-        if all([kw is None for kw in kwarg]):
+        if all([kw is None for kw in kwarg]): #also return true for empty list
             kwarg = None
         elif all([isinstance(kw, torch.Tensor) for kw in kwarg]):
             kwarg = torch.stack(kwarg)

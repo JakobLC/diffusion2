@@ -9,8 +9,10 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from shutil import rmtree
 import jlc
+import traceback
 import torch.nn.functional as F
 import json
+import argparse
 from fp16_util import (
     make_master_params,
     master_params_to_model_params,
@@ -178,7 +180,25 @@ class DiffusionModelTrainer:
                 overwrite_existing_args(self.args)
         self.log("Init complete.")
 
-    def create_datasets(self,split_list=["train","vali"]):
+    def create_datasets(self,split_list=["train","vali"],args=None):
+        if self is None:
+            self = argparse.Namespace()
+            pure_gen_dataset_mode = True
+            self.args = dummy_dataset_args()
+            if args is not None:
+                assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
+                self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
+            
+            if self.args.seed is None:
+                self.args.seed = set_random_seed(self.args.seed)
+            self.seed = self.args.seed
+        else:
+            if args is not None:
+                assert self.args.mode=="gen", "args can only be specified in gen mode"
+                assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
+                self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
+            pure_gen_dataset_mode = False
+        
         if isinstance(split_list,str):
             split_list = [split_list]
         split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
@@ -197,11 +217,15 @@ class DiffusionModelTrainer:
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size}[split]
+            if pure_gen_dataset_mode:
+                sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.seed)
+            else:
+                sampler = dataset.get_sampler(self.seed) if hasattr(dataset,"get_sampler") else None
             dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
                                         batch_size=bs,
-                                        sampler=dataset.get_sampler(self.seed) if hasattr(dataset,"get_sampler") else None,
-                                        shuffle=not hasattr(dataset,"get_sampler"),
-                                        drop_last=True,
+                                        sampler=sampler,
+                                        shuffle=(sampler is None),
+                                        drop_last=not pure_gen_dataset_mode,
                                         collate_fn=custom_collate_with_info,
                                         num_workers=self.args.dl_num_workers))
             if self.args.debug_run=="no_dl":
@@ -213,6 +237,9 @@ class DiffusionModelTrainer:
                     if i%10==0:
                         mem_usage = psutil.virtual_memory().percent
                         print(f"i: {i}, mem_usage: {mem_usage}")
+        if pure_gen_dataset_mode:
+            return dataloader
+        else:
             setattr(self,split+"_dl",dataloader)
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
@@ -320,7 +347,7 @@ class DiffusionModelTrainer:
                 model_kwargs["image_features"] = torch.zeros(bs,*image_features.shape[1:],device=self.device)
                 model_kwargs["image_features"][image_idx] = image_features
                 model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
-        
+
         model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         return x,model_kwargs,info
     
@@ -462,8 +489,15 @@ class DiffusionModelTrainer:
         self.last_grad_norm = np.sqrt(sqsum)
         self.log_kv({"grad_norm": self.last_grad_norm})
         self.log_kv({"clip_ratio": self.last_clip_ratio})
-        
+    
     def train_loop(self):
+        try:
+            self.train_loop_inner()
+        except Exception as e:
+            self.log("Exception in training loop:\n" + traceback.format_exc())
+            self.log("Exiting training loop.")
+
+    def train_loop_inner(self):
         if self.exit_flag:
             self.log("Training loop stopped due to exit flag.")
             return
@@ -670,6 +704,24 @@ class DiffusionModelTrainer:
                                         only_keep_keys=None if self.args.best_ckpt_full else [model_key])
             self.dump_kvs_gen()
             gen_setup_idx += 1
+
+def dummy_dataset_args():
+    args = argparse.Namespace(datasets="ade20k",
+                                split_ratio="0.8,0.1,0.1",
+                                image_size=64,
+                                min_label_size=0.0,
+                                max_num_classes=64,
+                                shuffle_zero=True,
+                                geo_aug_prob=0.0,
+                                crop_method="sam_big",
+                                ignore_padded=True,
+                                split_method="native",
+                                train_batch_size=8,
+                                vali_batch_size=-1,
+                                dl_num_workers=4,
+                                seed=-1,
+                                debug_run="")
+    return args
 
 def main():
     import argparse

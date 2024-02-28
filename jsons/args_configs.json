@@ -262,8 +262,11 @@
             "64_native_tanh": {"split_method": "native_train", "final_activation": "tanh"},
             "128_native_tanh": {"image_size": 128, "split_method": "native_train", "final_activation": "tanh"},
             "256_native_tanh": {"image_size": 256, "input_scale": 0.003, "split_method": "native_train", "final_activation": "tanh"},
-            "64_cond": {"cond_type": "num_classes"},
-            "128_cond": {"image_size": 128, "input_scale": 0.006, "cond_type": "num_classes"}
+            "64_nc": {"class_type": "num_classes"},
+            "64_nc_slow": {"class_type": "num_classes", "lr": 0.00001, "max_iter": 200000},
+            "128_nc": {"image_size": 128, "input_scale": 0.006, "class_type": "num_classes"},
+            "128_nc_slow": {"image_size": 128, "input_scale": 0.006, "class_type": "num_classes", "lr": 0.00001, "max_iter": 200000},
+            "64_bsweep": {"input_scale": "0.3;0.1;0.03;0.01;0.003", "max_iter": 50000}
     },
         "image_encoder": "sam_vit_b",
         "crop_method": "sam_big",

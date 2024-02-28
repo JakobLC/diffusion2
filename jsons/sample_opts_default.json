@@ -8,11 +8,13 @@
         "time"                        : ["",              "Time of the generation. TYPE: str. DEFAULT: ''"],
         "seed"                        : [-1,              "Seed to use for sampling. New random seed if <0. TYPE: int. DEFAULT: -1"],
         "grid_filename"               : ["",              "Place to save grid plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
+        "light_stats_filename"        : ["",              "Place to save light stats. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "inter_folder"                : ["",              "Place to save intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "raw_samples_folder"          : ["",              "Place to save raw samples. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "origin"                      : ["",              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
-        "default_save_folder"         : ["",              "Default folder to save samples in, empty string defaults to [model_folder]/samples/. TYPE: str. DEFAULT: ''"]
+        "default_save_folder"         : ["",              "Default folder to save samples in, empty string defaults to [model_folder]/samples/. TYPE: str. DEFAULT: ''"],
+        "datasets"                    : ["",              "Datasets to use for sampling. Only available in gen mode. TYPE: str. DEFAULT: ''"]
     },
     "model options": {
         "clip_denoised"               : [true,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: true"],
@@ -30,6 +32,7 @@
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],
         "progress_bar"                : [true,            "Whether to show a progress bar for batches. TYPE: bool. DEFAULT: true"],
         "progress_bar_timestep"       : [false,           "Whether to show a second progress bar running over timesteps during sampling. TYPE: bool. DEFAULT: false"],
+        "save_light_stats"            : [false,           "Whether to save stats in the default_save_folder. TYPE: bool. DEFAULT: false"],
         "save_raw_inter"              : [false,           "Whether to save raw intermediate samples. Needs save_raw_samples==true to have an effect. TYPE: bool. DEFAULT: false"],
         "save_raw_samples"            : [false,           "Whether to save raw samples. TYPE: bool. DEFAULT: false"],
         "save_sample_opts"            : [true,            "Whether to save the sample options in the default_save_folder. TYPE: bool. DEFAULT: true"],
