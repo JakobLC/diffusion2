@@ -21,7 +21,8 @@ from fp16_util import (
     zero_grad,
 )
 import datetime
-from argparse_utils import save_args, TieredParser, load_existing_args, overwrite_existing_args, load_defaults
+from argparse_utils import (save_args, TieredParser,load_existing_args, 
+                            overwrite_existing_args,get_ckpt_name)
 from sampling import DiffusionSampler
 from plot_utils import plot_forward_pass,make_loss_plot
 from datasets import (CatBallDataset, custom_collate_with_info, 
@@ -32,7 +33,8 @@ from cont_gaussian_diffusion import create_diffusion_from_args
 from utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    fancy_print_kvs,bracket_glob_fix,format_relative_path,
                    set_random_seed,is_infinite_and_not_none,get_time,
-                   AlwaysReturnsFirstItemOnNext,format_save_path)
+                   AlwaysReturnsFirstItemOnNext,format_save_path,
+                   load_state_dict_loose)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -52,15 +54,20 @@ class DiffusionModelTrainer:
         args.seed = self.seed
 
         self.cgd = create_diffusion_from_args(args)
-        self.model = create_unet_from_args(args)
-        n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
-        
+        if not self.args.mode=="data":
+            self.model = create_unet_from_args(args)
+            n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
+        else:
+            n_trainable = 0
+
         if self.args.mode=="new":
             if self.args.save_path=="":
                 self.args.save_path = format_save_path(self.args)
             self.log("Starting new training run.")
         elif self.args.mode=="load":
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            if self.exit_flag:
+                return
             ckpt = torch.load(self.args.ckpt_name)
             if self.args.save_path=="":
                 self.args.save_path = format_save_path(self.args)
@@ -75,10 +82,14 @@ class DiffusionModelTrainer:
             self.log("Continuing training run.")
         elif self.args.mode=="gen":
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
+            if self.exit_flag:
+                return
             ckpt = torch.load(self.args.ckpt_name)
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
             self.log("Setting up generation.")
+        elif self.args.mode=="data":
+            pass
         else:
             raise ValueError("Unknown mode: "+self.args.mode+", must be one of ['new','load','cont','gen']")
         if torch.cuda.is_available():
@@ -90,7 +101,7 @@ class DiffusionModelTrainer:
             self.device = torch.device("cpu")
         
         self.log("Number of trainable parameters: "+str(n_trainable))
-
+        
         self.log("Saving to: "+self.args.save_path)
 
         if self.args.cat_ball_data:
@@ -111,38 +122,46 @@ class DiffusionModelTrainer:
         self.kvs_step_buffer = []            
         self.num_nan_losses = 0
 
-        #init models, optimizers etc
-        self.model = self.model.to(self.device)
-        self.model_params = list(self.model.parameters())
-        self.master_params = self.model_params
-        
         if self.args.image_encoder!="none":
             self.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
 
-        if self.args.use_fp16:
-            self.master_params = make_master_params(self.model_params)
-            self.model.convert_to_fp16()
+        #init models, optimizers etc
+        if self.args.mode != "data":
+            self.model = self.model.to(self.device)
+            self.model_params = list(self.model.parameters())
+            self.master_params = self.model_params
+            if self.args.use_fp16:
+                self.master_params = make_master_params(self.model_params)
+                self.model.convert_to_fp16()
         
-        betas = [float(x) for x in self.args.betas.split(",")]
-        self.opt = AdamW(self.master_params, lr=self.args.lr, weight_decay=self.args.weight_decay,
-                         betas=betas)
+            betas = [float(x) for x in self.args.betas.split(",")]
+            self.opt = AdamW(self.master_params, lr=self.args.lr, weight_decay=self.args.weight_decay,
+                            betas=betas)
+            
+            self.ema_rates = [float(x) for x in self.args.ema_rate.split(",")]
+            self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rates]
         
-        self.ema_rates = [float(x) for x in self.args.ema_rate.split(",")]
-        self.ema_params = [copy.deepcopy(self.master_params) for _ in self.ema_rates]
-        
-        assert len(self.master_params) == len(self.ema_params[0])
+            assert len(self.master_params) == len(self.ema_params[0])
             
         if self.args.mode in ["cont","load","gen"]:
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_metric = (ckpt["best_metric"] if ckpt["best_metric"] is not None else 0.0) if "best_metric" in ckpt.keys() else 0.0
             self.fixed_batch = ckpt["fixed_batch"]
-            self.opt.load_state_dict(ckpt["optimizer"])
-            self.model.load_state_dict(ckpt["model"])
-            self.master_params = self._state_dict_to_master_params(ckpt["model"])
+            if self.args.load_state_dict_loose:
+                _ = load_state_dict_loose(self.model,ckpt["model"])
+                self.master_params = self._state_dict_to_master_params(self.model.state_dict())
+                #warn if there are no warmup steps
+                if self.args.lr_warmup_steps==0:
+                    self.log("WARNING: self.args.lr_warmup_steps=0. Warmup is recommended with loose model loading as it does not work for the optimizer.")
+            else:
+                self.opt.load_state_dict(ckpt["optimizer"])
+                self.model.load_state_dict(ckpt["model"])
+                self.master_params = self._state_dict_to_master_params(ckpt["model"])
             self.model_params = list(self.model.parameters())
             for i, ema_rate in enumerate(self.ema_rates):
                 if "ema_"+str(ema_rate) in ckpt.keys():
-                    self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
+                    if not self.args.load_state_dict_loose:
+                        self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
 
         self.list_of_sample_opts = []
         for gen_setup in self.args.gen_setups.split(","):
@@ -178,12 +197,19 @@ class DiffusionModelTrainer:
                 else:
                     self.args.step_and_time = [[self.step,get_time()]]
                 overwrite_existing_args(self.args)
+        elif self.args.mode=="data":
+            self.log("Data mode, no training loop.")
+            self.step = 0
+            self.fixed_batch = None
         self.log("Init complete.")
 
     def create_datasets(self,split_list=["train","vali"],args=None):
+        if isinstance(split_list,str):
+            split_list = [split_list]
         if self is None:
-            self = argparse.Namespace()
+            assert len(split_list)==1, "split_list must be of length 1 when in pure_gen_dataset_mode"
             pure_gen_dataset_mode = True
+            self = argparse.Namespace()
             self.args = dummy_dataset_args()
             if args is not None:
                 assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
@@ -194,13 +220,10 @@ class DiffusionModelTrainer:
             self.seed = self.args.seed
         else:
             if args is not None:
-                assert self.args.mode=="gen", "args can only be specified in gen mode"
+                assert self.args.mode in ["gen", "data"], "args can only be set when in gen or data mode"
                 assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
                 self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
             pure_gen_dataset_mode = False
-        
-        if isinstance(split_list,str):
-            split_list = [split_list]
         split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
         for split in split_list:
             dataset = SegmentationDataset(split=split,
@@ -237,23 +260,22 @@ class DiffusionModelTrainer:
                     if i%10==0:
                         mem_usage = psutil.virtual_memory().percent
                         print(f"i: {i}, mem_usage: {mem_usage}")
-        if pure_gen_dataset_mode:
-            return dataloader
-        else:
-            setattr(self,split+"_dl",dataloader)
+                
+            if pure_gen_dataset_mode:
+                return dataloader
+            else:
+                setattr(self,split+"_dl",dataloader)
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
             ckpt_name = "./saves/ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
-        ckpt_matches = list(Path(os.path.abspath(__file__)).parent.parent.glob(bracket_glob_fix(ckpt_name)))
-        if len(ckpt_matches)==0:
+        try:
+            ckpt_name = get_ckpt_name(ckpt_name,return_multiple_matches=False)
+        except ValueError as e:
+            self.log("WARNING: "+str(e))
             self.exit_flag = True
-            self.log("WARNING: No ckpts found. Please specify a valid ckpt_name. ckpt_name: "+ckpt_name)
+            self.log("Exiting due too many/few ckpt matches.")
             return ""
-        elif len(ckpt_matches)>1:
-            raise ValueError("Multiple ckpts found. Please specify a more specific ckpt_name. ckpt_name: "+ckpt_name+", ckpt_matches: "+str(ckpt_matches))
-        else:
-            ckpt_name = ckpt_matches[0]
         if check_valid_args:
             ckpt_args = json.loads((ckpt_name.parent/"args.json").read_text())
             #check all ckpt args are the same as the current args
@@ -342,8 +364,11 @@ class DiffusionModelTrainer:
             assert self.args.crop_method=="sam_big", "image_encoder requires sam_big crop_method"
             image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
             if len(image_idx)>0:
+                image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
+                if not image.shape[-1]==image.shape[-2]==1024:
+                    image = F.interpolate(image,(1024,1024),mode="nearest-exact")
                 with torch.no_grad():
-                    image_features = self.image_encoder(to_dev(unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])))
+                    image_features = self.image_encoder(to_dev(image))
                 model_kwargs["image_features"] = torch.zeros(bs,*image_features.shape[1:],device=self.device)
                 model_kwargs["image_features"][image_idx] = image_features
                 model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
@@ -550,12 +575,13 @@ class DiffusionModelTrainer:
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
-        if (not self.exit_flag) or self.args.save_path!="":
+        if self.args.save_path!="" and self.args.mode!="data":
             if not filepath.exists():
-                self.check_save_path(self.args.save_path)
-                os.makedirs(self.args.save_path, exist_ok=True)
-                with open(str(filepath), "w") as f:
-                    f.write(msg + "\n")
+                if not self.exit_flag:
+                    self.check_save_path(self.args.save_path)
+                    os.makedirs(self.args.save_path, exist_ok=True)
+                    with open(str(filepath), "w") as f:
+                        f.write(msg + "\n")
             else:
                 with open(str(filepath), "a") as f:
                     try:

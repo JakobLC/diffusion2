@@ -20,6 +20,7 @@ from source.training import DiffusionModelTrainer
 # [3] try binary sampled and thresholded stepper
 # [3] implement forced xstart
 # [3] implement fixed batches for long training runs
+# [3] make so weights are created in order that allow loose state dict loading
 # [4] make MSE plot in forward pass show multiplied with loss weight but "MSE=" not multiplied
 # [4] add split_idx to datasets lacking them
 # [4] implement timestep delta from bit diffusion

@@ -229,6 +229,9 @@ def get_segment_metrics_np(pred,target,**kwargs):
     #simple wrapper for get_segment_metrics
     assert isinstance(pred,np.ndarray), "pred must be a numpy array"
     assert isinstance(target,np.ndarray), "target must be a numpy array"
+    if len(pred.shape)==len(target.shape)==2:
+        pred = pred.copy()[None]
+        target = target.copy()[None]
     if "mask" in kwargs:
         if kwargs["mask"] is not None:
             assert isinstance(kwargs["mask"],np.ndarray), "mask must be a numpy array"
@@ -587,6 +590,11 @@ def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=Fal
     arch_state_dict = model_arch.state_dict()
     load_info = {"arch_not_sd": [],"sd_not_arch": [],"match_same_size": [], "match_diff_size": []}
     sd_keys = list(state_dict.keys())
+    """print(sd_keys)
+    print(state_dict["state"][0].keys())
+    print([type(v) for v in state_dict["state"][0].values()])
+    print(len(state_dict["param_groups"]))
+    assert 0"""
     for name, W in arch_state_dict.items():
         if name in sd_keys:
             sd_keys.remove(name)

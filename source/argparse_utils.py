@@ -6,8 +6,10 @@ from pathlib import Path
 from functools import partial
 from collections import OrderedDict
 from utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
+import copy
 
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
+    s_orig = copy.copy(s)
     if len(s)==0:
         return s
     assert not s.find("./")>=0, "name_match_str is already relative to saves_folder. Do not use ./ in name_match_str."
@@ -26,7 +28,7 @@ def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     if s.find("*") >= 0:
         matching_paths = list(Path(saves_folder).glob(bracket_glob_fix(s)))
         if len(matching_paths) == 0:
-            raise ValueError("No models match the expression: "+s+", consider using a starred expression")
+            raise ValueError(f"No models match the expression: {s_orig}, consider using a starred expression. The string was modified to: {s}.")
         elif len(matching_paths)==1:
             s = str(matching_paths[0])
         else:

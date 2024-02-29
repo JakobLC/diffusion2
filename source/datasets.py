@@ -603,6 +603,21 @@ class SegmentationDataset(torch.utils.data.Dataset):
         augmented = self.augment_per_dataset[item["dataset_name"]](image=image,mask=label)
         return augmented["image"],augmented["mask"]
     
+    def load_raw_image_label(self,x):
+        if isinstance(x,int):
+            image_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["image_path"])
+            label_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["label_path"])
+        elif isinstance(x,dict):
+            image_path = os.path.join(self.data_root,x["dataset_name"],x["image_path"])
+            label_path = os.path.join(self.data_root,x["dataset_name"],x["label_path"])
+        else:
+            assert isinstance(x,list)
+            assert len(x)==2
+            image_path,label_path = x
+        image = np.atleast_3d(open_image_fast(image_path))
+        label = open_image_fast(label_path)
+        return image,label
+    
     def __getitem__(self, idx):
         info = copy.deepcopy(self.items[idx])
         dataset_name = info["dataset_name"]

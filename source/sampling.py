@@ -167,7 +167,6 @@ class DiffusionSampler(object):
                         model_kwargs_i = {k: 
                                           (model_kwargs[k][i] if model_kwargs[k] is not None else None) 
                                           for k in model_kwargs.keys()}
-                        print("model_kwargs_i.keys():",model_kwargs_i.keys())
                         metrics = self.run_on_full_votes(votes,x_true[i],x_true_bit[i],info[i],model_kwargs_i,x_init[i],batch_queue[i])
                         votes = []
                         metric_list.append(metrics)
