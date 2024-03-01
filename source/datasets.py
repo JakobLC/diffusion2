@@ -408,7 +408,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 item = info_json[idx]
                 item["image_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_im."+file_format)
                 item["label_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_la.png")
-                if self.use_pretty_data and item["pretty"]:
+                if self.use_pretty_data and item.get("pretty",False):
                     item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
                     item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
                 item["dataset_name"] = dataset_name
