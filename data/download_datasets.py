@@ -602,12 +602,12 @@ def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidele
             image = np.concatenate([image for _ in range(3)],axis=2)
         shape = label.shape
         if shape[0]>shape[1]:
+            #makes sure that the smallest size is height
             image = image.transpose(1,0,2)
             label = label.transpose(1,0)
             transposed=True
         else:
             transposed=False
-        #now we smallest size is height
         h,w = label.shape
         h1 = min(h,max_process_sidelength)
         w1 = int(w*h1/h)
@@ -702,7 +702,6 @@ def main():
         for dataset in ["ade20k"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
-
     else:
         raise ValueError(f"Unknown process: {args.process}")
 if __name__=="__main__":

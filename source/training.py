@@ -373,8 +373,9 @@ class DiffusionModelTrainer:
                     image_features = self.image_encoder(to_dev(image))
                 model_kwargs["image_features"] = torch.zeros(bs,*image_features.shape[1:],device=self.device)
                 model_kwargs["image_features"][image_idx] = image_features
-                model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
-
+                if self.args.crop_method=="sam_big":
+                    model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
+                
         model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         return x,model_kwargs,info
     

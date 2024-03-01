@@ -305,11 +305,16 @@
     },
     "hpcweak": {
         "versions": {
+            "sam": {"image_encoder": "sam_vit_b","train_batch_size": 8},
+            "bsweep": {"input_scale": "0.3;0.1;0.03;0.01;0.006;0.003", "max_iter": 20000},
+            "lrsweep": {"lr": "0.0001;0.00005;0.00002;0.00001", "max_iter": 20000}
         },
+        "crop_method": "sam_small",
         "weak_signals": true,
         "gen_setups": "vali-ts10,train-ts10",
         "image_size": 128, 
         "max_iter": 200000,
-        "train_batch_size": 16
+        "train_batch_size": 16,
+        "input_scale": 0.006
     }
 }
