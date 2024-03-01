@@ -198,7 +198,7 @@
     "nc_big": {
         "versions": {
             "128": {"input_scale": 0.01, "image_size": 128, "train_batch_size": 8, "deeper_net": false, "self_cond": false, "gen_setups": "vali,train,ema_vali-ts10_gw2"},
-            "64": {"input_scale": 0.01, "image_size": 63, "train_batch_size": 8, "num_channels": 64}
+            "64": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 8, "num_channels": 64}
         },
         "predict": "x",
         "loss_weights": "SNR_trunc",
@@ -281,5 +281,29 @@
         "weak_signals": true,
         "self_cond": true,
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema"
+    },
+    "logits": {
+        "versions": {
+            "sam": {"image_encoder": "sam_vit_b", "crop_method": "sam_big", "train_batch_size": 4},
+            "lr1": {"clip_grad_norm": 0.01, "lr": 0.001},
+            "contweak": {"mode": "load", "ckpt_name": "*weak[64]*", "load_state_dict_loose": true}
+        },
+        "predict": "p_logits",
+        "loss_type": "ce2",
+        "weak_signals": true,
+        "gen_setups": "vali-ts10,train-ts10"
+    },
+    "weak":{
+        "versions": {
+            "64": {"image_size": 64},
+            "128": {"image_size": 128, "max_iter": 200000},
+            "128samcrop": {"image_size": 128, "mode": "load", "ckpt_name": "*weak[128]*", "crop_method": "sam_small", "max_iter": 10000},
+            "64samcrop": {"mode": "load", "ckpt_name": "*weak[64]*", "crop_method": "sam_small", "max_iter": 10000}
+        },
+        "weak_signals": true,
+        "gen_setups": "vali-ts10,train-ts10"
+    },
+    "sam2": {
+        
     }
 }

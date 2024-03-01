@@ -46,6 +46,7 @@
         "num_inter_steps"             : [10,              "Number of unique intermediate steps to save for saving/plotting (limited by num_timesteps also). TYPE: int. DEFAULT: 10"],
         "num_inter_samples"           : [8,               "Number of intermediate samples to save for saving/plotting. TYPE: int. DEFAULT: 8"],
         "num_grid_samples"            : [8,               "Number of samples to use for a grid plot. TYPE: int. DEFAULT: 8"],
+        "num_save_raw_samples"        : [8,               "Number of raw samples to save. TYPE: int. DEFAULT: 8"],
         "inter_votes_per_sample"      : [1,               "How many votes per image (e.g. 1=only first vote) should intermediate steps be saved for. TYPE: int. DEFAULT: 1"]
     },
     "version_backwards_compatability": {

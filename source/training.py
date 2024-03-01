@@ -178,6 +178,7 @@ class DiffusionModelTrainer:
             save_args(args)
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
+            self.args.model_id = json.loads((Path(self.args.save_path)/"args.json").read_text())[0]["model_id"]
             #if sample_opts file exists, replace the gen_ids with the ones from the file
             id_dict = TieredParser("sample_opts").load_and_format_id_dict()
             for i in range(len(self.list_of_sample_opts)):
@@ -268,7 +269,7 @@ class DiffusionModelTrainer:
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
-            ckpt_name = "./saves/ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
+            ckpt_name = "ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
         try:
             ckpt_name = get_ckpt_name(ckpt_name,return_multiple_matches=False)
         except ValueError as e:
@@ -361,7 +362,8 @@ class DiffusionModelTrainer:
                 else:
                     raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
         if self.args.image_encoder!="none":
-            assert self.args.crop_method=="sam_big", "image_encoder requires sam_big crop_method"
+            assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
+            
             image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
             if len(image_idx)>0:
                 image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])

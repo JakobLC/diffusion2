@@ -430,6 +430,17 @@ def ce2_loss(pred_x, x, loss_mask=None, batch_dim=0):
     likelihood = 1-0.5*torch.abs(pred_x-x)
     return -torch.sum(loss_mask*torch.log(likelihood), dim=non_batch_dims)
 
+def ce2_logits_loss(logits, x, loss_mask=None, batch_dim=0):
+    """BCEWithLogits loss reduced over all dimensions except batch"""
+    non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
+    if loss_mask is None:
+        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(pred_x.device)
+    else:
+        div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
+        loss_mask = (loss_mask/div).to(logits.device)
+    bce = torch.nn.functional.binary_cross_entropy_with_logits
+    return torch.mean(bce(logits, (x.clone()>0.0).float(), reduction="none")*loss_mask, dim=non_batch_dims)
+
 def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
     arch_state_dict = model_arch.state_dict()
     load_info = {"arch_not_sd": [],"sd_not_arch": [],"match_same_size": [], "match_diff_size": []}

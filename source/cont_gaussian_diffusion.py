@@ -4,7 +4,7 @@ import enum
 import numpy as np
 import torch
 from datasets import AnalogBits
-from utils import normal_kl,mse_loss,ce1_loss,ce2_loss
+from utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):
@@ -130,6 +130,8 @@ class ModelPredType(enum.Enum):
     X = enum.auto() 
     V = enum.auto()
     BOTH = enum.auto()
+    P = enum.auto()
+    P_logits = enum.auto()
 
 class LossType(enum.Enum):
     """Which type of loss the model uses."""
@@ -265,7 +267,10 @@ class ContinuousGaussianDiffusion():
         elif self.loss_type==LossType.CE1:
             losses = mult_(loss_weights,ce1_loss(pred_x,x,loss_mask))
         elif self.loss_type==LossType.CE2:
-            losses = mult_(loss_weights,ce2_loss(pred_x,x,loss_mask))
+            if self.model_pred_type==ModelPredType.P_logits:
+                losses = mult_(loss_weights,ce2_logits_loss(output,x,loss_mask))
+            else:
+                losses = mult_(loss_weights,ce2_loss(pred_x,x,loss_mask))
         loss = torch.mean(losses)
         out =  {"loss_weights": loss_weights,
                 "loss_mask": loss_mask,
@@ -309,6 +314,13 @@ class ContinuousGaussianDiffusion():
             v = output
             pred_x = mult_(alpha_t,x_t) - mult_(sigma_t,v)
             pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
+        elif self.model_pred_type==ModelPredType.P:
+            pred_x = output*2-1
+            pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
+        elif self.model_pred_type==ModelPredType.P_logits:
+            pred_x = torch.sigmoid(output)*2-1
+            pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
+
         if guidance_weight is not None:
             pred_eps = (1+guidance_weight)*pred_eps - guidance_weight*self.get_predictions(model_output_guidance,x_t,alpha_t,sigma_t,clip_x=False)[1]
             pred_x = self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)

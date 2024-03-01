@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.0.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.1."],
+    "model_version": ["1.0.2",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.2."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -22,7 +22,7 @@
         "use_checkpoint": [false,                   "Should gradient checkpointing be used (reduced memory usage, more flops)? TYPE: boolean. DEFAULT: false. "],
         "channel_multiplier": ["auto",              "Channel multipliers for the UNet, specifying the number of layers and their multiplier with num_channels. TYPE: comma separated list of ints. DEFAULT: 'auto'. "],                   
         "dropout": [0.0,                            "UNet dropout probability. TYPE: float. DEFAULT: 0.0. "],
-        "predict": ["x",                            "How to parmeterize x_t. TYPE: One of ['x','v','eps','both']. DEFAULT: 'x'. "],
+        "predict": ["x",                            "How to parmeterize x_t. TYPE: One of ['x','v','eps','both','p','p_logits']. DEFAULT: 'x'. "],
         "use_scale_shift_norm": [false,             "Should scaling and shifting of normalization layers be be used for class conditioning? otherwise simply linear addition. TYPE: boolean. DEFAULT: false. "],
         "num_res_blocks": [3,                       "Number of residual blocks per scale. TYPE: positive integer. DEFAULT: 3. "],
         "num_heads": [4,                            "Number of attention heads for downsampling and middle blocks. TYPE: positive integer. DEFAULT: 4. "], 
@@ -34,7 +34,7 @@
         "weak_signals": [false,                     "Should weak signals (bbox,points) be used? TYPE: boolean. DEFAULT: false. "],
         "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets' (TODO),'num_classes']. DEFAULT: 'none'. "],
         "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "],
-        "max_num_classes": [8,                      "Maximum number of class labels. TYPE: positive integer or 0 (no maximum). DEFAULT: 0. "],
+        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer or 0 (no maximum). DEFAULT: 64. "],
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
@@ -106,7 +106,8 @@
         "dl_num_workers": {"<1.0.0": 0},
         "ignore_padded": {"<1.0.0": false},
         "final_activation": {"<1.0.1": "none"},
-        "split_method": {"<1.0.1": "random"}
+        "split_method": {"<1.0.1": "random"},
+        "max_num_classes": {"<1.0.2": 8}
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'. "],

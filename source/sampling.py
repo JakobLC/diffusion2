@@ -44,7 +44,8 @@ class DiffusionSampler(object):
             if not isinstance(self.opts.datasets,list):
                 self.opts.datasets = [self.opts.datasets]
         if len(self.opts.datasets)>0:
-            self.trainer.create_datasets(self.opts.split,gen_datasets=self.opts.datasets)
+            self.trainer.args.datasets = self.opts.datasets
+            self.trainer.create_datasets(self.opts.split)
             lpd = getattr(self.trainer,f"{self.opts.split}_dl").dataloader.dataset.len_per_dataset
             max_num_samples = sum([lpd[dataset] for dataset in self.opts.datasets])
             if self.opts.num_samples<0:
@@ -250,7 +251,7 @@ class DiffusionSampler(object):
                                 "info": info,
                                 "model_kwargs": model_kwargs})
         if self.opts.save_light_stats:
-            light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","image_path","label_path","fn","num_classes"]},
+            light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","num_classes"]},
                            "model_kwargs_abs_sum": {k: 
                                                     (v.abs().sum().item() if torch.is_tensor(v) else 0) 
                                                     for k,v in model_kwargs.items()},

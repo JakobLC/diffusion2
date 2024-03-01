@@ -603,7 +603,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         augmented = self.augment_per_dataset[item["dataset_name"]](image=image,mask=label)
         return augmented["image"],augmented["mask"]
     
-    def load_raw_image_label(self,x):
+    def load_raw_image_label(self,x,longest_side_resize):
         if isinstance(x,int):
             image_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["image_path"])
             label_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["label_path"])
@@ -616,6 +616,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
             image_path,label_path = x
         image = np.atleast_3d(open_image_fast(image_path))
         label = open_image_fast(label_path)
+        if longest_side_resize>0:
+            image = A.LongestMaxSize(max_size=longest_side_resize, interpolation=cv2.INTER_AREA, always_apply=True, p=1)(image=image)["image"]
+            label = A.LongestMaxSize(max_size=longest_side_resize, interpolation=cv2.INTER_NEAREST, always_apply=True, p=1)(image=label)["image"]
         return image,label
     
     def __getitem__(self, idx):

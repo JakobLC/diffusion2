@@ -291,10 +291,13 @@ class TieredParser():
                     raise ValueError(f"name={name} has mismatched brackets.")
                 ver_names.append(root_name[idx0+1:idx1])
                 root_name = root_name[:idx0] + root_name[idx1+1:]
-        
+        #check that we are not using illegal version names (keys)
+        all_keys = self.defaults_func().keys()
+        for ver_name in ver_names:
+            if ver_name in all_keys:
+                raise ValueError(f"ver_name={ver_name} is not a valid version name because it is already a key for args.")
         if root_name in name_based_args.keys():
             root_name_args = name_based_args[root_name]
-            
         else:
             raise ValueError(f"name={root_name} not found in name_based_args")
         ver_name_args = {}
@@ -469,7 +472,7 @@ def overwrite_existing_args(args):
         raise ValueError(f"Expected args to contain either model_name or gen_setup.")
     id_dict = tp.load_and_format_id_dict()
     if not args.__dict__[tp.id_key] in id_dict.keys():
-        raise ValueError(f"args.__dict__[tp.id_key]={args.__dict__[tp.id_key]} not found in id_dict.keys().")
+        raise ValueError(f"id with name {args.__dict__[tp.id_key]} not found in id_dict.keys().")
     dict_list = load_json_to_dict_list(global_path)
     for i in range(len(dict_list)):
         if dict_list[i][tp.id_key] == args.__dict__[tp.id_key]:
