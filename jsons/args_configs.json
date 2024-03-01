@@ -303,7 +303,13 @@
         "weak_signals": true,
         "gen_setups": "vali-ts10,train-ts10"
     },
-    "sam2": {
-        
+    "hpcweak": {
+        "versions": {
+        },
+        "weak_signals": true,
+        "gen_setups": "vali-ts10,train-ts10",
+        "image_size": 128, 
+        "max_iter": 200000,
+        "train_batch_size": 16
     }
 }
