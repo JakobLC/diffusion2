@@ -568,8 +568,6 @@ class DiffusionModelTrainer:
 
             if str(self.step) in self.args.save_ckpt_steps.split(","):
                 self.save_train_ckpt(delete_old=False,name_str="savesteps_ckpt_",)
-            if self.step%10==0:
-                self.restart_flag = True
             self.step += 1
             if self.exit_flag or self.restart_flag:
                 break

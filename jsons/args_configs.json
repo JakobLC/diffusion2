@@ -319,12 +319,12 @@
     },
     "hpclong": {
         "versions": {
-            "bs_small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 32},
+            "bs_small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 4},
             "sam": {"image_encoder": "sam_vit_b","train_batch_size": 8},
             "big": {"num_channels": 128},
             "bs": {"train_batch_size": 32}
         },
-        "crop_method": "sam_big",
+        "crop_method": "sam_small",
         "weak_signals": true,
         "gen_setups": "vali-ts10,train-ts10",
         "image_size": 128, 
