@@ -316,5 +316,20 @@
         "max_iter": 200000,
         "train_batch_size": 16,
         "input_scale": 0.006
+    },
+    "hpclong": {
+        "versions": {
+            "bs_small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 32},
+            "sam": {"image_encoder": "sam_vit_b","train_batch_size": 8},
+            "big": {"num_channels": 128},
+            "bs": {"train_batch_size": 32}
+        },
+        "crop_method": "sam_big",
+        "weak_signals": true,
+        "gen_setups": "vali-ts10,train-ts10",
+        "image_size": 128, 
+        "max_iter": 300000,
+        "train_batch_size": 16,
+        "input_scale": 0.006
     }
 }
