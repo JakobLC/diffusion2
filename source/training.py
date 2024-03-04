@@ -41,21 +41,16 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 class DiffusionModelTrainer:
     def __init__(self,args):
         self.exit_flag = False
+        self.restart_flag = False
         self.args = args
+        self.init()
 
-        self.seed = set_random_seed(args.seed)
-        if self.args.debug_run=="seed":
-            print("Seed: "+str(self.seed))
-            print("numpy random state: "+str(np.random.get_state()))
-            print("torch random state: "+str(torch.random.get_rng_state()))
-            print("torch cuda random state: "+str(torch.cuda.get_rng_state()))
-            print("torch cuda random state (manual_seed): "+str(torch.cuda.manual_seed(self.seed)))
-            exit()
-        args.seed = self.seed
-
-        self.cgd = create_diffusion_from_args(args)
+    def init(self):
+        if not self.restart_flag:
+            self.args.seed = set_random_seed(self.args.seed)
+        self.cgd = create_diffusion_from_args(self.args)
         if not self.args.mode=="data":
-            self.model = create_unet_from_args(args)
+            self.model = create_unet_from_args(self.args)
             n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
         else:
             n_trainable = 0
@@ -108,14 +103,12 @@ class DiffusionModelTrainer:
             raise NotImplementedError("cat_ball_data not implemented")
             """train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
             vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)"""
-        if args.save_best_ckpt:
-            n_setups = len(args.gen_setups.split(","))
-            assert -n_setups < args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
+        if self.args.save_best_ckpt:
+            n_setups = len(self.args.gen_setups.split(","))
+            assert -n_setups < self.args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
             
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
-        if self.args.debug_run=="no_dl":
-            self.train_dl=AlwaysReturnsFirstItemOnNext(self.train_dl)
 
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
@@ -147,7 +140,7 @@ class DiffusionModelTrainer:
             self.log_loss_scale = ckpt["log_loss_scale"]
             self.best_metric = (ckpt["best_metric"] if ckpt["best_metric"] is not None else 0.0) if "best_metric" in ckpt.keys() else 0.0
             self.fixed_batch = ckpt["fixed_batch"]
-            if self.args.load_state_dict_loose:
+            if self.args.load_state_dict_loose and self.args.mode=="load":
                 _ = load_state_dict_loose(self.model,ckpt["model"])
                 self.master_params = self._state_dict_to_master_params(self.model.state_dict())
                 #warn if there are no warmup steps
@@ -157,11 +150,11 @@ class DiffusionModelTrainer:
                 self.opt.load_state_dict(ckpt["optimizer"])
                 self.model.load_state_dict(ckpt["model"])
                 self.master_params = self._state_dict_to_master_params(ckpt["model"])
-            self.model_params = list(self.model.parameters())
-            for i, ema_rate in enumerate(self.ema_rates):
-                if "ema_"+str(ema_rate) in ckpt.keys():
-                    if not self.args.load_state_dict_loose:
+                for i, ema_rate in enumerate(self.ema_rates):
+                    if "ema_"+str(ema_rate) in ckpt.keys():
                         self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
+            self.model_params = list(self.model.parameters())
+            
 
         self.list_of_sample_opts = []
         for gen_setup in self.args.gen_setups.split(","):
@@ -174,8 +167,8 @@ class DiffusionModelTrainer:
             self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
-            self.args.step_and_time = [[self.step,datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")]]
-            save_args(args)
+            save_args(self.args)
+            self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}")
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
             self.args.model_id = json.loads((Path(self.args.save_path)/"args.json").read_text())[0]["model_id"]
@@ -193,15 +186,17 @@ class DiffusionModelTrainer:
                     self.list_of_sample_opts[i] = load_existing_args(gen_id_matched,name_key="sample_opts",use_loaded_dynamic_args=False)
                     self.list_of_sample_opts[i].gen_id = gen_id_matched
             if self.args.mode=="cont":
-                if isinstance(self.args.step_and_time,list):
-                    self.args.step_and_time.append([self.step,get_time()])
+                event = f"event={self.args.mode}, step={self.step}, time={get_time()}"
+                if isinstance(self.args.training_history,list):
+                    self.args.training_history.append(event)
                 else:
-                    self.args.step_and_time = [[self.step,get_time()]]
+                    self.args.training_history = [event]
                 overwrite_existing_args(self.args)
         elif self.args.mode=="data":
             self.log("Data mode, no training loop.")
             self.step = 0
             self.fixed_batch = None
+        self.restart_flag = False
         self.log("Init complete.")
 
     def create_datasets(self,split_list=["train","vali"],args=None):
@@ -242,9 +237,9 @@ class DiffusionModelTrainer:
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size}[split]
             if pure_gen_dataset_mode:
-                sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.seed)
+                sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
             else:
-                sampler = dataset.get_sampler(self.seed) if hasattr(dataset,"get_sampler") else None
+                sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
             dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
                                         batch_size=bs,
                                         sampler=sampler,
@@ -269,7 +264,7 @@ class DiffusionModelTrainer:
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
-            ckpt_name = "ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
+            ckpt_name = "ver-*/*"+self.args.model_id+"*/ckpt_*.pt"
         try:
             ckpt_name = get_ckpt_name(ckpt_name,return_multiple_matches=False)
         except ValueError as e:
@@ -302,10 +297,13 @@ class DiffusionModelTrainer:
             save_dict = {k:v for k,v in save_dict.items() if k in only_keep_keys}
         torch.save(save_dict, save_name)
         if delete_old:
-            possible_ckpts = list(Path(self.args.save_path).glob(bracket_glob_fix(f"{name_str}*.pt")))
+            possible_ckpts = self.list_existing_ckpts(name_str)
             for ckpt_name in possible_ckpts:
                 if str(ckpt_name)!=save_name:
                     os.remove(ckpt_name)
+
+    def list_existing_ckpts(self,name_str="ckpt_"):
+        return list(Path(self.args.save_path).glob(bracket_glob_fix(f"{name_str}*.pt")))
     
     def get_ema_model(self,ema_idx):
         assert ema_idx < len(self.ema_rates), "ema_idx must be smaller than the number of ema rates"
@@ -445,7 +443,7 @@ class DiffusionModelTrainer:
                 self.num_nan_losses += 1
                 if self.num_nan_losses>20:
                     self.log("Too many NaN losses, stopping training.")
-                    self.exit_flag = True
+                    self.restart_flag = True
             else:
                 self.num_nan_losses = 0
         if "grad_norm" in self.args.log_train_metrics.split(","):
@@ -481,7 +479,7 @@ class DiffusionModelTrainer:
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
             if self.log_loss_scale <= -20:
                 self.log("Loss scale has gotten too small, stopping training.")
-                self.exit_flag = True
+                self.restart_flag = True
             return
         model_grads_to_master_grads(self.model_params, self.master_params)
         self.master_params[0].grad.mul_(1.0 / (2 ** self.log_loss_scale))
@@ -521,9 +519,14 @@ class DiffusionModelTrainer:
     def train_loop(self):
         try:
             self.train_loop_inner()
+        except KeyboardInterrupt:
+            self.log("Exception in training loop:\n" + traceback.format_exc())
+            self.log("Exiting training loop.")
+            exit()
         except Exception as e:
             self.log("Exception in training loop:\n" + traceback.format_exc())
             self.log("Exiting training loop.")
+            
 
     def train_loop_inner(self):
         if self.exit_flag:
@@ -548,7 +551,8 @@ class DiffusionModelTrainer:
             if self.step % self.args.update_forward_pass_plot_interval == 0 and self.args.update_forward_pass_plot_interval>0:
                 with MatplotlibTempBackend(backend="agg"):
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",
-                                      output,metrics,ab=self.cgd.ab,sample_names=batch[-1])
+                                      output,metrics,ab=self.cgd.ab,sample_names=batch[-1],
+                                      imagenet_stats=self.args.crop_method.startswith("sam"))
             
             if self.step % self.args.gen_interval == 0 and self.args.gen_interval>0:
                 self.generate_samples()
@@ -564,16 +568,38 @@ class DiffusionModelTrainer:
 
             if str(self.step) in self.args.save_ckpt_steps.split(","):
                 self.save_train_ckpt(delete_old=False,name_str="savesteps_ckpt_",)
-
+            if self.step%10==0:
+                self.restart_flag = True
             self.step += 1
-            if self.exit_flag:
+            if self.exit_flag or self.restart_flag:
                 break
         if self.exit_flag:
             self.log("Training loop stopped due to exit flag.")
+            self.update_training_history(f"event=exit, step={self.step}, time={get_time()}")
+        elif self.restart_flag:
+            restart_event = [s.find("event=restart")>=0 for s in self.args.training_history]
+            num_restarts = sum(restart_event)
+            if self.args.max_training_restarts>num_restarts:
+                self.update_training_history(f"event=restart, step={self.step}, time={get_time()}")
+                self.log(f"Restarting training loop, restart {num_restarts+1} of {self.args.max_training_restarts}.")
+                ckpt_exists = self.step>=self.args.save_interval
+                if ckpt_exists:
+                    self.args.ckpt_name = ""
+                    self.args.mode = "cont"
+                self.init()
+                self.train_loop()
+            else:
+                self.log(f"Exceeded max_training_restarts={self.args.max_training_restarts}, stopping training.")
+
         else:
+            self.update_training_history(f"event=finished, step={self.step}, time={get_time()}")
             self.log("Training loop finished.")
         
-    
+    def update_training_history(self,event):
+        if not isinstance(self.args.training_history,list):
+            self.args.training_history = []
+        self.args.training_history.append(event)
+        overwrite_existing_args(self.args)
         
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
@@ -591,7 +617,8 @@ class DiffusionModelTrainer:
                         f.write(msg + "\n")
                     except UnicodeEncodeError:
                         msg_hat = msg.encode("utf-8", "ignore").decode("utf-8")
-                        print(f"UnicodeEncodeError: {msg} -> {msg_hat}")
+                        print(f"e1: {msg_hat}")
+                        print(f"e2: {msg}")
                         raise ValueError("UnicodeEncodeError")
         if also_print:
             print(msg)

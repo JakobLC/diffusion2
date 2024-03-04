@@ -5,7 +5,7 @@
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
         "seed": [-1,                                "Seed for random number generator. TYPE: non-negative integer or -1 (random). DEFAULT: -1. "],
-        "step_and_time": ["",                       "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "],
+        "training_history": ["",                    "Variable for storing training history. TYPE: str. DEFAULT: ''. "],
         "origin": ["",                              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
         "ckpt_name": ["",                           "Path to load ckpt from. Empty string for ckpt_name='./saves/ver-*/*[model_name]*/ckpt_*.pt'. TYPE: DEFAULT: '' . "]
     },
@@ -61,7 +61,8 @@
         "best_ckpt_gen_setup_idx": [0,              "Which gen setup idx to use for best checkpoint tracking. TYPE: integer. DEFAULT: 0. "],
         "best_ckpt_full": [false,                   "Should the full model (ema+training+opt) be saved for the best checkpoint? TYPE: boolean. DEFAULT: true. "],
         "debug_run": ["",                           "Should a debug run be performed? TYPE: str. DEFAULT: ''"],
-        "load_state_dict_loose": [false,            "Should we allow loose matching of ckpt weights (if normal state_dict() can't be matched)? TYPE: boolean. DEFAULT: false. "]
+        "load_state_dict_loose": [false,            "Should we allow loose matching of ckpt weights (if normal state_dict() can't be matched)? TYPE: boolean. DEFAULT: false. "],
+        "max_training_restarts": [3,                "Maximum number of restarts of training. TYPE: positive integer or 0 (no restarts). DEFAULT: 0. "]
     },
     "training": {
         "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false. "],
@@ -139,6 +140,7 @@
         "gen_guidance_weight" : [0.0,               "Weight of guidance loss during evaluation. TYPE: positive float or 0.0 (no guidance). DEFAULT: 0.0. "],
         "gen_train_samples": [true,                 "Should training samples be generated? TYPE: boolean. DEFAULT: true. "],
         "gen_batch_size": [0,                       "Batch size for evaluation. positive integer or 0 (same as train_batch_size). DEFAULT: 0. "],
-        "gen_ema_step": [50000,                     "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"]
+        "gen_ema_step": [50000,                     "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"],
+        "step_and_time": ["",                       "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "]
     }
 }

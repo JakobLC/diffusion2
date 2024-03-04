@@ -27,15 +27,10 @@ from source.training import DiffusionModelTrainer
 # [4] implement better corrupt from bit diffusion
 # [4] make num points depend on num labels
 # [4] add data: VISOR, Totalsegmenter data, UVO
-# [5] make continuing training easier
-# [5] add time, step saving to args
 # [5] implement all points in arguments
 # [5] check multiple workers works
-# [5] add num classes to image renderings
 # [5] resume training by model_id
-# [5] add continue training on nan losses, max resumed trainings argument
-# [6] handle model_id's from HPC
-
+# [6] 
 
 #training TODO
 # loop over lr

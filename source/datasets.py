@@ -308,7 +308,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       use_pretty_data=True,
                       geo_aug_p=0.3,
                       label_padding_val=255,
-                      split_method="random"):
+                      split_method="random",
+                      sam_features_idx=-1):
+        self.sam_features_idx = sam_features_idx
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -637,11 +639,17 @@ class SegmentationDataset(torch.utils.data.Dataset):
         label = torch.tensor(label).unsqueeze(0)
         info["image"] = image
         info["num_classes"] = len([uq for uq in torch.unique(label) if uq!=255])
+        j = self.sam_features_idx
+        if j>=0:
+            if info["sam"][j]:
+                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{idx//1000}",f"{idx}_sam{j}.pt"))
+            else:
+                info["image_features"] = None
         return label,info
 
 def get_sam_aug(size,padval=255):
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
-                     A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, same as Albumentations
+                     A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, which is also default in Albumentations.Normalize
                      A.PadIfNeeded(min_height=size, 
                                    min_width=size, 
                                    border_mode=cv2.BORDER_CONSTANT, 
@@ -736,11 +744,74 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p
         raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray'] got "+str(augment_name))
     return A.Compose(list_of_augs)
 
+from unet import get_sam_image_encoder
+import tqdm
+
+def save_sam_features(datasets="ade20k",
+                 sam_idx_or_name=0,
+                 split="all",
+                 split_method="random",
+                 batch_size=4,
+                 ratio_of_dataset=1.0,
+                 device="cuda",
+                 dry=False,
+                 progress_bar=True,
+                 verbose=False,
+                 dtype=torch.float16):
+    dataset = SegmentationDataset(split=split,
+                            image_size=64,
+                            datasets=datasets,
+                            shuffle_zero=0,
+                            geo_aug_p=0,
+                            crop_method="sam_big",
+                            split_method=split_method,
+                            shuffle_datasets=False,)
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                             shuffle=False,
+                                            batch_size=batch_size,
+                                            num_workers=4,
+                                            drop_last=False,
+                                            collate_fn=custom_collate_with_info)
+    n_batches = np.ceil(len(dataloader)*ratio_of_dataset).astype(int)
+    data_iter = iter(dataloader)
+    sam = get_sam_image_encoder(sam_idx_or_name)
+    wrap = tqdm.tqdm if progress_bar else lambda x: x
+    for ii in wrap(range(n_batches)):
+        infos = next(data_iter)[-1]
+        images = torch.stack([info["image"] for info in infos]).to(device)
+        with torch.no_grad():
+            image_features = sam(images)
+        image_features = [f.cpu().type(dtype) for f in image_features]
+        for i in range(len(infos)):
+            f_i = infos[i]['i']
+            filename = Path("./data") / infos[i]["dataset_name"] / f"f{f_i//1000}"/ f"{f_i}_sam{sam_idx_or_name}.pt"
+            if verbose:
+                print(filename)
+            if not dry:
+                torch.save(image_features[i],filename)
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--unit_test", type=int, default=0)
+    parser.add_argument("--unit_test", type=int, default=-1)
+    parser.add_argument("--process", type=int, default=-1)
     args = parser.parse_args()
+    if args.process==0:
+        print("PROCESSING sam features for native validation sets")
+        save_sam_features(sam_idx_or_name=0,
+                        split="vali",
+                        split_method="native",
+                        datasets="cityscapes,coco,ade20k",
+                        batch_size=4,
+                        progress_bar=True)
+    elif args.process==1:
+        print("PROCESSING sam features for all datasets")
+        save_sam_features(sam_idx_or_name=0,
+                        split="all",
+                        split_method="random",
+                        datasets="all",
+                        batch_size=4,
+                        progress_bar=True)
     if args.unit_test==0:
         print("UNIT TEST 0: display batch of categorical ball data")
         import jlc
@@ -858,9 +929,6 @@ def main():
         images = torch.cat((x.repeat(1,3,1,1)/maxvals_dim123,im*0.5+0.5),dim=0).clamp(0,1)
         jlc.montage(images,n_col=10,text=text,text_color="red")
         plt.show()
-
-    else:
-        raise ValueError(f"Unknown unit test index: {args.unit_test}")
         
 if __name__=="__main__":
     main()

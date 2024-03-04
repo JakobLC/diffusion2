@@ -13,9 +13,9 @@ import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
 import cv2
-import datetime
 import pandas as pd
 import scipy.ndimage as nd
+import copy
 
 def collect_gen_table(gen_id="many",
                    name_match_strings="*30k*",
@@ -426,7 +426,7 @@ def normal_image(x,i,imagenet_stats=True):
     else:
         return (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
 
-def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_text=False):
+def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_text=False,imagenet_stats=True):
     t = sample_output["inter"]["t"]
     num_timesteps = len(t)
     
@@ -446,13 +446,13 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
-
+    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
     map_dict = {"x_t": aboi,
                 "pred": aboi,
                 "pred_x": aboi,
                 "x": aboi,
                 "pred_eps": aboi,
-                "image": normal_image,
+                "image": normal_image2,
                 "points": points_aboi}
     zero_image = np.zeros((image_size,image_size,3))
     has_classes = contains_key("classes",model_kwargs)
@@ -500,7 +500,7 @@ def get_sample_names_from_info(info,newline=True):
     sample_names = [f"{dataset_names[i]}/{newline}{datasets_i[i]}" for i in range(len(datasets_i))]
     return sample_names
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False,sample_names=None):
+def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False,sample_names=None,imagenet_stats=True):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
     show_keys = ["x_init","image","points","target_bit","pred_bit"]
@@ -520,14 +520,15 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
         output[k] = output[k][:bs]
-        
+    
     im = np.zeros((bs,image_size,image_size,3))+0.5
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
+    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
     map_dict = {"target_bit": aboi,
                 "pred_bit": aboi,
                 "x_init": aboi,
-                "image": normal_image,
+                "image": normal_image2,
                 "points": points_aboi}
     has_classes = False
     if "classes" in output.keys():
@@ -585,7 +586,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
 def likelihood_image(x):
     return cm.inferno(replace_nan_inf(255*mean_dim0(x*2-1)).astype(np.uint8))[:,:,:3]
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True,sample_names=None):
+def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True,sample_names=None,imagenet_stats=True):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
     show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps","likelihood"]
@@ -618,8 +619,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
     err_im = lambda x,i: error_image(x)
     lik_im = lambda x,i: likelihood_image(x)
-    
-    map_dict = {"image": normal_image,
+    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
+    map_dict = {"image": normal_image2,
                 "x_t": aboi,
                 "pred_x": aboi,
                 "x": aboi,
@@ -865,7 +866,45 @@ def add_text_axis_to_image(filename,
     Image.fromarray(im2).save(filename)
     return im2
 
-    
+def index_dict_with_bool(d,bool_iterable,num_recursions=1,
+                         raise_error_on_wrong_bs=True,
+                         ignore_weird_values=False,
+                         raise_error_on_recursion_overflow=False):
+    assert isinstance(d,dict), "expected d to be a dict"
+    for k,v in d.items():
+        if isinstance(v,dict):
+            if num_recursions>0:
+                d[k] = index_dict_with_bool(v,bool_iterable,num_recursions-1,raise_error_on_wrong_bs)
+            elif raise_error_on_recursion_overflow:
+                raise ValueError(f"Recursion overflow at key {k}")
+        else:
+            d[k] = index_w_bool(v,bool_iterable,raise_error_on_wrong_bs,ignore_weird_values)
+    return d
+
+def index_w_bool(item,bool_iterable,raise_error_on_wrong_bs=True,ignore_weird_values=False):
+    bs = len(bool_iterable)
+        
+    if item is not None:
+        bs2 = len(item)
+        if bs2!=bs:
+            if raise_error_on_wrong_bs:
+                raise ValueError(f"Expected len(item)={bs}, found {bs2}")
+            else:
+                item = None
+        if torch.is_tensor(item):
+            out = torch.stack([item[i] for i in range(bs) if bool_iterable[i]],dim=0)
+        elif isinstance(item,np.ndarray):
+            out = np.concatenate([item[i][None] for i in range(bs) if bool_iterable[i]],axis=0)
+        elif isinstance(item,list):
+            out = [item[i] for i in range(len(item)) if bool_iterable[i]]
+        else:
+            if ignore_weird_values:
+                out = item
+            else:
+                raise ValueError(f"Expected item to be None, torch.Tensor, np.ndarray, or list, found {type(item)}")
+    else:
+        out = None
+    return out
 
 def main():
     import argparse

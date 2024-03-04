@@ -11,6 +11,7 @@ import shutil
 from PIL import Image
 import tqdm
 from data_utils import (unpack_files, save_dict_list_to_json, load_json_to_dict_list, rle_to_mask)
+from unet import get_sam_image_encoder
 import glob
 import json
 import pickle
@@ -661,7 +662,23 @@ def add_existence_of_prettify_to_info_jsonl():
             else:
                 info_list[j]["pretty"] = False
         save_dict_list_to_json(info_list,infopath,append=False)
-        
+
+def add_existence_of_sam_features_to_info_jsonl():
+    list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+    for infopath in tqdm.tqdm(list_of_info_jsons):
+        infopath = str(infopath)
+        info_list = load_json_to_dict_list(infopath)
+        for j in range(len(info_list)):
+            i = info_list[j]["i"]
+            folder_i = np.floor(i/1000).astype(int)
+            sam_features = []
+            for sam_idx in range(3):
+                filename = Path(infopath).parent / f"f{folder_i}" / f"{i}_sam{sam_idx}.pt"
+                sam_features.append(filename.exists())
+            info_list[j]["sam"] = sam_features
+        save_dict_list_to_json(info_list,infopath,append=False)
+
+
 def main():
     import argparse
     

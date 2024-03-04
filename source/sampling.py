@@ -7,9 +7,10 @@ import os
 import tqdm
 from unet import unet_kwarg_to_tensor
 from utils import get_segment_metrics,get_time,save_dict_list_to_json,check_keys_are_same
-from plot_utils import plot_grid,plot_inter,concat_inter_plots
+from plot_utils import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
+import copy
 #from cont_gaussian_diffusion import DummyDiffusion TODO
 
 class DiffusionSampler(object):
@@ -161,7 +162,7 @@ class DiffusionSampler(object):
                                             self_cond=self.opts.self_cond,
                                             guidance_kwargs=self.opts.guidance_kwargs,
                                             )
-                self.run_on_single_batch(sample_output,batch_queue,x_init,x_true_bit,model_kwargs,batch_ite)
+                self.run_on_single_batch(sample_output,batch_queue,x_init,x_true_bit,model_kwargs,batch_ite,info)
                 for i in range(sample_output["pred"].shape[0]):
                     votes.append(sample_output["pred"][i])
                     if batch_queue[i]["vote"]==self.opts.num_votes-1:
@@ -211,8 +212,11 @@ class DiffusionSampler(object):
         
         return sample_output, metric_output
             
-    def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite):
-        sample_output["x"] = x_true_bit      
+    def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite,info):
+        sample_output = copy.deepcopy(sample_output)
+        model_kwargs = copy.deepcopy(model_kwargs)
+        info = copy.deepcopy(info)
+        sample_output["x"] = x_true_bit
         if self.opts.inter_folder!="":
             save_i_idx = [bq_i["save_inter_steps"] for bq_i in bq]
             plot_inter(foldername=self.opts.inter_folder,
@@ -220,16 +224,24 @@ class DiffusionSampler(object):
                        model_kwargs=model_kwargs,
                        ab=self.trainer.cgd.ab,
                        save_i_idx=save_i_idx,
-                       plot_text=self.opts.concat_inter_filename=="")
+                       plot_text=self.opts.concat_inter_filename=="",
+                       imagenet_stats=self.trainer.args.crop_method.startswith("sam"))
         if self.opts.save_raw_samples:
-            if not self.opts.save_raw_inter:
-                if "inter" in sample_output.keys():
-                    del sample_output["inter"]
-            sample_output["x_init"] = x_init
-            sample_output["batch_queue"] = bq
-            sample_output["model_kwargs"] = model_kwargs
-            torch.save(sample_output,os.path.join(self.opts.raw_samples_folder,f"raw_sample_batch{batch_ite:3d}.pt"))
-        
+            save_bool = [bq_i["sample"]<self.opts.num_save_raw_samples for bq_i in bq]
+            if any(save_bool):
+                if not self.opts.save_raw_inter:
+                    if "inter" in sample_output.keys():
+                        del sample_output["inter"]
+                
+                sample_output["x_init"] = x_init
+                sample_output["batch_queue"] = bq
+                sample_output["model_kwargs"] = model_kwargs
+                sample_output["info"] = info
+                if not all(save_bool):
+                    sample_output = index_dict_with_bool(sample_output,save_bool)
+
+                torch.save(sample_output,os.path.join(self.opts.raw_samples_folder,f"raw_sample_batch{batch_ite:03d}.pt"))
+            
     def run_on_full_votes(self,votes,x_true,x_true_bit,info,model_kwargs,x_init,bqi):
         x_true = x_true.cpu()
         x_true_bit = x_true_bit.cpu()
@@ -273,7 +285,8 @@ class DiffusionSampler(object):
             assert self.opts.grid_filename.endswith(".png"), f"filename: {filename}"
             filename = self.opts.grid_filename
             max_images = min(self.opts.num_grid_samples,len(self.samples))
-            plot_grid(filename,output,self.trainer.cgd.ab,max_images=max_images,remove_old=self.opts.remove_old,sample_names=output["info"])
+            plot_grid(filename,output,self.trainer.cgd.ab,max_images=max_images,remove_old=self.opts.remove_old,sample_names=output["info"],
+                      imagenet_stats=self.trainer.args.crop_method.startswith("sam"))
         if "concat" in self.opts.plotting_functions.split(","):
             assert self.opts.concat_inter_filename.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.inter_folder,

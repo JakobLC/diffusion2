@@ -24,5 +24,8 @@
     "gw_sweep": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "guidance_weight": "-1.0;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "split": "vali", "num_votes": 1, "kwargs_mode": "only_image"},
     "all_ade20k": {"num_timesteps": 100, "num_samples": -1, "plotting_functions": "grid","seed": 1, 
                 "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
-                "save_light_stats": true}
+                "save_light_stats": true},
+    "qual_ade20k": {"num_timesteps": 100, "num_samples": 64, "seed": 1, "num_save_raw_samples": 33, "plotting_functions": "grid",
+                "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
+                "save_light_stats": true, "save_raw_samples": true}
 }
