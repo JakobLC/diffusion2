@@ -763,7 +763,8 @@ def add_text_axis_to_image(filename,
                            xtick_kwargs={},
                            new_file=False,
                            buffer_pixels=4,
-                           add_spaces=True):
+                           add_spaces=True,
+                           save=True):
     """
     Function to take an image filename and add text to the top, 
     bottom, left, and right of the image. The text is rendered
@@ -798,17 +799,34 @@ def add_text_axis_to_image(filename,
         (white).
     xtick_kwargs : dict, optional
         The keyword arguments to pass to matplotlib.pyplot.xticks.
-        The default is {}.
+        The default is {}.        
     new_file : bool, optional
         If True, then a new file is created with the text axis
         added. If False, then the original file is modified. The
         default is False.
+    buffer_pixels : int, optional
+        The number of pixels to add as a buffer between the image
+        and the text. The default is 4.
+    add_spaces : bool, optional
+        If True, then a space is added to the beginning and end of
+        each label. The default is True.
+    save : bool, optional
+        If True, then the new file is saved. The default is True.
+        
+    Returns
+    -------
+    im2 : np.ndarray
+        The modified image with the text axis added.
     """
     if n_horz is None:
         n_horz = max(len(top),len(bottom))
     if n_vert is None:
         n_vert = max(len(left),len(right))
-    im = np.array(Image.open(filename))
+    if isinstance(filename,np.ndarray):
+        im = filename
+    else:
+        assert os.path.exists(filename), f"filename {filename} does not exist"
+        im = np.array(Image.open(filename))
     h,w,c = im.shape
     xtick_kwargs_per_pos = {"top":    {"rotation": 0,  "labels": top},
                             "bottom": {"rotation": 0,  "labels": bottom},
@@ -821,6 +839,10 @@ def add_text_axis_to_image(filename,
     pos_renders = {}
     pos_sizes = {}
     for pos in ["top","bottom","left","right"]:
+        if len(xtick_kwargs_per_pos[pos]["labels"])==0:
+            pos_renders[pos] = np.zeros((0,0,c),dtype=np.uint8)
+            pos_sizes[pos] = 0
+            continue
         xk = dict(**xtick_kwargs_per_pos[pos],**xtick_kwargs)
         if add_spaces:
             xk["labels"] = [" "+l+" " for l in xk["labels"]]
@@ -837,7 +859,7 @@ def add_text_axis_to_image(filename,
                                              num_uniform_spaced=n,
                                              bg_color=bg_color,
                                              xtick_kwargs=xk,
-                                             tick_params=tick_params_per_pos[pos])
+                                             tick_params=tick_params_per_pos[pos])[:,:,:c]
         pos_sizes[pos] = pos_renders[pos].shape[0]
     empty_render_to_get_bg_color = render_axis_ticks(23,bg_color=bg_color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})
     bg_color_3d = empty_render_to_get_bg_color[12,12,:c]
@@ -850,10 +872,17 @@ def add_text_axis_to_image(filename,
         bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = im
     #make sure we have uint8
     pos_renders = {k: np.clip(v,0,255) for k,v in pos_renders.items()}
-    im2[bp:bp+pos_sizes["top"],bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["top"]
-    im2[bp+pos_sizes["top"]+h:-bp,bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["bottom"]
-    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp:bp+pos_sizes["left"]] = np.rot90(pos_renders["left"],k=3)
-    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp+pos_sizes["left"]+w:-bp] = np.rot90(pos_renders["right"],k=3)
+    for pos in ["top","bottom","left","right"]:
+        if pos_renders[pos].size==0:
+            continue
+        if pos=="top":
+            im2[bp:bp+pos_sizes["top"],bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["top"]
+        elif pos=="bottom":
+            im2[bp+pos_sizes["top"]+h:-bp,bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["bottom"]
+        elif pos=="left":
+            im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp:bp+pos_sizes["left"]] = np.rot90(pos_renders["left"],k=3)
+        elif pos=="right":
+            im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp+pos_sizes["left"]+w:-bp] = np.rot90(pos_renders["right"],k=3)
     if new_file:
         if new_filename is None:
             suffix = filename.split(".")[-1]
@@ -863,7 +892,8 @@ def add_text_axis_to_image(filename,
                     break
                 new_filename = filename[:-len(suffix)-1]+"_w_text("+str(i)+")."+suffix
         filename = new_filename
-    Image.fromarray(im2).save(filename)
+    if save:
+        Image.fromarray(im2).save(filename)
     return im2
 
 def index_dict_with_bool(d,bool_iterable,num_recursions=1,

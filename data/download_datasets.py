@@ -719,6 +719,9 @@ def main():
         for dataset in ["ade20k"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
+    elif args.process==8:
+        print("PROCESS 8: add_existence_of_sam_features_to_info_jsonl")
+        add_existence_of_sam_features_to_info_jsonl()
     else:
         raise ValueError(f"Unknown process: {args.process}")
 if __name__=="__main__":

@@ -309,7 +309,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       geo_aug_p=0.3,
                       label_padding_val=255,
                       split_method="random",
-                      sam_features_idx=-1):
+                      sam_features_idx=-1,
+                      ignore_sam_idx=-1):
+        self.ignore_sam_idx = ignore_sam_idx
         self.sam_features_idx = sam_features_idx
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
@@ -380,6 +382,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         for dataset_name in self.dataset_list:
             print("processing dataset: ",dataset_name)
             info_json = load_json_to_dict_list(os.path.join(self.data_root,dataset_name,"info.jsonl"))
+            if self.ignore_sam_idx>=0:
+                info_json = [info for info in info_json if not info.get("sam",[0,0,0])[self.ignore_sam_idx]]
             N = len(info_json)
             previous_seed = np.random.get_state()[1][0]
             if self.shuffle_datasets:
@@ -424,12 +428,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
             self.items.extend(items)
         
         self.len_per_dataset = {dataset_name: len([item for item in self.items if item["dataset_name"]==dataset_name]) for dataset_name in self.dataset_list}
-        assert all([self.len_per_dataset[dataset_name]>0 for dataset_name in self.dataset_list]), "no data in one of the datasets satisfying the criteria"
+        #assert all([self.len_per_dataset[dataset_name]>0 for dataset_name in self.dataset_list]), "no data in one of the datasets satisfying the criteria"
             
         self.dataset_weights = {}
         for dataset_name in self.dataset_list:
-            self.dataset_weights[dataset_name] = self.datasets_info[dataset_name]["rel_weight"]/self.len_per_dataset[dataset_name]
-
+            w = self.datasets_info[dataset_name]["rel_weight"]/self.len_per_dataset[dataset_name] if self.len_per_dataset[dataset_name]>0 else 0
+            self.dataset_weights[dataset_name] = w
         self.dataset_to_label = {dataset: i for i, dataset in enumerate(["none"]+self.dataset_list)}
 
     def __len__(self):
@@ -605,13 +609,15 @@ class SegmentationDataset(torch.utils.data.Dataset):
         augmented = self.augment_per_dataset[item["dataset_name"]](image=image,mask=label)
         return augmented["image"],augmented["mask"]
     
-    def load_raw_image_label(self,x,longest_side_resize):
+    def load_raw_image_label(self,x,longest_side_resize,data_root=None):
+        if data_root is None:
+            data_root = self.data_root
         if isinstance(x,int):
-            image_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["image_path"])
-            label_path = os.path.join(self.data_root,self.items[x]["dataset_name"],self.items[x]["label_path"])
+            image_path = os.path.join(data_root,self.items[x]["dataset_name"],self.items[x]["image_path"])
+            label_path = os.path.join(data_root,self.items[x]["dataset_name"],self.items[x]["label_path"])
         elif isinstance(x,dict):
-            image_path = os.path.join(self.data_root,x["dataset_name"],x["image_path"])
-            label_path = os.path.join(self.data_root,x["dataset_name"],x["label_path"])
+            image_path = os.path.join(data_root,x["dataset_name"],x["image_path"])
+            label_path = os.path.join(data_root,x["dataset_name"],x["label_path"])
         else:
             assert isinstance(x,list)
             assert len(x)==2
@@ -646,6 +652,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 info["image_features"] = None
         return label,info
+
+def load_raw_image_label(x,longest_side_resize=0,data_root=None):
+    assert isinstance(x,dict), "x must be a info dictionary"
+    if data_root is None:
+        data_root = str(Path(__file__).parent.parent / "data")
+    return SegmentationDataset.load_raw_image_label(None,x,longest_side_resize,data_root)
 
 def get_sam_aug(size,padval=255):
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
@@ -757,7 +769,8 @@ def save_sam_features(datasets="ade20k",
                  dry=False,
                  progress_bar=True,
                  verbose=False,
-                 dtype=torch.float16):
+                 dtype=torch.float16,
+                 skip_existing=True):
     dataset = SegmentationDataset(split=split,
                             image_size=64,
                             datasets=datasets,
@@ -765,7 +778,8 @@ def save_sam_features(datasets="ade20k",
                             geo_aug_p=0,
                             crop_method="sam_big",
                             split_method=split_method,
-                            shuffle_datasets=False,)
+                            shuffle_datasets=False,
+                            ignore_sam_idx=0)
     dataloader = torch.utils.data.DataLoader(dataset,
                                              shuffle=False,
                                             batch_size=batch_size,
