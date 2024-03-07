@@ -1,4 +1,4 @@
-
+import io
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +8,7 @@ import os
 import glob
 from pathlib import Path
 from PIL import Image
+from argparse_utils import TieredParser
 from utils import bracket_glob_fix, save_dict_list_to_json, imagenet_preprocess, get_likelihood
 import matplotlib
 from tempfile import NamedTemporaryFile
@@ -16,79 +17,91 @@ import cv2
 import pandas as pd
 import scipy.ndimage as nd
 import copy
+from utils import wildcard_match
+from matplotlib.patheffects import withStroke
 
-def collect_gen_table(gen_id="many",
-                   name_match_strings="*30k*",
-                   saves_folder = str(Path(__file__).parent.parent / "saves"),
-                   save=True,
-                   return_table=False,
+def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
+                   model_id_patterns="*",
+                   save=False,
+                   return_table=True,
                    save_name="",
-                   do_glob_bracket_fix=False,
                    verbose=True,
                    sort_by_save_path=True,
                    make_pretty_table=True,
                    pretty_digit_limit=5,
-                   search_gen_setups=False):
-    if isinstance(save_name,str):
-        if len(save_name)==0:
-            save_name = "gen_table_"+gen_id+".json"
-        save_name = Path(__file__).parent.parent / "jsons" / save_name
-    if isinstance(save_name,Path):
-        save_name = str(save_name)
-    match_save_names = []
-    match_save_idxs = []
-    if name_match_strings=="auto" or name_match_strings=="*":
-        all_save_names = Path(saves_folder).glob("*/*/") 
-        matching_save_names = all_save_names
-    else:
-        if not isinstance(name_match_strings,list):
-            assert isinstance(name_match_strings,str), f"expected name_match_strings to be a list of strings or str, found {type(name_match_strings)}"
-            name_match_strings = [name_match_strings]
-        matching_save_names = []
-        for s in name_match_strings:
-            if do_glob_bracket_fix:
-                s = bracket_glob_fix(s)
-            if not s.endswith("/"):
-                s += "/"
-            matching_save_names += [p.name for p in Path(saves_folder).glob(s)]
-
+                   search_gen_setups_instead=False,
+                   include_mode="last",
+                   record_from_sample_opts=[]):
+    if isinstance(record_from_sample_opts,str):
+        record_from_sample_opts = [record_from_sample_opts]
+    assert include_mode in ["last","last_per_gen_id","all"], f"expected include_mode to be one of ['last','last_per_gen_id','all'], found {include_mode}"
+    if isinstance(gen_id_patterns,str):
+        gen_id_patterns = [gen_id_patterns]
+    if isinstance(model_id_patterns,str):
+        model_id_patterns = [model_id_patterns]
+    model_id_dict = TieredParser().load_and_format_id_dict()
+    gen_id_dict = TieredParser("sample_opts").load_and_format_id_dict()
+    save_paths = []
     table = pd.DataFrame()
-
-    for s in matching_save_names:
-        fn = os.path.join(saves_folder,s,"logging_gen.csv")
-        if os.path.exists(fn):
-            with open(fn,"r") as f:
-                column_names = f.readline()[:-1].split(",")
-            data = np.genfromtxt(fn, dtype=str, delimiter=",")[1:]
-            if data.size==0:
-                continue
-            if "gen_id" not in column_names:
-                continue
-            if search_gen_setups:
-                gen_ids = data[:,column_names.index("setup_name")].astype(str)
-            else:
-                gen_ids = data[:,column_names.index("gen_id")].astype(str)
-            match_idx = np.where(gen_ids==gen_id)[0]
-            if len(match_idx)==0:
-                if verbose and name_match_strings!="auto": print("Warning: no matches found for gen_id="+gen_id+", save_name="+s)
-                continue
-            else:
-                match_save_names.append(s)
-                match_save_idxs.append(match_idx[-1])
-                match_data_s = data[match_idx]
-                if verbose and len(match_idx)>1: 
-                    print("Warning: multiple matches found for gen_id="+gen_id+", save_name="+s+" using the latest.")
+    for model_id,v in model_id_dict.items():
+        matched = False
+        for model_id_pattern in model_id_patterns:
+            if wildcard_match(model_id_pattern,model_id):
+                matched = True
+                break
+        if matched:
+            fn = Path(v["save_path"])/"logging_gen.csv"
+            if fn.exists():
+                with open(str(fn),"r") as f:
+                    column_names = f.readline()[:-1].split(",")
+                data = np.genfromtxt(str(fn), dtype=str, delimiter=",")[1:]
+                if data.size==0:
+                    continue
+                if "gen_id" not in column_names:
+                    continue
+                if search_gen_setups_instead:
+                    file_gen_ids = data[:,column_names.index("setup_name")].astype(str)
+                else:
+                    file_gen_ids = data[:,column_names.index("gen_id")].astype(str)
+                match_idx = set()
                 
-            table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
-
-    #return if empty:
+                for idx,fgi in enumerate(file_gen_ids):
+                    for gen_id_pattern in gen_id_patterns:
+                        if wildcard_match(gen_id_pattern,fgi):
+                            match_idx.add(idx)
+                            break
+                if len(match_idx)==0:
+                    continue
+                if include_mode=="last":
+                    match_idx = [max(match_idx)]
+                    if verbose and len(match_idx)>1:
+                        print(f"Warning: multiple matches found for model_id {model_id} and gen_ids {data[match_idx,column_names.index('gen_id')]}")
+                elif include_mode=="last_per_gen_id":
+                    len_before = len(match_idx)
+                    match_idx = list(match_idx)
+                    match_idx = [max([i for i in match_idx if file_gen_ids[i]==file_gen_ids[j]]) for j in match_idx]
+                    if verbose and len(match_idx)<len_before:
+                        print(f"Warning: multiple matches found for model_id {model_id} and gen_ids {data[match_idx,column_names.index('gen_id')]}")
+                else:
+                    match_idx = list(match_idx)
+                match_data_s = data[match_idx]
+                if len(record_from_sample_opts)>0:
+                    column_names += record_from_sample_opts
+                    empty_array = np.array(["" for _ in range(match_data_s.shape[0])]).reshape(-1,1)
+                    match_data_s = np.concatenate([match_data_s,empty_array],axis=1)
+                    gen_id_list = match_data_s[:,column_names.index("gen_id")].tolist()
+                    for mds_i,gen_id in enumerate(gen_id_list):
+                        sample_opts = gen_id_dict[gen_id]
+                        for rfso in record_from_sample_opts:
+                            match_data_s[mds_i,column_names.index(rfso)] = sample_opts[rfso]
+                table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
+                save_paths.extend([v["save_path"] for _ in range(len(match_idx))])
     if table.shape[0]==0:
         if return_table:
             return table
         else:
             return
-    table["save_path"] = match_save_names
-    table["model_name"] = ["_".join(s.split("_")[1:]) for s in match_save_names]
+    table["save_path"] = save_paths
     if sort_by_save_path:
         table = table.sort_values(by=["save_path"])
     table = table.loc[:, (table != "").any(axis=0)]
@@ -120,7 +133,6 @@ def collect_gen_table(gen_id="many",
         save_dict_list_to_json(table,save_name,append=True)
     if return_table:
         return table_pd
-#def make_gen_bar_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True,plot_gen_setups = ["vali","train"]):
 
 
 def get_dtype(vec):
@@ -552,7 +564,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
                 text.extend([k if text_inside else ""]+[""]*(bs-1))
                 images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
                 if k=="points" and text_inside:
-                    text[-1] += f"\nclass={output['classes'][i].item()}" if has_classes else ""
+                    pass#text[-1] += f"\nclass={output['classes'][i].item()}" if has_classes else ""
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
@@ -702,6 +714,9 @@ def clean_up(filename,verbose=False):
             if verbose:
                 print("\nRemoving old file:",old_filename,", based on from safe file: ",safe_filename.parent)
             os.remove(old_filename)
+
+def get_matplotlib_color(color,num_channels=3):
+    return render_axis_ticks(23,bg_color=color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})[12,12,:num_channels]
 
 def render_axis_ticks(image_width=1000,
                       num_uniform_spaced=None,
@@ -861,8 +876,7 @@ def add_text_axis_to_image(filename,
                                              xtick_kwargs=xk,
                                              tick_params=tick_params_per_pos[pos])[:,:,:c]
         pos_sizes[pos] = pos_renders[pos].shape[0]
-    empty_render_to_get_bg_color = render_axis_ticks(23,bg_color=bg_color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})
-    bg_color_3d = empty_render_to_get_bg_color[12,12,:c]
+    bg_color_3d = get_matplotlib_color(bg_color,c)
     bp = buffer_pixels
     im2 = np.zeros((h+pos_sizes["top"]+pos_sizes["bottom"]+bp*2,
                     w+pos_sizes["left"]+pos_sizes["right"]+bp*2,
@@ -896,29 +910,32 @@ def add_text_axis_to_image(filename,
         Image.fromarray(im2).save(filename)
     return im2
 
-def index_dict_with_bool(d,bool_iterable,num_recursions=1,
+def index_dict_with_bool(d,bool_iterable,keys=[],num_recursions=1,
                          raise_error_on_wrong_bs=True,
                          ignore_weird_values=False,
                          raise_error_on_recursion_overflow=False):
+    bool_kwargs = {"raise_error_on_wrong_bs": raise_error_on_wrong_bs,
+              "ignore_weird_values": ignore_weird_values,
+              "raise_error_on_recursion_overflow": raise_error_on_recursion_overflow}
     assert isinstance(d,dict), "expected d to be a dict"
     for k,v in d.items():
         if isinstance(v,dict):
             if num_recursions>0:
-                d[k] = index_dict_with_bool(v,bool_iterable,num_recursions-1,raise_error_on_wrong_bs)
+                d[k] = index_dict_with_bool(v,bool_iterable,keys=keys+[k],num_recursions=num_recursions-1,**bool_kwargs)
             elif raise_error_on_recursion_overflow:
                 raise ValueError(f"Recursion overflow at key {k}")
         else:
-            d[k] = index_w_bool(v,bool_iterable,raise_error_on_wrong_bs,ignore_weird_values)
+            d[k] = index_w_bool(v,bool_iterable,keys+[k],**bool_kwargs)
     return d
 
-def index_w_bool(item,bool_iterable,raise_error_on_wrong_bs=True,ignore_weird_values=False):
+def index_w_bool(item,bool_iterable,keys,raise_error_on_wrong_bs=True,ignore_weird_values=False,raise_error_on_recursion_overflow=None):
     bs = len(bool_iterable)
         
     if item is not None:
         bs2 = len(item)
         if bs2!=bs:
             if raise_error_on_wrong_bs:
-                raise ValueError(f"Expected len(item)={bs}, found {bs2}")
+                raise ValueError(f"Expected len(item)={bs}, found {bs2}. type(item)={type(item)}. Keys={keys}")
             else:
                 item = None
         if torch.is_tensor(item):
@@ -935,6 +952,177 @@ def index_w_bool(item,bool_iterable,raise_error_on_wrong_bs=True,ignore_weird_va
     else:
         out = None
     return out
+
+class RenderMatplotlibAxis:
+    def __init__(self, height, width=None, with_axis=False, with_alpha=False, dpi=1000):
+        if (width is None) and isinstance(height, (tuple, list)):
+            #height is a shape
+            height,width = height[:2]
+        elif (width is None) and isinstance(height, np.ndarray):
+            #height is an image
+            height,width = height.shape[:2]
+        elif width is None:
+            width = height
+        self.with_alpha = with_alpha
+        self.width = width
+        self.height = height
+        self.dpi = dpi
+        self.old_backend = matplotlib.rcParams['backend']
+        self.old_dpi = matplotlib.rcParams['figure.dpi']
+        self.fig = None
+        self.ax = None
+        self._image = None
+        self.with_axis = with_axis
+
+    @property
+    def image(self):
+        return self._image[:,:,:(3+int(self.with_alpha))]
+
+    def __enter__(self):
+        matplotlib.rcParams['figure.dpi'] = self.dpi
+        matplotlib.use('Agg')
+        self.fig = plt.figure(figsize=(self.width/self.dpi, self.height/self.dpi))
+        self.ax = plt.Axes(self.fig, [0., 0., 1., 1.])
+        if not self.with_axis:
+            self.ax.set_frame_on(False)
+            self.ax.get_xaxis().set_visible(False)
+            self.ax.get_yaxis().set_visible(False)
+        self.fig.add_axes(self.ax)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is None:
+            # If no exception occurred, save the image to the _image property
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=self.dpi)
+            buf.seek(0)
+            self._image = np.array(Image.open(buf))
+
+        plt.close(self.fig)
+        matplotlib.use(self.old_backend)
+        matplotlib.rcParams['figure.dpi'] = self.old_dpi
+
+def to_xy_anchor(anchor):
+    anchor_equiv = [["NW","top left","north west","upper left","upper left corner"],
+                    ["N","top","north","upper","top center","north center","upper center"],
+                    ["NE","top right","north east","upper right","upper right corner"],
+                    ["W","left","west","left center","west center","left middle","west middle","mid left"],
+                    ["C","CC","center","middle","center middle", "middle center","center center","middle middle","mid"],
+                    ["E","right","east","right center","east center","right middle","east middle","mid right"],
+                    ["SW","bottom left","south west","lower left","lower left corner"],
+                    ["S","bottom","south","lower","bottom center","south center","lower center"],
+                    ["SE","bottom right","south east","lower right","lower right corner"]]
+    anchor_to_coords = {"NW":(0,0),"N":(0.5,0),"NE":(1,0),
+                        "W":(0,0.5),"C":(0.5,0.5),"E":(1,0.5),
+                        "SW":(0,1),"S":(0.5,1),"SE":(1,1)}
+    if isinstance(anchor,str):
+        if anchor in sum(anchor_equiv,[]):
+            for i,ae in enumerate(anchor_equiv):
+                if anchor in ae:
+                    out = anchor_to_coords[anchor_equiv[i][0]]
+                    break
+        else:
+            raise ValueError(f"Unknown anchor string: {anchor}, Use on of {[x[0] for x in anchor_equiv]}")
+    else:
+        assert len(anchor)==2, f"If anchor is not a str then len(anchor) must be 2, found {len(anchor)}"
+        out = anchor
+    out = tuple([float(x) for x in out])
+    return out
+
+def item_to_rect_lists(item,n1,n2,fill_with_previous=True, fill_val=None):
+    fill_val0 = copy.copy(fill_val)
+    if fill_with_previous:
+        assert fill_val is None, "expected fill_val to be None if fill_with_previous is True" 
+    if not isinstance(item,list):
+        out = [[item]]
+    else:
+        if len(item)==0:
+            out = [[[] for _ in range(n2)] for _ in range(n1)]
+        else:
+            if not isinstance(item[0],list):
+                out = [item]
+            else:
+                out = item
+    assert len(out)<=n1, f"expected len(out) to be <= {n1}, found {len(out)}"
+    if len(out)<n1:
+        out.extend([[] for _ in range(n1-len(out))])
+    for i in range(len(out)):
+        assert len(out[i])<=n2, f"expected len(out[{i}]) to be <= {n2}, found {len(out[i])}"
+        if len(out[i])==0 and fill_with_previous:
+            all_until_i = sum(out[:i],[])
+            all = sum(out,[])
+            if len(all_until_i)>0:
+                out_i = all_until_i[-1]
+            elif len(all)>0:
+                out_i = all[-1]
+            else:
+                out_i = fill_val0
+            out[i].append(out_i)
+        if len(out[i])<n2:
+            if fill_with_previous:
+                fill_val = out[i][-1]
+            out[i].extend([fill_val for _ in range(n2-len(out[i]))])
+    return out
+
+def render_text_gridlike(image, x_sizes, y_sizes, 
+                        text_inside=[],
+                        transpose_text_inside=False,
+                        text_pos_kwargs={},
+                        pixel_mult=1, 
+                        text_kwargs={"color":"red","fontsize": 20,"verticalalignment":"bottom","horizontalalignment":"left"},
+                        anchor_image="NW",
+                        border_width_inside=0):
+    nx = len(x_sizes)
+    ny = len(y_sizes)
+    anchor_image = item_to_rect_lists(copy.deepcopy(anchor_image),nx,ny)
+    anchor_image = [[to_xy_anchor(a) for a in row] for row in anchor_image]
+
+    if pixel_mult>1:
+        h,w = image.shape[:2]
+        h,w = (np.round(w*pixel_mult).astype(int),
+               np.round(h*pixel_mult).astype(int))
+        image = cv2.resize(copy.copy(image),(w,h))
+    
+    #make sure text_inside is a list of lists, with correct lengths
+    text_inside = copy.deepcopy(text_inside)
+    assert len(text_inside)<=nx, f"expected len(text_inside) to be <= len(x_sizes), found {len(text_inside)}>{nx}"
+    for i in range(len(text_inside)):
+        assert len(text_inside[i])<=ny, f"expected len(text_inside[{i}]) to be <= len(y_sizes), found {len(text_inside[i])}>{ny}"
+    if len(text_inside)<nx:
+        text_inside.extend([[] for _ in range(nx-len(text_inside))])
+    for i in range(len(text_inside)):
+        if len(text_inside[i])<ny:
+            text_inside[i].extend(["" for _ in range(ny-len(text_inside[i]))])
+
+    if transpose_text_inside:
+        text_inside = list(zip(*text_inside))
+    h,w = image.shape[:2]
+    x_sum = sum(x_sizes)
+    y_sum = sum(y_sizes)
+    if not x_sum==1.0:
+        x_sizes = [x/x_sum*w for x in x_sizes]
+    if not y_sum==1.0:
+        y_sizes = [y/y_sum*h for y in y_sizes]
+    with RenderMatplotlibAxis(w,h) as renderer:
+        plt.imshow(image/255)
+        for xi in range(len(x_sizes)):
+            for yi in range(len(y_sizes)):
+                anc_x,anc_y = anchor_image[xi][yi]
+                x = sum(x_sizes[:xi])+anc_x*x_sizes[xi]
+                y = sum(y_sizes[:yi])+anc_y*y_sizes[yi]
+                if len(text_inside[xi][yi])>0:
+                    txt = plt.text(x,y,text_inside[xi][yi],**text_kwargs)
+                    if border_width_inside>0:
+                        txt.set_path_effects([withStroke(linewidth=border_width_inside, foreground='black')])
+        renderer.ax.set_ylim(h,0)
+        renderer.ax.set_xlim(0,w)
+    rendered = renderer.image
+    valid_pos = ["top","bottom","left","right"]
+    if any([k in text_pos_kwargs for k in valid_pos]):
+        text_pos_kwargs2 = {"n_horz": len(x_sizes), "n_vert": len(y_sizes),"save": False, "buffer_pixels": 0, "add_spaces": 0}
+        text_pos_kwargs2.update(text_pos_kwargs)
+        rendered = add_text_axis_to_image(rendered,**text_pos_kwargs2)
+    return rendered
 
 def main():
     import argparse

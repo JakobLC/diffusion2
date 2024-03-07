@@ -11,12 +11,13 @@ from argparse_utils import TieredParser
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from plot_utils import mask_overlay_smooth,index_dict_with_bool
 from collections import defaultdict
-from utils import get_segment_metrics_np
+from utils import get_segment_metrics_np, shaprint
 import tqdm
 from pathlib import Path
 from datasets import AnalogBits,load_raw_image_label
 import copy
 from utils import imagenet_preprocess
+from plot_utils import mask_overlay_smooth
 
 def show_anns(anns):
     if len(anns) == 0:
@@ -114,6 +115,7 @@ def evaluate_sam(datasets="ade20k",
                  ratio_of_dataset=1.0,
                  generator_kwargs={},
                  longest_side_resize=0,
+                 pri_idx=None,
                  progress_bar=True,
                  device="cuda",
                  batch_size=4,
@@ -121,9 +123,13 @@ def evaluate_sam(datasets="ade20k",
     if not isinstance(datasets,list):
         assert isinstance(datasets,str), "datasets must be a string or a list of strings"
         datasets = datasets.split(",")
+    ckpt_type_dict = {"vit_b": "sam_vit_b_01ec64.pth",#89 670 912 #params
+                  "vit_l": "sam_vit_l_0b3195.pth",#308 278 272 #params
+                  "vit_h": "sam_vit_h_4b8939.pth"}#637 026 048 #params
     if isinstance(model_type,int):
         assert model_type in [0,1,2], "model_type must be one of [0,1,2] or one of [vit_b, vit_l, vit_h]"
         model_type = ["vit_b","vit_l","vit_h"][model_type]
+    model_idx = list(ckpt_type_dict.keys()).index(model_type)
     if isinstance(split,int):
         assert split in [0,1,2,3], "split must be one of [0,1,2,3] or one of [train,vali,test,all]"
         split = ["train","vali","test","all"][split]
@@ -142,21 +148,27 @@ def evaluate_sam(datasets="ade20k",
     if longest_side_resize>0 and not longest_side_resize==1024:
         args.image_size = longest_side_resize
         args.crop_method = "sam_small"
+    if pri_idx is not None:
+        args.pri_idx = pri_idx
+    args.image_encoder = ['sam_vit_b','sam_vit_l','sam_vit_h'][model_idx]
+    args.datasets = datasets
     trainer = DiffusionModelTrainer(args)
-    trainer.create_datasets("vali",args={"datasets": "ade20k"})
+    trainer.create_datasets("vali",args=args)
     load_raw_image_label = getattr(trainer,split+"_dl").dataloader.dataset.load_raw_image_label
-    ckpt_type_dict = {"vit_b": "sam_vit_b_01ec64.pth",#89 670 912 #params
-                  "vit_l": "sam_vit_l_0b3195.pth",#308 278 272 #params
-                  "vit_h": "sam_vit_h_4b8939.pth"}#637 026 048 #params
+    
     sam_checkpoint = "../segment-anything/segment_anything/checkpoint/"+ckpt_type_dict[model_type]
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     sam.to(device=device)
     sam_agnostic = SamAgnosticPredictor(sam,generator_kwargs=generator_kwargs)
     n = len(getattr(trainer,split+"_dl"))
-    n_batches = np.ceil(n*ratio_of_dataset).astype(int)
+    if isinstance(ratio_of_dataset,float) and ratio_of_dataset<=1:
+        n_batches = np.ceil(n*ratio_of_dataset).astype(int)
+    else:
+        n_batches = np.ceil(ratio_of_dataset/batch_size).astype(int)
     n_batches = min(n_batches,n)
     assert n_batches>0, "no data found"
     seg_return = []
+    light_stats = []
     metrics_all = defaultdict(list)
     print(f"evaluating {n_batches} batches")
     for i in tqdm.tqdm(range(n_batches),disable=not progress_bar):
@@ -179,10 +191,16 @@ def evaluate_sam(datasets="ade20k",
         metrics = [get_segment_metrics_np(gt,seg) for gt,seg in zip(gts,segmentations)]
         for k,v in metrics[0].items():
             metrics_all[k].extend([m[k] for m in metrics])
+        light_stats_batch = []
+        for i in range(bs):
+            light_stats_batch.append({"info": {k: v for k,v in info[i].items() if k in ["split_idx","i","dataset_name","num_classes"]},
+                            "model_kwargs_abs_sum": {k: (v[i].abs().sum().item() if torch.is_tensor(v) else 0) for k,v in model_kwargs.items()},
+                            "metrics": metrics[i]})
 
+        light_stats.extend(light_stats_batch)
     metrics_mean = {k: np.mean(v) for k,v in metrics_all.items()}
     metrics_all = dict(metrics_all)
-    return metrics_all, metrics_mean, seg_return
+    return metrics_all, metrics_mean, light_stats, seg_return
 
 def concat_dict_list(d_list,
                     num_recursions=1,
@@ -223,30 +241,221 @@ def concat_dict_list(d_list,
                 del d[k]
     return concat_dict
 
-class RawSampleLoader():
+def didx_from_info(list_of_info):
+    assert len(list_of_info)>0, "list_of_info must have length > 0"
+    assert isinstance(list_of_info[0],dict), "list_of_info must contain dictionaries"
+    if "info" in list_of_info[0].keys():
+        list_of_info = [info["info"] for info in list_of_info]
+    data_idx = [f"{info['dataset_name']}/{info['i']}" for info in list_of_info]
+    return data_idx
+
+class SavedSamplesManager:
+    def __init__(self):
+        self.saved_samples = []
+    
+    def add_samples(self,samples):
+        assert isinstance(samples,SavedSamples), f"expected samples to be an instance of SavedSamples, found {type(samples)}"
+        self.saved_samples.append(samples)
+
+import enum
+from collections import OrderedDict
+class ExistenceOfData(enum.Enum):
+    """."""
+    UNKNOWN = enum.auto()
+    NEGATIVE = enum.auto()
+    POSITIVE_NOT_LOADED = enum.auto()
+    POSITIVE_LOADED = enum.auto()
+
+def is_nontrivial_list(x):
+    if not isinstance(x,list):
+        return False
+    else:
+        return len(x)>0
+
+class SavedSamples:
     def __init__(self,
-                 foldername_or_gen_id,
-                 glob_str="raw_sample_batch*.pt",
-                 mem_threshold=4e9):
-        id_dict = TieredParser("sample_opts").load_and_format_id_dict()
-        if foldername_or_gen_id in id_dict.keys():
-            self.gen_id = foldername_or_gen_id
+                light_data = None,
+                heavy_data = None,
+                didx = None,
+                mem_threshold=4e9):
+        assert all([(x is None) or is_nontrivial_list(x) for x in [light_data,heavy_data,didx]])
+        if all([x is None for x in [light_data,heavy_data,didx]]):
+            self.heavy_data = []
+            self.light_data = []
+            self.didx = []
         else:
-            foldername = foldername_or_gen_id
-        self.foldername = Path(foldername)
-        assert self.foldername.exists(), f"{self.foldername} does not exist"
-        self.batch_files = sorted(list(self.foldername.glob(glob_str)))
+            self.add_samples(didx=didx,light_data=light_data,heavy_data=heavy_data)
+        self.mem_all = sys.getsizeof(self)
+        self.mem_threshold = mem_threshold
+        assert self.mem_all<self.mem_threshold, f"memory usage of {self.mem_all} exceeds threshold of {self.mem_threshold}"
+
+    def mean_metrics(self,condition=lambda x: True):
+        if not "metrics" in self.light_keys():
+            raise ValueError("no metrics found in light_data")
+        metric_keys = list(ld[0]["metrics"].keys())
+        mean_metrics = {k: [] for k in metric_keys}
+        for ld in self.light_data:
+            if condition(ld):
+                for k in metric_keys:
+                    mean_metrics[k].append(ld["metrics"][k])
+        return {k: np.mean(v) for k,v in mean_metrics.items()}
+
+    def normalize_indexer(self,indexer):
+        if not isinstance(indexer,list):
+            indexer = [indexer]
+        indexer = copy.deepcopy(indexer)
+        idx_ints = []
+        didx = []
+        for i in range(len(indexer)):
+            idx = indexer[i]
+            if isinstance(idx,int):
+                assert 0<=idx<len(self.didx), f"expected idx to be in range [0,{len(self.didx)-1}], found {idx}"
+                idx_ints.append(idx)
+                didx.append(self.didx[idx])
+            elif isinstance(idx,str):
+                assert idx in self.didx, f"expected idx to be in didx, found {idx}"
+                didx.append(idx)
+                idx_ints.append(self.didx.index(idx))
+            else:
+                raise ValueError(f"expected idx to be int or str, found {type(idx)}")
+        return didx,idx_ints
+    
+    def get_light_data(self,indexer, return_type="ordereddict"):
+        didx,idx = self.normalize_indexer(indexer)
+        return self.lists_of_dicts_as_type(didx,[self.light_data[i] for i in idx],return_type)
+    
+    def get_heavy_data(self,indexer,include_light_data=False, return_type="ordereddict"):
+        didx,idx = self.normalize_indexer(indexer)
+        if include_light_data:
+            heavy_data = [{**self.heavy_data[i],**self.light_data[i]} for i in range(idx)]
+        else:
+            heavy_data = [self.heavy_data[i] for i in idx]
+        return self.lists_of_dicts_as_type(didx,heavy_data,return_type)
+
+    def lists_of_dicts_as_type(self,didx,lists_of_dicts,return_type):
+        assert return_type.lower() in ["ordereddict","list", "dict"], f"expected return_type to be one of ['ordereddict','list'], found {return_type}"
+        return_type = return_type.lower()
+        if return_type == "ordereddict":
+            out = OrderedDict()
+            for i in range(len(didx)):
+                out[didx[i]] = lists_of_dicts[i]
+        elif return_type == "list":
+            out = [{"didx": didx[i], **lists_of_dicts[i]} for i in range(len(didx))]
+        elif return_type == "dict":
+            out = {didx[i]: lists_of_dicts[i] for i in range(len(didx))}
+            
+
+    def add_samples(self,didx=None,light_data=None,heavy_data=None):
+        assert any([is_nontrivial_list(x) for x in [didx,light_data,heavy_data]]), "expected at least one of [didx,light_data,heavy_data] to be a non-empty list"
+        if didx is None:
+            didx = didx_from_info(light_data if light_data is not None else heavy_data)
+        self.didx = didx
+        if light_data is None:
+            light_data = [None for _ in range(len(didx))]
+        assert len(light_data)==len(didx), f"expected light_data to have length {len(didx)}, found {len(light_data)}"
+        self.light_data = light_data
+        if heavy_data is None:
+            heavy_data = [None for _ in range(len(didx))]
+        assert len(heavy_data)==len(didx), f"expected heavy_data to have length {len(didx)}, found {len(heavy_data)}"
+        self.heavy_data = heavy_data
+        self.has_heavy_data = [ExistenceOfData.UNKNOWN if x is None else ExistenceOfData.POSITIVE_LOADED for x in heavy_data]
+
+    def load_all_data(self):
+        pass
+
+    def heavy_keys(self):
+        if len(self.qual_samples)>0:
+            return list(self.qual_samples[0].keys())
+        else:
+            return []
+
+    def light_keys(self):
+        if len(self.light_stats)>0:
+            return list(self.light_stats[0].keys())
+        else:
+            return []
+
+    def __len__(self):
+        return len(self.didx)
+    
+    def load_data_by_didx(self,didx):
+        if not isinstance(didx,list):
+            didx = [didx]
+        for d in didx:
+            assert d in self.didx, f"did not find {d} in didx"
+        
+    def load_all_data(self):
+        if hasattr(self,"load_all_data"):
+            return self.load_all_data()
+    
+    def load_light_stats(self):
+        raise NotImplementedError("This method must be implemented in a subclass")
+    
+class SamSamples(SavedSamples):
+    def __init__(self
+                ):
+        super().__init__()
+
+class DiffSamples(SavedSamples):
+    def __init__(self,
+                gen_id,
+                glob_str="raw_sample_batch*.pt",
+                ):
+        super().__init__()
+        id_dict = TieredParser("sample_opts").load_and_format_id_dict()
+        assert gen_id in id_dict.keys(), f"gen_id {gen_id} not found in id_dict"
+        self.gen_id = gen_id
+        self.sample_opts = id_dict[gen_id]
+        self.batch_files = sorted(list(Path(self.sample_opts.raw_samples_folder).glob(glob_str)))
         assert len(self.batch_files)>0, f"no files found with glob string {glob_str}"
         self.num_batches = len(self.batch_files)
         self.mem_per_batch = os.path.getsize(self.batch_files[0])
         self.mem_all = self.mem_per_batch*self.num_batches
-        self.mem_threshold = mem_threshold
         self.allow_full_load = self.mem_all<self.mem_threshold
 
     def load_all_data(self):
         if not self.allow_full_load:
             raise ValueError(f"memory usage of {self.mem_all} exceeds threshold of {self.mem_threshold}")
         return concat_dict_list([torch.load(f) for f in self.batch_files])
+    
+    def add_stats_to_samples(self):
+        stats_path = Path(self.sample_opts.light_stats_filename)
+        assert stats_path.exists(), f"stats_path {stats_path} does not exist"
+        return json.load(open(stats_path,"r"))  
+
+    def avail_didx(self):
+        didx = []
+        for i in range(self.num_batches):
+            batch = self.load_batch(i)
+            batch_didx = didx_from_info(batch["info"])
+            didx.extend(batch_didx)
+        return didx
+
+    def load_data_by_didx(self,list_of_info_or_didx):
+        assert isinstance(list_of_info_or_didx,list), f"ids must be a list, found {type(list_of_info_or_didx)}"
+        assert len(list_of_info_or_didx)>0, "ids must have length > 0"
+        if isinstance(list_of_info_or_didx[0],dict):
+            didx = [f"{info['dataset_name']}/{info['i']}" for info in list_of_info_or_didx]
+        else:
+            assert isinstance(list_of_info_or_didx[0],str), "ids must be a list of strings or a list of dictionaries"
+            didx = list_of_info_or_didx
+        dict_of_samples = {}
+        for i in range(self.num_batches):
+            batch = self.load_batch(i)
+            batch_didx = didx_from_info(batch["info"])
+            
+            bs = len(batch["info"])
+            for b in range(bs):
+                if batch_didx[b] in didx:
+                    dict_of_samples[batch_didx[b]] = index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b)
+        #check we didnt miss anything
+        for d in didx:
+            assert d in dict_of_samples.keys(), f"did not find {d} in any batch"
+        dict_list = [dict_of_samples[d] for d in didx]
+        return concat_dict_list(dict_list)
+
+    def __len__(self):
+        return self.num_batches
     
     def load_batch(self,idx):
         assert -self.num_batches<=idx<self.num_batches, f"idx must be in range [-{self.num_batches},{self.num_batches-1}]"
@@ -338,16 +547,13 @@ def sam_resize_index(h,w,resize=64):
         new_h = np.round(h/w*resize).astype(int)
     return new_h,new_w
 
-from plot_utils import mask_overlay_smooth
 
-def plot_qual_seg(ims,preds,names=None,
+def plot_qual_seg(ims,preds,gts=None,names=None,
                       transposed=False,
                       resize_width=128,
                       border=0,
-                      show_image_alone=False,
-                      alpha_mask=0.6,
-                      text=None,
-                      text_color=[1,0,0]):
+                      show_image_alone=True,
+                      alpha_mask=0.6):
     """
     Function for plotting columns of different to compare segmentations.
     Ground truth is also considered a prediction.
@@ -358,19 +564,19 @@ def plot_qual_seg(ims,preds,names=None,
         assert names is None, "expected names to be None if preds is a dict"
         names = list(preds.keys())
         preds = list(preds.values())
-    if isinstance(text,dict):
-        text = list(text.values())
+    if gts is not None:
+        names = ["GT"]+names
+        preds = [gts]+preds
     if transposed:
-        ims = [np.rot90(im) for im in ims]
-        preds = [[np.rot90(p) for p in pred] for pred in preds]
+        ims = [np.rot90(im,1) for im in ims[::-1]]
+        preds = [[np.rot90(p,1) for p in pred[::-1]] for pred in preds]
         big_image = plot_qual_seg(ims,preds,names=names,
                                 transposed=False,
                                 resize_width=resize_width,
                                 border=border,
                                 show_image_alone=show_image_alone,
-                                alpha_mask=alpha_mask,
-                                text=text)
-        big_image = np.rot90(big_image,-1)
+                                alpha_mask=alpha_mask)
+        big_image = np.rot90(big_image,3)
     else:
         n_methods = len(preds)
         n_samples = len(ims)

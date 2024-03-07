@@ -22,10 +22,16 @@
     "big_eval_ema": {"num_timesteps": 100, "num_samples": 100, "ema_idx": 0, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3, "kwargs_mode": "only_image"},
     "big_eval": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "split": "vali", "num_votes": 3, "kwargs_mode": "only_image"},
     "gw_sweep": {"num_timesteps": 100, "num_samples": 100, "plotting_functions": "grid","seed": 1, "guidance_weight": "-1.0;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "split": "vali", "num_votes": 1, "kwargs_mode": "only_image"},
-    "all_ade20k": {"num_timesteps": 100, "num_samples": -1, "plotting_functions": "grid","seed": 1, 
-                "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
-                "save_light_stats": true},
-    "qual_ade20k": {"num_timesteps": 100, "num_samples": 64, "seed": 1, "num_save_raw_samples": 33, "plotting_functions": "grid",
-                "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
-                "save_light_stats": true, "save_raw_samples": true}
+    "all_ade20k": {
+        "versions": {
+            "ts_sweep": {"num_timesteps": "2;5;10;20;50;100;200;500;1000"},
+            "gw_sweep": {"guidance_weight": "-1.0;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "num_timesteps": 20}
+        },
+        "num_timesteps": 100, "num_samples": -1, "plotting_functions": "grid","seed": 1, 
+        "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
+        "save_light_stats": true},
+    "qual_ade20k": {
+        "num_timesteps": 100, "num_samples": 64, "seed": 1, "num_save_raw_samples": 64, "plotting_functions": "grid",
+        "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
+        "save_light_stats": true, "save_raw_samples": true}
 }

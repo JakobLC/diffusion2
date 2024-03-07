@@ -464,6 +464,72 @@ class SegmentationDataset(torch.utils.data.Dataset):
         p = np.array(p)
         return torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=False,generator=generator)
 
+    def convert_to_idx(self,list_of_things):
+        """
+        Converts a list of things to a list of indices. The items in
+        the list should either be:
+         - a list of integer indices (where we only check that the indices are valid)
+         - a list of info dicts with the fields "dataset_name" and "i"
+         - a list of strings formatted like '{dataset_name}/{i}'
+        Returns a list of integer indices and checks they are valid
+        """
+        assert isinstance(list_of_things,list)
+        if len(list_of_things)==0: return []
+            
+        item0 = list_of_things[0]
+        if isinstance(item0,int):
+            list_of_things2 = list_of_things
+        elif isinstance(item0,dict):
+            assert "dataset_name" in item0 and "i" in item0, "item0 must be a dict with the fields 'dataset_name' and 'i'"
+            d_vec = [item["dataset_name"] for item in list_of_things]
+            i_vec = [item["i"] for item in list_of_things]
+        elif isinstance(item0,str):
+            d_vec = [item.split("/")[0] for item in list_of_things]
+            i_vec = [int(item.split("/")[1]) for item in list_of_things]
+        else:
+            raise ValueError(f"Unrecognized type for item0: {type(item0)}, should be int, dict or str")
+
+        if isinstance(item0,(dict,str)):
+            list_of_things2 = []
+            for d,i in zip(d_vec,i_vec):
+                match_idx = None
+                for k,item in enumerate(self.items):
+                    if item["dataset_name"]==d and item["i"]==i:
+                        match_idx = k
+                        break   
+                assert match_idx is not None, "No match for dataset_name: "+d+", i: "+str(i)
+                list_of_things2.append(match_idx)
+
+        assert all([isinstance(item,int) for item in list_of_things2]), "all items in list_of_things must be integers"
+        assert all([0<=item<len(self) for item in list_of_things2]), "all items in list_of_things must be valid indices"
+        return list_of_things2
+
+    def get_prioritized_sampler(self,pri_idx,seed=None,use_p=True,shuffle=False):
+        """
+        Returns a sampler which first samples from the dataset 
+        with index in pri_idx and then the rest of the dataset
+        """
+        pri_idx2 = self.convert_to_idx(pri_idx)
+        non_pri_idx = [i for i in range(len(self)) if i not in pri_idx2]
+        if shuffle:
+            if use_p:
+                p = np.array([self.dataset_weights[item["dataset_name"]] for item in self.items])
+            else:
+                p = np.ones(len(self))
+            gen = torch.Generator().manual_seed(seed)
+            sampler = torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=False,generator=gen)
+            new_pri_idx2 = []
+            new_non_pri_idx = []
+            for idx in sampler:
+                if idx in pri_idx2:
+                    new_pri_idx2.append(idx)
+                else:
+                    new_non_pri_idx.append(idx)
+            pri_idx2 = new_pri_idx2
+            non_pri_idx = new_non_pri_idx
+        order = pri_idx2+non_pri_idx
+        return order
+
     def get_use_idx_native_train(self,randperm,info_json,dataset_name):
         """Returns a training set of indices based on the native 
         splits of the datasets. Samples are only allowed to migrate from
@@ -616,6 +682,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
             image_path = os.path.join(data_root,self.items[x]["dataset_name"],self.items[x]["image_path"])
             label_path = os.path.join(data_root,self.items[x]["dataset_name"],self.items[x]["label_path"])
         elif isinstance(x,dict):
+            x = copy.deepcopy(x)
+            if not hasattr(x,"image_path"):
+                x["image_path"] = load_from_dataset_and_idx(x["dataset_name"],x["i"],im=True)
+            if not hasattr(x,"label_path"):
+                x["label_path"] = load_from_dataset_and_idx(x["dataset_name"],x["i"],im=False)
             image_path = os.path.join(data_root,x["dataset_name"],x["image_path"])
             label_path = os.path.join(data_root,x["dataset_name"],x["label_path"])
         else:
@@ -652,6 +723,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 info["image_features"] = None
         return label,info
+
+def load_from_dataset_and_idx(dataset_name,i,im=True):
+    if im:
+        possible_filesnames = ["_im.jpg","_im.png","_pim.jpg","_pim.png"]
+    else:
+        possible_filesnames = ["_la.png","_pla.png"]
+    root_name = f"f{str(i//1000)}{os.sep}{str(i)}"
+    root_dir = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name)
+    for pf in possible_filesnames:
+        if os.path.exists(os.path.join(root_dir,root_name)+pf):
+            return root_name+pf
+    raise ValueError("No image file found for dataset_name: "+dataset_name+", i: "+str(i))
 
 def load_raw_image_label(x,longest_side_resize=0,data_root=None):
     assert isinstance(x,dict), "x must be a info dictionary"

@@ -221,6 +221,7 @@ class DiffusionModelTrainer:
                 self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
             pure_gen_dataset_mode = False
         split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
+        sam_features_idx = ['none','sam_vit_b','sam_vit_l','sam_vit_h'].index(self.args.image_encoder)-1
         for split in split_list:
             dataset = SegmentationDataset(split=split,
                                         split_ratio=split_ratio,
@@ -232,14 +233,19 @@ class DiffusionModelTrainer:
                                         geo_aug_p=self.args.geo_aug_prob,
                                         crop_method=self.args.crop_method,
                                         label_padding_val=255 if self.args.ignore_padded else 0,
-                                        split_method=self.args.split_method)
+                                        split_method=self.args.split_method,
+                                        sam_features_idx=sam_features_idx)
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
-                  "test": self.args.train_batch_size}[split]
-            if pure_gen_dataset_mode:
-                sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
+                  "test": self.args.train_batch_size,
+                  "all": self.args.train_batch_size}[split]
+            if hasattr(args,"pri_idx"):
+                sampler = dataset.get_prioritized_sampler(args.pri_idx,seed=self.args.seed)
             else:
-                sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
+                if pure_gen_dataset_mode:
+                    sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
+                else:
+                    sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
             dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
                                         batch_size=bs,
                                         sampler=sampler,
@@ -264,7 +270,7 @@ class DiffusionModelTrainer:
 
     def load_ckpt(self, ckpt_name, check_valid_args=False):
         if ckpt_name=="":
-            ckpt_name = "ver-*/*"+self.args.model_id+"*/ckpt_*.pt"
+            ckpt_name = "ver-*/*"+self.args.model_name+"*/ckpt_*.pt"
         try:
             ckpt_name = get_ckpt_name(ckpt_name,return_multiple_matches=False)
         except ValueError as e:

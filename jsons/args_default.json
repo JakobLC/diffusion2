@@ -39,7 +39,7 @@
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
-        "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_h','sam_vit_l','sam_vit_b']. DEFAULT: 'none'. "],
+        "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_b','sam_vit_l','sam_vit_h']. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"]
     },
     "meta": {

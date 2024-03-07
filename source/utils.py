@@ -13,6 +13,7 @@ import shutil
 import datetime
 from functools import partial
 import re
+from pprint import pprint
 
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
@@ -786,6 +787,71 @@ def format_save_path(args):
         if v=="modified_args" and (k not in ["model_id","origin","model_name","save_path"]):
             save_path += f"_({k}={getattr(args,k)})"
     return save_path
+
+def is_type_for_dot_shape(item):
+    return isinstance(item,np.ndarray) or torch.is_tensor(item)
+
+def is_type_for_recursion(item,m=20):
+    out = False
+    if isinstance(item,list) or isinstance(item,dict):
+        if len(item)<=m:
+            out = True
+    return out
+
+def reduce_baseline(x):
+    if hasattr(x,"__len__"):
+        lenx = len(x)
+    else:
+        lenx = -1
+    return f"<{type(x).__name__}>len{lenx}"
+
+def fancy_shape(item):
+    assert is_type_for_dot_shape(item)
+    if torch.is_tensor(item):
+        out = str(item.shape)
+    else:
+        out = f"np.Size({list(item.shape)})"
+    return out
+
+def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=False,do_print=False):
+    """
+    Prints almost any object as a nested structure of shapes and lengths.
+    Example:
+    strange_object = {"a":np.random.rand(3,4,5),"b": [np.random.rand(3,4,5) for _ in range(3)],"c": {"d": [torch.rand(3,4,5),[[1,2,3],[4,5,6]]]}}
+    shaprint(strange_object,first_only=False),do_pprint=True)
+    """
+    kwargs = {"max_recursions":max_recursions,
+              "max_expand":max_expand,
+              "first_only":first_only}
+    m = float("inf") if first_only else max_expand
+    if is_type_for_dot_shape(x):
+        out = fancy_shape(x)
+    elif is_type_for_recursion(x,m):
+        if kwargs["max_recursions"]<=0:
+            out = reduce_baseline(x)
+        else:
+            kwargs["max_recursions"] -= 1
+            if isinstance(x,list):
+                if first_only:
+                    out = [shaprint(x[0],**kwargs)]
+                else:
+                    out = [shaprint(a,**kwargs) for a in x]
+            elif isinstance(x,dict):
+                if first_only:
+                    k0 = list(x.keys())[0]
+                    out = {k0: shaprint(x[k0],**kwargs)}
+                else:
+                    out = {k:shaprint(v,**kwargs) for k,v in x.items()}
+                
+    else:
+        out = reduce_baseline(x)
+    if do_pprint:
+        pprint(out)
+    if do_print:
+        print(out)
+    return out
+
+
 
 def main():
     import argparse
