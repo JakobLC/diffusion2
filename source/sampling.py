@@ -263,11 +263,13 @@ class DiffusionSampler(object):
                                 "info": info,
                                 "model_kwargs": model_kwargs})
         if self.opts.save_light_stats:
+            has_raw_sample = self.opts.save_raw_samples and (bqi["sample"]<self.opts.num_save_raw_samples)
             light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","num_classes"]},
                            "model_kwargs_abs_sum": {k: 
                                                     (v.abs().sum().item() if torch.is_tensor(v) else 0) 
                                                     for k,v in model_kwargs.items()},
-                           "metrics": dict(metrics)}
+                           "metrics": dict(metrics),
+                           "has_raw_sample": has_raw_sample}
             self.light_stats.append(light_stats)
         return metrics
     

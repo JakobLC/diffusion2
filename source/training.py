@@ -239,8 +239,8 @@ class DiffusionModelTrainer:
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size,
                   "all": self.args.train_batch_size}[split]
-            if hasattr(args,"pri_idx"):
-                sampler = dataset.get_prioritized_sampler(args.pri_idx,seed=self.args.seed)
+            if hasattr(args,"pri_didx"):
+                sampler = dataset.get_prioritized_sampler(args.pri_didx,seed=self.args.seed)
             else:
                 if pure_gen_dataset_mode:
                     sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)

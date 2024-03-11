@@ -5827,9 +5827,10 @@
         "model_version": "1.0.2",
         "model_id": "hpclong[small]_3",
         "save_path": "saves/ver-1.0.2/03-06-03-20_hpclong[small]_3_(num_channels=96)",
-        "seed": 41703,
+        "seed": 37607,
         "training_history": [
-            "event=cont, step=170000, time=2024-03-06-14-54-10-266184"
+            "event=cont, step=170000, time=2024-03-08-06-19-19-238214",
+            "event=finished, step=300001, time=2024-03-08-10-51-17-330729"
         ],
         "origin": {
             "model_name": "commandline",
@@ -5838,8 +5839,7 @@
             "num_channels": "commandline",
             "image_size": "name_versions",
             "mode": "commandline",
-            "train_batch_size": "name_versions",
-            "lr_decay_steps": "name_versions"
+            "train_batch_size": "name_versions"
         },
         "ckpt_name": "saves/ver-1.0.2/03-06-03-20_hpclong[small]_3_(num_channels=96)/ckpt_170000.pt",
         "no_diffusion": false,
@@ -6028,14 +6028,17 @@
         "model_version": "1.0.2",
         "model_id": "hpclong_1",
         "save_path": "saves/ver-1.0.2/03-06-14-59_hpclong_1",
-        "seed": 2923,
+        "seed": 52775,
         "training_history": [
-            "event=new, step=0, time=2024-03-06-14-59-12-315274"
+            "event=cont, step=180000, time=2024-03-07-17-42-25-447799",
+            "event=finished, step=300001, time=2024-03-08-06-19-11-104757"
         ],
         "origin": {
-            "model_name": "commandline"
+            "model_name": "commandline",
+            "ckpt_name": "commandline",
+            "mode": "commandline"
         },
-        "ckpt_name": "",
+        "ckpt_name": "saves/ver-1.0.2/03-06-14-59_hpclong_1/ckpt_180000.pt",
         "no_diffusion": false,
         "noise_schedule": "cosine",
         "sigma_small": false,
@@ -6077,7 +6080,7 @@
         "update_forward_pass_plot_interval": 200,
         "num_vali_batches": 8,
         "run_without_test": false,
-        "mode": "new",
+        "mode": "cont",
         "save_best_ckpt": true,
         "best_ckpt_metric": "max_ari",
         "best_ckpt_gen_setup_idx": 0,

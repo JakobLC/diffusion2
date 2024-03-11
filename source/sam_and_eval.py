@@ -9,15 +9,17 @@ import argparse
 from training import DiffusionModelTrainer
 from argparse_utils import TieredParser
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
-from plot_utils import mask_overlay_smooth,index_dict_with_bool
+from plot_utils import mask_overlay_smooth,index_dict_with_bool,render_text_gridlike
 from collections import defaultdict
-from utils import get_segment_metrics_np, shaprint
+from utils import get_segment_metrics_np, shaprint, load_json_to_dict_list
 import tqdm
 from pathlib import Path
 from datasets import AnalogBits,load_raw_image_label
 import copy
 from utils import imagenet_preprocess
 from plot_utils import mask_overlay_smooth
+import enum
+from collections import OrderedDict
 
 def show_anns(anns):
     if len(anns) == 0:
@@ -115,7 +117,7 @@ def evaluate_sam(datasets="ade20k",
                  ratio_of_dataset=1.0,
                  generator_kwargs={},
                  longest_side_resize=0,
-                 pri_idx=None,
+                 pri_didx=None,
                  progress_bar=True,
                  device="cuda",
                  batch_size=4,
@@ -148,8 +150,8 @@ def evaluate_sam(datasets="ade20k",
     if longest_side_resize>0 and not longest_side_resize==1024:
         args.image_size = longest_side_resize
         args.crop_method = "sam_small"
-    if pri_idx is not None:
-        args.pri_idx = pri_idx
+    if pri_didx is not None:
+        args.pri_didx = pri_didx
     args.image_encoder = ['sam_vit_b','sam_vit_l','sam_vit_h'][model_idx]
     args.datasets = datasets
     trainer = DiffusionModelTrainer(args)
@@ -220,7 +222,10 @@ def concat_dict_list(d_list,
         v = d_list[0][k]
         if isinstance(v,dict):
             if num_recursions>0:
-                concat_dict[k] = concat_dict_list([d[k] for d in d_list],num_recursions-1)
+                concat_dict[k] = concat_dict_list([d[k] for d in d_list],num_recursions-1,
+                                                  ignore_weird_values=ignore_weird_values,
+                                                    raise_error_on_recursion_overflow=raise_error_on_recursion_overflow,
+                                                    modify_input=modify_input)
             elif raise_error_on_recursion_overflow:
                 raise ValueError(f"Recursion overflow at key {k}")
         else:
@@ -241,6 +246,20 @@ def concat_dict_list(d_list,
                 del d[k]
     return concat_dict
 
+def seperate_dict_to_list(d):
+    bs = None
+    d_keys = d.keys()
+    for k in d_keys:
+        if hasattr(d[k],"__len__"):
+            bs = len(d[k])
+    if bs is None:
+        raise ValueError("no iterable found in d")
+    d_list = []
+    for i in range(bs):
+        d_i = {k: d[k][i] if hasattr(d[k],"__len__") else None for k in d_keys}
+        d_list.append(d_i)
+    return d_list
+
 def didx_from_info(list_of_info):
     assert len(list_of_info)>0, "list_of_info must have length > 0"
     assert isinstance(list_of_info[0],dict), "list_of_info must contain dictionaries"
@@ -253,18 +272,160 @@ class SavedSamplesManager:
     def __init__(self):
         self.saved_samples = []
     
-    def add_samples(self,samples):
-        assert isinstance(samples,SavedSamples), f"expected samples to be an instance of SavedSamples, found {type(samples)}"
-        self.saved_samples.append(samples)
+    def add_saved_samples(self,saved_samples):
+        assert isinstance(saved_samples,SavedSamples), f"expected samples to be an instance of SavedSamples, found {type(saved_samples)}"
+        self.saved_samples.append(saved_samples)
 
-import enum
-from collections import OrderedDict
-class ExistenceOfData(enum.Enum):
-    """."""
-    UNKNOWN = enum.auto()
-    NEGATIVE = enum.auto()
-    POSITIVE_NOT_LOADED = enum.auto()
-    POSITIVE_LOADED = enum.auto()
+    def union_didx(self,heavy_only=False,subset_idx=None):
+        didx = []
+        subset_idx = list(range(len(self.saved_samples))) if subset_idx is None else subset_idx
+        for k,ss in enumerate(self.saved_samples):
+            if k in subset_idx:
+                didx = ss.union_didx(didx,heavy_only=heavy_only)
+        return didx
+    
+    def intersection_didx(self,heavy_only=False,subset_idx=None):
+        didx = []
+        subset_idx = list(range(len(self.saved_samples))) if subset_idx is None else subset_idx
+        for k,ss in enumerate(self.saved_samples):
+            if k in subset_idx:
+                if k==subset_idx[0]:
+                    didx = ss.union_didx(didx,heavy_only=heavy_only)
+                else:
+                    didx = ss.intersection_didx(didx,heavy_only=heavy_only)
+        return didx
+
+    def get_image_gt(self,didx,subset_idx=None,try_saved_samples=True):
+        if len(didx)==0:
+            return [],[]
+        else:
+            didx0 = didx[0]
+        if subset_idx is None:
+            subset_idx = list(range(len(self.saved_samples)))
+        image_keys = ["image","raw_image"]
+        gt_keys = ["gt","raw_gt"]
+        if try_saved_samples:
+            ss_has_image_gt = []
+            num_pixels_in_image = []
+            for k in subset_idx:
+                ss = self.saved_samples[k]
+                has_image = any([k in ss.heavy_keys() for k in image_keys])
+                has_gt = any([k in ss.heavy_keys() for k in gt_keys])
+                ss_has_image_gt.append(has_image and has_gt)
+                if has_image:
+                    for k2 in image_keys:
+                        if k2 in ss.heavy_keys():
+                            num_pixels = len(ss.heavy_data[ss.didx_to_idx[didx0]][k2].flatten())
+                            num_pixels_in_image.append(num_pixels)
+                            break
+                else:
+                    num_pixels_in_image.append(0)
+            ss_has_image_gt = []
+            new_load = not any(ss_has_image_gt)
+        else:
+            new_load = True
+        ims = []
+        gts = []
+        if new_load:
+            for d in didx:
+                im, gt = load_raw_image_label({"dataset_name": d.split("/")[0], "i": int(d.split("/")[1])})
+                ims.append(im)
+                gts.append(gt)
+        else:
+            max_num_pixels_idx = np.argmax(num_pixels_in_image)
+            heavy_data = self.saved_samples[subset_idx[max_num_pixels_idx]].get_heavy_data(didx)
+            image_key = [k for k in image_keys if k in heavy_data[0].keys()][0]
+            gt_key = [k for k in gt_keys if k in heavy_data[0].keys()][0]
+            for d in didx:
+                ims.append(heavy_data[d][image_key])
+                gts.append(heavy_data[d][gt_key])
+        return gts,ims
+
+    def plot_qual_seg(self,
+                    didx=None,
+                    num_images=4,
+                    random=False,
+                    image_gt_from_saved_samples=True,
+                    text_measures="ari",
+                    subset_idx=None,
+                    plot_qual_seg_kwargs={}):
+        if num_images is None:
+            assert isinstance(didx,list), "If num_images is None, idx must be a list"
+            num_images = len(didx)
+        if subset_idx is None:
+            subset_idx = list(range(len(self.saved_samples)))
+        heavy_avail = self.intersection_didx(heavy_only=True,subset_idx=subset_idx)
+        if len(heavy_avail)==0:
+            raise ValueError("No overlapping didx found")
+        elif len(heavy_avail)<num_images:
+            raise ValueError(f"Only {len(heavy_avail)} overlapping didx found but num_imagesnum_images={num_images} requested")
+        if isinstance(random,bool):
+            if random:
+                didx_plot = np.random.choice(heavy_avail,num_images,replace=False)
+            else:
+                didx_plot = heavy_avail[:num_images]
+        else:
+            #random is a seed
+            assert isinstance(random,int)
+            didx_plot = np.random.RandomState(random).choice(heavy_avail,num_images,replace=False)
+        if isinstance(didx_plot,np.ndarray):
+            didx_plot = didx_plot.tolist()
+        preds = []
+        metrics = []
+        gts,ims = self.get_image_gt(didx_plot,subset_idx=subset_idx,try_saved_samples=image_gt_from_saved_samples)
+        if not isinstance(text_measures,list):
+            text_measures = [text_measures]
+        metrics_keys = [["metrics",m] for m in text_measures]
+        ss_names = []
+        for k in subset_idx:
+            ss = self.saved_samples[k]
+            ss_names.append(ss.name)
+
+            metrics_k = ss.get_light_data(didx_plot,keys=metrics_keys,return_type="list")
+            metrics_k = concat_dict_list(metrics_k,ignore_weird_values=True)["metrics"]
+
+            preds_k = ss.get_heavy_data(didx_plot,keys=["pred_int"],return_type="list")
+            preds_k = [p["pred_int"] for p in preds_k]
+            
+            preds.append(preds_k)
+            metrics.append(metrics_k)
+        big_image = plot_qual_seg(ims,preds,gts,**plot_qual_seg_kwargs)
+        transposed = plot_qual_seg_kwargs.get("transposed",False)
+        text_inside = [[] for _ in range(len(subset_idx))]
+        for i in range(len(didx_plot)):
+            for j in range(len(subset_idx)):
+                dict_ij = {k: v[i] for k,v in metrics[j].items()}
+                text_inside[j].append("\n".join([f"{k}={v:.2f}" for k,v in dict_ij.items()]))
+        
+        text_outside = ((["Raw\n Image"] if plot_qual_seg_kwargs.get("show_image_alone",True) else [])
+                        +(["Ground\n Truth"] if gts is not None else [])
+                        +(ss_names))
+        
+        num_empty_text = len(text_outside)-len(text_inside)
+        if num_empty_text>0:
+            text_inside = [["" for _ in range(len(didx_plot))] for _ in range(num_empty_text)]+text_inside
+        if transposed:
+            y_sizes=[1 for im in ims]
+            x_sizes=[im.shape[1]/im.shape[0] for im in ims]
+            text_pos_kwargs={"left": text_outside, "top": didx_plot, "xtick_kwargs": {"fontsize": 10}}
+            text_kwargs = {"color":"red","fontsize": 1,"verticalalignment":"top","horizontalalignment":"left"}
+        else:
+            y_sizes=[im.shape[0]/im.shape[1] for im in ims]
+            x_sizes=[1 for im in ims]
+            text_pos_kwargs={"top": text_outside, "left": didx_plot, "xtick_kwargs": {"fontsize": 10}}
+            text_kwargs = {"color": "red","fontsize": 1,"verticalalignment":"top","horizontalalignment":"left"}
+
+        print(text_inside)
+        big_image_w_text = render_text_gridlike(big_image,
+                                x_sizes=x_sizes,
+                                y_sizes=y_sizes,
+                                text_inside=text_inside,
+                                transpose_text_inside=transposed,
+                                anchor_image=(0.05,0.05),
+                                text_kwargs=text_kwargs,
+                                text_pos_kwargs=text_pos_kwargs,
+                                border_width_inside=0.2)
+        return big_image,big_image_w_text
 
 def is_nontrivial_list(x):
     if not isinstance(x,list):
@@ -272,23 +433,108 @@ def is_nontrivial_list(x):
     else:
         return len(x)>0
 
+def extract_from_dict(d,keys):
+    """
+    Extracts keys from a dictionary. If a key is a list, then the 
+    dictionary is indexed as a nested dictionary.
+    """
+    out = {}
+    for k in keys:
+        if isinstance(k,str):
+            k = [k]
+        assert isinstance(k,list), "expected k to be a string or a list of strings"
+        item = d
+        for i in range(len(k)):
+            assert k[i] in item.keys(), "expected nested key structure, did not find the last key: d['"+("']['".join(k[:i+1]))+"']"
+            item = item[k[i]]
+        dict_wrapped_item = item
+        for i in range(len(k)-1,0,-1):
+            dict_wrapped_item = {k[i]: dict_wrapped_item}
+        out[k[0]] = dict_wrapped_item        
+    return out
+
+def extract_from_dict_list(d_list,keys):
+    """
+    Extracts keys from a list of dictionaries. If a key is a list, then the 
+    dictionary is indexed as a nested dictionary.
+    """
+    out = []
+    for d in d_list:
+        assert isinstance(d,dict), "expected d_list to contain dictionaries. found "+str(type(d))
+        out.append(extract_from_dict(d,keys))
+    return out
+
+def lists_of_dicts_as_type(didx,lists_of_dicts,return_type,add_didx_to_list=True):
+    assert return_type.lower() in ["ordereddict","list", "dict"], f"expected return_type to be one of ['ordereddict','list', 'dict'], found {return_type}"
+    return_type = copy.copy(return_type).lower()
+    if return_type == "ordereddict":
+        out = OrderedDict()
+        for i in range(len(didx)):
+            out[didx[i]] = lists_of_dicts[i]
+    elif return_type == "list":
+        if add_didx_to_list:
+            out = [{"didx": didx[i], **lists_of_dicts[i]} for i in range(len(didx))]
+        else:
+            out = lists_of_dicts
+    elif return_type == "dict":
+        out = {didx[i]: lists_of_dicts[i] for i in range(len(didx))}
+    return out
+
 class SavedSamples:
     def __init__(self,
                 light_data = None,
                 heavy_data = None,
                 didx = None,
+                name = None,
                 mem_threshold=4e9):
-        assert all([(x is None) or is_nontrivial_list(x) for x in [light_data,heavy_data,didx]])
-        if all([x is None for x in [light_data,heavy_data,didx]]):
-            self.heavy_data = []
-            self.light_data = []
-            self.didx = []
-        else:
+        assert all([(x is None) or is_nontrivial_list(x) for x in [light_data,heavy_data,didx]]), "expected all of [light_data,heavy_data,didx] to be None or a non-empty list"
+        self.reset()
+        if any([x is not None for x in [light_data,heavy_data,didx]]):
             self.add_samples(didx=didx,light_data=light_data,heavy_data=heavy_data)
-        self.mem_all = sys.getsizeof(self)
-        self.mem_threshold = mem_threshold
-        assert self.mem_all<self.mem_threshold, f"memory usage of {self.mem_all} exceeds threshold of {self.mem_threshold}"
+            self.mem_all = sys.getsizeof(self)
+            self.mem_threshold = mem_threshold
+        if name is not None:
+            self.name = name
 
+    def reset(self):
+        self.name = "unnamed"
+        self.heavy_data = []
+        self.light_data = []
+        self.didx = []
+        self.didx_to_idx = defaultdict(lambda: -1)
+        self.heavy_available = defaultdict(lambda: "unknown")
+        #self.has_heavy_data = []
+        self.mem_all = sys.getsizeof(self)
+
+    def union_didx(self,other,heavy_only=False):
+        didx_other, _ = self.normalize_indexer(other,err_if_not_found=False)
+        if heavy_only:
+            didx_other = [d for d in didx_other if self.heavy_available[d] in ["pos_loaded","pos_not_loaded"]]
+        didx_other = [d for d in didx_other if d not in self.didx]
+        return self.didx+didx_other
+
+    def intersection_didx(self,other,heavy_only=False):
+        didx_other, _ = self.normalize_indexer(other,err_if_not_found=False)
+        if heavy_only:
+            didx_other = [d for d in didx_other if self.heavy_available[d] in ["pos_loaded","pos_not_loaded"]]
+        didx_other = [d for d in didx_other if d in self.didx]
+        return didx_other
+
+    def join_saved_samples(self,other,err_on_duplicates=True,duplicate_join_mode="both"):
+        assert duplicate_join_mode in ["both","new","old"], f"expected duplicate_join_mode to be one of ['both','new','old'], found {duplicate_join_mode}"
+        assert isinstance(other,SavedSamples), "expected other to be an instance of SavedSamples"
+        if err_on_duplicates:
+            assert len(self.intersection_didx(other))==0, "expected no overlap between didx"
+        if duplicate_join_mode=="both":
+            new_didx = self.didx+other.didx
+            new_light_data = self.light_data+other.light_data
+            new_heavy_data = self.heavy_data+other.heavy_data
+            self.add_samples(didx=new_didx,light_data=new_light_data,heavy_data=new_heavy_data,concat=False)
+        elif duplicate_join_mode=="new":
+            new_didx = other.didx
+        elif duplicate_join_mode=="old":
+            new_didx = self.didx
+        
     def mean_metrics(self,condition=lambda x: True):
         if not "metrics" in self.light_keys():
             raise ValueError("no metrics found in light_data")
@@ -300,182 +546,241 @@ class SavedSamples:
                     mean_metrics[k].append(ld["metrics"][k])
         return {k: np.mean(v) for k,v in mean_metrics.items()}
 
-    def normalize_indexer(self,indexer):
+    def normalize_indexer(self,indexer,err_if_not_found=True):
         if not isinstance(indexer,list):
             indexer = [indexer]
         indexer = copy.deepcopy(indexer)
         idx_ints = []
         didx = []
-        for i in range(len(indexer)):
-            idx = indexer[i]
-            if isinstance(idx,int):
-                assert 0<=idx<len(self.didx), f"expected idx to be in range [0,{len(self.didx)-1}], found {idx}"
-                idx_ints.append(idx)
-                didx.append(self.didx[idx])
-            elif isinstance(idx,str):
-                assert idx in self.didx, f"expected idx to be in didx, found {idx}"
-                didx.append(idx)
-                idx_ints.append(self.didx.index(idx))
-            else:
-                raise ValueError(f"expected idx to be int or str, found {type(idx)}")
+        if isinstance(indexer,SavedSamples):
+            didx = indexer.didx
+            idx_ints = [self.didx.find(d) for d in didx]
+        else:
+            for i in range(len(indexer)):
+                idx = indexer[i]
+                if isinstance(idx,int):
+                    assert 0<=idx<len(self.didx), f"expected idx to be in range [0,{len(self.didx)-1}], found {idx}"
+                    idx_ints.append(idx)
+                    didx.append(self.didx[idx])
+                elif isinstance(idx,str):
+                    assert idx in self.didx, f"expected idx to be in didx, found {idx}"
+                    didx.append(idx)
+                    idx_ints.append(self.didx_to_idx[didx[-1]])
+                elif isinstance(idx,dict):
+                    didx.append(didx_from_info([idx])[0])
+                    idx_ints.append(self.didx_to_idx[didx[-1]])
+                else:
+                    raise ValueError(f"expected idx to be int or str or dict, found {type(idx)}")
+        if err_if_not_found:
+            found = [i>=0 for i in idx_ints]
+            assert all(found), f"did not find didx={didx[idx_ints.index(-1)]}"
         return didx,idx_ints
     
-    def get_light_data(self,indexer, return_type="ordereddict"):
+    def get_light_data(self,indexer,return_type="ordereddict",keys=None):
         didx,idx = self.normalize_indexer(indexer)
-        return self.lists_of_dicts_as_type(didx,[self.light_data[i] for i in idx],return_type)
+        light_data = [self.light_data[i] for i in idx]
+        if keys is not None:
+            light_data = extract_from_dict_list(light_data,keys)
+        return lists_of_dicts_as_type(didx,light_data,return_type,add_didx_to_list=keys is None)
     
-    def get_heavy_data(self,indexer,include_light_data=False, return_type="ordereddict"):
+    def get_heavy_data(self,indexer,include_light_data=False,return_type="ordereddict",keys=None):
         didx,idx = self.normalize_indexer(indexer)
         if include_light_data:
             heavy_data = [{**self.heavy_data[i],**self.light_data[i]} for i in range(idx)]
         else:
             heavy_data = [self.heavy_data[i] for i in idx]
-        return self.lists_of_dicts_as_type(didx,heavy_data,return_type)
-
-    def lists_of_dicts_as_type(self,didx,lists_of_dicts,return_type):
-        assert return_type.lower() in ["ordereddict","list", "dict"], f"expected return_type to be one of ['ordereddict','list'], found {return_type}"
-        return_type = return_type.lower()
-        if return_type == "ordereddict":
-            out = OrderedDict()
-            for i in range(len(didx)):
-                out[didx[i]] = lists_of_dicts[i]
-        elif return_type == "list":
-            out = [{"didx": didx[i], **lists_of_dicts[i]} for i in range(len(didx))]
-        elif return_type == "dict":
-            out = {didx[i]: lists_of_dicts[i] for i in range(len(didx))}
+        if keys is not None:
+            heavy_data = extract_from_dict_list(heavy_data,keys)
+        return lists_of_dicts_as_type(didx,heavy_data,return_type,add_didx_to_list=keys is None)
             
-
     def add_samples(self,didx=None,light_data=None,heavy_data=None):
         assert any([is_nontrivial_list(x) for x in [didx,light_data,heavy_data]]), "expected at least one of [didx,light_data,heavy_data] to be a non-empty list"
+        lengths = [len(x) for x in [didx,light_data,heavy_data] if is_nontrivial_list(x)]
+        assert len(set(lengths))==1, f"expected all of [didx,light_data,heavy_data] to have the same length, found {lengths}"
         if didx is None:
             didx = didx_from_info(light_data if light_data is not None else heavy_data)
-        self.didx = didx
         if light_data is None:
             light_data = [None for _ in range(len(didx))]
         assert len(light_data)==len(didx), f"expected light_data to have length {len(didx)}, found {len(light_data)}"
-        self.light_data = light_data
         if heavy_data is None:
             heavy_data = [None for _ in range(len(didx))]
         assert len(heavy_data)==len(didx), f"expected heavy_data to have length {len(didx)}, found {len(heavy_data)}"
-        self.heavy_data = heavy_data
-        self.has_heavy_data = [ExistenceOfData.UNKNOWN if x is None else ExistenceOfData.POSITIVE_LOADED for x in heavy_data]
+        for d,l,h in zip(didx,light_data,heavy_data):
+            find_idx = self.didx_to_idx[d]
+            if find_idx>=0:
+                if l is not None:
+                    self.light_data[find_idx] = l
+                if h is not None:
+                    self.heavy_data[find_idx] = h
+                    self.heavy_available[d] = "pos_loaded"
+            else:
+                self.didx.append(d)
+                self.light_data.append(l)
+                self.heavy_data.append(h)
+                self.didx_to_idx[d] = len(self.didx)-1
+                if h is not None:
+                    self.heavy_available[d] = "pos_loaded"
+                else:
+                    self.heavy_available[d] = "unknown"
 
-    def load_all_data(self):
-        pass
-
-    def heavy_keys(self):
-        if len(self.qual_samples)>0:
-            return list(self.qual_samples[0].keys())
+    def heavy_keys(self,sub_keys=False,search_all=False):
+        if search_all:
+            out = set()
+            for i in range(len(self.heavy_data)):
+                if self.heavy_data[i] is not None:
+                    out = out.union(set(self.heavy_data[i].keys()))
+                    if sub_keys:
+                        for k in self.heavy_data[i].keys():
+                            if isinstance(self.heavy_data[i][k],dict):
+                                out = out.union(set([[k,k2] for k2 in self.heavy_data[i][k].keys()]))
         else:
-            return []
+            is_not_none_idx = [i for i in range(len(self.heavy_data)) if self.heavy_data[i] is not None]
+            if len(is_not_none_idx)==0:
+                out = []
+            else:
+                i = is_not_none_idx[0]
+                out = list(self.heavy_data[i].keys())
+                if sub_keys:
+                    for k in self.heavy_data[i].keys():
+                        if isinstance(self.heavy_data[i][k],dict):
+                            out = out.union(set([[k,k2] for k2 in self.heavy_data[i][k].keys()]))
+        return out
 
-    def light_keys(self):
-        if len(self.light_stats)>0:
-            return list(self.light_stats[0].keys())
+    def light_keys(self,sub_keys=False,search_all=False):
+        if search_all:
+            out = set()
+            for i in range(len(self.light_data)):
+                if self.light_data[i] is not None:
+                    out = out.union(set(self.light_data[i].keys()))
+                    if sub_keys:
+                        for k in self.light_data[i].keys():
+                            if isinstance(self.light_data[i][k],dict):
+                                out = out.union(set([[k,k2] for k2 in self.light_data[i][k].keys()]))
         else:
-            return []
-
+            is_not_none_idx = [i for i in range(len(self.light_data)) if self.light_data[i] is not None]
+            if len(is_not_none_idx)==0:
+                out = []
+            else:
+                i = is_not_none_idx[0]
+                out = list(self.light_data[i].keys())
+                if sub_keys:
+                    for k in self.light_data[i].keys():
+                        if isinstance(self.light_data[i][k],dict):
+                            out = out.union(set([[k,k2] for k2 in self.light_data[i][k].keys()]))
+        return out
+    
     def __len__(self):
         return len(self.didx)
-    
-    def load_data_by_didx(self,didx):
-        if not isinstance(didx,list):
-            didx = [didx]
-        for d in didx:
-            assert d in self.didx, f"did not find {d} in didx"
-        
+
     def load_all_data(self):
-        if hasattr(self,"load_all_data"):
-            return self.load_all_data()
+        self.load_light_data()
+        self.load_heavy_data()
     
-    def load_light_stats(self):
-        raise NotImplementedError("This method must be implemented in a subclass")
+    def load_light_data(self):
+        has_read_light_data = hasattr(self,"read_light_data")
+        assert has_read_light_data, "expected read_light_data to be implemented in a subclass"
+        output_of_read_light_data = self.read_light_data()
+        assert len(output_of_read_light_data)==3, f"expected read_light_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_light_data)}"
+        self.add_samples(*output_of_read_light_data)
     
-class SamSamples(SavedSamples):
-    def __init__(self
-                ):
-        super().__init__()
+    def load_heavy_data(self):
+        has_read_heavy_data = hasattr(self,"read_heavy_data")
+        assert has_read_heavy_data, "expected read_heavy_data to be implemented in a subclass"
+        output_of_read_heavy_data = self.read_heavy_data()
+        assert len(output_of_read_heavy_data)==3, f"expected read_heavy_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_heavy_data)}"
+        self.add_samples(*output_of_read_heavy_data)
 
 class DiffSamples(SavedSamples):
     def __init__(self,
                 gen_id,
+                mem_threshold=4e9,
+                load_heavy=False,
+                load_light=True,
                 glob_str="raw_sample_batch*.pt",
                 ):
-        super().__init__()
+        super().__init__(mem_threshold=mem_threshold)
         id_dict = TieredParser("sample_opts").load_and_format_id_dict()
         assert gen_id in id_dict.keys(), f"gen_id {gen_id} not found in id_dict"
         self.gen_id = gen_id
+        self.name = gen_id
         self.sample_opts = id_dict[gen_id]
-        self.batch_files = sorted(list(Path(self.sample_opts.raw_samples_folder).glob(glob_str)))
-        assert len(self.batch_files)>0, f"no files found with glob string {glob_str}"
-        self.num_batches = len(self.batch_files)
-        self.mem_per_batch = os.path.getsize(self.batch_files[0])
-        self.mem_all = self.mem_per_batch*self.num_batches
-        self.allow_full_load = self.mem_all<self.mem_threshold
-
-    def load_all_data(self):
-        if not self.allow_full_load:
-            raise ValueError(f"memory usage of {self.mem_all} exceeds threshold of {self.mem_threshold}")
-        return concat_dict_list([torch.load(f) for f in self.batch_files])
-    
-    def add_stats_to_samples(self):
-        stats_path = Path(self.sample_opts.light_stats_filename)
-        assert stats_path.exists(), f"stats_path {stats_path} does not exist"
-        return json.load(open(stats_path,"r"))  
-
-    def avail_didx(self):
-        didx = []
-        for i in range(self.num_batches):
-            batch = self.load_batch(i)
-            batch_didx = didx_from_info(batch["info"])
-            didx.extend(batch_didx)
-        return didx
-
-    def load_data_by_didx(self,list_of_info_or_didx):
-        assert isinstance(list_of_info_or_didx,list), f"ids must be a list, found {type(list_of_info_or_didx)}"
-        assert len(list_of_info_or_didx)>0, "ids must have length > 0"
-        if isinstance(list_of_info_or_didx[0],dict):
-            didx = [f"{info['dataset_name']}/{info['i']}" for info in list_of_info_or_didx]
+        if len(self.sample_opts["raw_samples_folder"])>0:
+            self.raw_samples_files = sorted(list(Path(self.sample_opts["raw_samples_folder"]).glob(glob_str)))
+            self.mem_per_batch = os.path.getsize(self.raw_samples_files[0])
+            self.mem_all = self.mem_per_batch*len(self.raw_samples_files)
         else:
-            assert isinstance(list_of_info_or_didx[0],str), "ids must be a list of strings or a list of dictionaries"
-            didx = list_of_info_or_didx
-        dict_of_samples = {}
-        for i in range(self.num_batches):
-            batch = self.load_batch(i)
+            self.raw_samples_files = []
+        if load_light:
+            self.load_light_data()
+        if load_heavy:
+            self.load_heavy_data()
+
+    def read_heavy_data(self,read_didx=None,extract=True):
+        assert len(self.sample_opts["raw_samples_folder"])>0 and self.sample_opts["save_raw_samples"], "no raw samples found"
+        heavy_data = []
+        didx = []
+        for i in range(len(self.raw_samples_files)):
+            batch = torch.load(self.raw_samples_files[i])
             batch_didx = didx_from_info(batch["info"])
-            
             bs = len(batch["info"])
             for b in range(bs):
-                if batch_didx[b] in didx:
-                    dict_of_samples[batch_didx[b]] = index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b)
-        #check we didnt miss anything
-        for d in didx:
-            assert d in dict_of_samples.keys(), f"did not find {d} in any batch"
-        dict_list = [dict_of_samples[d] for d in didx]
-        return concat_dict_list(dict_list)
+                
+                if read_didx is None:
+                    append_b = True
+                else:
+                    append_b = batch_didx[b] in read_didx
+                if append_b:
+                    heavy_data.append(index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b))
+                    didx.append(batch_didx[b])
+                    self.heavy_available[batch_didx[b]] = "pos_loaded"
+                else:
+                    self.heavy_available[batch_didx[b]] = "pos_not_loaded"
+        if read_didx is None:
+            #set all existences which are unknown to negative
+            for d in self.didx:
+                if self.heavy_available[d]=="unknown":
+                    self.heavy_available[d] = "negative"
+        if extract:
+            heavy_data = extract_from_sample_list(heavy_data)
+        return didx,None,heavy_data
+    
+    def load_heavy_image_gt(self,didx_load=None):
+        if didx_load is None:
+            didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
+        for didx_i in didx_load:
+            assert didx_i in self.didx, f"expected didx to be in self.didx, found {didx_i}"
+            x  = {"dataset_name": didx_i.split("/")[0], "i": int(didx_i.split("/")[1])}
+            image,gt = load_raw_image_label(x)
+            i = self.didx_to_idx(didx_i)
+            if not isinstance(self.heavy_data[i],dict):
+                self.heavy_data[i] = {}
+            self.heavy_data[i]["raw_image"] = image
+            self.heavy_data[i]["raw_gt"] = gt
 
-    def __len__(self):
-        return self.num_batches
+    def read_light_data(self,read_didx=None):
+        assert len(self.sample_opts["light_stats_filename"])>0, "no light_stats_filename found"
+        light_data = load_json_to_dict_list(self.sample_opts["light_stats_filename"])
+        didx = didx_from_info(light_data)
+        if read_didx is not None:
+            light_data = [light_data[i] for i in range(len(didx)) if didx[i] in read_didx]
+            didx = didx_from_info(light_data)
+        for d,ld in zip(didx,light_data):
+            if "has_raw_sample" in ld.keys():
+                if self.heavy_available[d]=="unkown":
+                    self.heavy_available[d] = "pos_not_loaded" if ld["has_raw_sample"] else "negative"
+        return didx,light_data,None
     
-    def load_batch(self,idx):
-        assert -self.num_batches<=idx<self.num_batches, f"idx must be in range [-{self.num_batches},{self.num_batches-1}]"
-        return torch.load(self.batch_files[idx])
-    
-    def save_all_data(self,filename="raw_samples_all.pt",remove_old=False):
-        if not self.allow_full_load:
+    def concat_and_save_heavy_data(self,filename="raw_samples_all.pt",remove_old=False):
+        heavy_data = self.load_heavy_data()
+        if self.mem_all>self.mem_threshold:
             raise ValueError(f"memory usage of {self.mem_all} exceeds threshold of {self.mem_threshold}")
-        concat_data = self.load_all_data()
         if not filename.endswith(".pt"):
             filename += ".pt"
         save_path = self.foldername/filename
-        torch.save(concat_data,save_path)
+        torch.save(heavy_data,save_path)
         if remove_old:
             for f in self.batch_files:
                 f.unlink()
-    
-    def load_and_match_light_stats(self,filename=None):
-        if filename is None:
-            self.foldername.parent.glob("light_stats*.json")
 
 def extract_from_samples(samples,
                          ab=None,
@@ -538,6 +843,10 @@ def extract_from_samples(samples,
                     extracted[k][i] = extracted[k][i][:new_h,:new_w]
     return extracted
 
+def extract_from_sample_list(sample_list,**kwargs):
+    assert isinstance(sample_list,list), "expected sample_list to be a list"
+    return seperate_dict_to_list(extract_from_samples(concat_dict_list(sample_list),**kwargs))
+
 def sam_resize_index(h,w,resize=64):
     if h>w:
         new_h = resize
@@ -546,7 +855,6 @@ def sam_resize_index(h,w,resize=64):
         new_w = resize
         new_h = np.round(h/w*resize).astype(int)
     return new_h,new_w
-
 
 def plot_qual_seg(ims,preds,gts=None,names=None,
                       transposed=False,
@@ -564,6 +872,8 @@ def plot_qual_seg(ims,preds,gts=None,names=None,
         assert names is None, "expected names to be None if preds is a dict"
         names = list(preds.keys())
         preds = list(preds.values())
+    if names is None:
+        names = [f"Method {i}" for i in range(len(preds))]
     if gts is not None:
         names = ["GT"]+names
         preds = [gts]+preds
@@ -605,7 +915,8 @@ def plot_qual_seg(ims,preds,gts=None,names=None,
                 j = 0
             for _ in range(n_methods):
                 jj = j-int(show_image_alone)
-                pred = cv2.resize(preds[jj][i],tuple(imsizes[i][::-1]),interpolation=cv2.INTER_NEAREST)
+                pred = preds[jj][i]
+                pred = cv2.resize(pred,tuple(imsizes[i][::-1]),interpolation=cv2.INTER_NEAREST)
                 pred = mask_overlay_smooth(im,pred,alpha_mask=alpha_mask)
                 w_slice = slice(j*(rw+border*2)+border,(j+1)*(rw+border*2)-border)
                 big_image[h_slice,w_slice] = pred

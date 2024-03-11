@@ -504,13 +504,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
         assert all([0<=item<len(self) for item in list_of_things2]), "all items in list_of_things must be valid indices"
         return list_of_things2
 
-    def get_prioritized_sampler(self,pri_idx,seed=None,use_p=True,shuffle=False):
+    def get_prioritized_sampler(self,pri_didx,seed=None,use_p=True,shuffle=False):
         """
         Returns a sampler which first samples from the dataset 
         with index in pri_idx and then the rest of the dataset
         """
-        pri_idx2 = self.convert_to_idx(pri_idx)
-        non_pri_idx = [i for i in range(len(self)) if i not in pri_idx2]
+        pri_idx = self.convert_to_idx(pri_didx)
+        non_pri_idx = [i for i in range(len(self)) if i not in pri_idx]
         if shuffle:
             if use_p:
                 p = np.array([self.dataset_weights[item["dataset_name"]] for item in self.items])
@@ -518,16 +518,16 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 p = np.ones(len(self))
             gen = torch.Generator().manual_seed(seed)
             sampler = torch.utils.data.WeightedRandomSampler(p,num_samples=len(self),replacement=False,generator=gen)
-            new_pri_idx2 = []
+            new_pri_idx = []
             new_non_pri_idx = []
             for idx in sampler:
-                if idx in pri_idx2:
-                    new_pri_idx2.append(idx)
+                if idx in pri_idx:
+                    new_pri_idx.append(idx)
                 else:
                     new_non_pri_idx.append(idx)
-            pri_idx2 = new_pri_idx2
+            pri_idx = new_pri_idx
             non_pri_idx = new_non_pri_idx
-        order = pri_idx2+non_pri_idx
+        order = pri_idx+non_pri_idx
         return order
 
     def get_use_idx_native_train(self,randperm,info_json,dataset_name):
