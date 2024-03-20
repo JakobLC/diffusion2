@@ -6,7 +6,9 @@ from collections import defaultdict
 import os
 import tqdm
 from unet import unet_kwarg_to_tensor
-from utils import get_segment_metrics,get_time,save_dict_list_to_json,check_keys_are_same
+from utils import (get_segment_metrics,get_time,save_dict_list_to_json,
+                   check_keys_are_same,mask_from_imshape,postprocess_batch,
+                   sam_resize_index)
 from plot_utils import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
@@ -43,7 +45,7 @@ class DiffusionSampler(object):
             self.eval_batch_size = self.opts.eval_batch_size
         if len(self.opts.datasets)>0:
             if not isinstance(self.opts.datasets,list):
-                self.opts.datasets = [self.opts.datasets]
+                self.opts.datasets = self.opts.datasets.split(",")
         if len(self.opts.datasets)>0:
             self.trainer.args.datasets = self.opts.datasets
             self.trainer.create_datasets(self.opts.split)
@@ -124,7 +126,7 @@ class DiffusionSampler(object):
         assert self.opts.num_samples>=0, "num_samples must be non-negative."
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
-
+        assert self.opts.postprocess in ['none','area0.005'], f"postprocess={self.opts.postprocess} is not a valid option."
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
         
@@ -246,11 +248,15 @@ class DiffusionSampler(object):
         x_true = x_true.cpu()
         x_true_bit = x_true_bit.cpu()
         votes = torch.stack(votes,dim=0).cpu()
-        votes_int = self.trainer.cgd.ab.bit2int(votes)            
-        
+        votes_int = self.trainer.cgd.ab.bit2int(votes)
+        if self.opts.postprocess!="none":
+            if self.opts.postprocess=="area0.005":
+                votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.005},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
+        imsize = x_true.shape[-1]
         metrics = defaultdict(list)
-        for i in range(len(votes)):            
-            metrics_i = get_segment_metrics(votes_int[i],x_true)
+        mask = torch.from_numpy(mask_from_imshape(info["imshape"],imsize,num_dims=3)).to(self.device)
+        for i in range(len(votes)):
+            metrics_i = get_segment_metrics(votes_int[i],x_true,mask=mask)
             for k in metrics_i.keys():
                 metrics[k].append(metrics_i[k])
         save_sample = self.opts.return_samples or bqi["save_grid"]
@@ -264,7 +270,7 @@ class DiffusionSampler(object):
                                 "model_kwargs": model_kwargs})
         if self.opts.save_light_stats:
             has_raw_sample = self.opts.save_raw_samples and (bqi["sample"]<self.opts.num_save_raw_samples)
-            light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","num_classes"]},
+            light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","num_classes","imshape"]},
                            "model_kwargs_abs_sum": {k: 
                                                     (v.abs().sum().item() if torch.is_tensor(v) else 0) 
                                                     for k,v in model_kwargs.items()},
@@ -316,6 +322,11 @@ class DiffusionSampler(object):
             x = x.to(self.device)
             x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
             model_kwargs = {k: v for k,v in model_kwargs.items() if k in ["image","image_features"]}
+        elif self.opts.kwargs_mode=="classes":
+            x,info = batch
+            x = x.to(self.device)
+            x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
+            model_kwargs = {k: v for k,v in model_kwargs.items() if k in ["image","image_features","classes"]}
         return x,model_kwargs,info
             
     def form_next_batch(self):

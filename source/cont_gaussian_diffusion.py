@@ -235,7 +235,7 @@ class ContinuousGaussianDiffusion():
         self_cond = torch.tensor(self_cond).view(-1,1,1,1).to(x.device)
 
         if self.ab is not None:
-            assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must have size 1, got {x.shape[self.ab.bit_dim]}"
+            assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must be 1, got {x.shape[self.ab.bit_dim]}"
             loss_mask = torch.logical_not(self.ab.int2pad(x).cpu()).float()
             x = self.ab.int2bit(x)
         if "points" in model_kwargs.keys():

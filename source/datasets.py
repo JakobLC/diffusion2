@@ -719,10 +719,17 @@ class SegmentationDataset(torch.utils.data.Dataset):
         j = self.sam_features_idx
         if j>=0:
             if info["sam"][j]:
-                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{idx//1000}",f"{idx}_sam{j}.pt"))
+                i = info["i"]
+                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{j}.pt"))
             else:
                 info["image_features"] = None
         return label,info
+
+def longest_side_resize_func(image,is_label=True,max_size=256):
+    return A.LongestMaxSize(max_size=max_size, 
+                            interpolation=cv2.INTER_NEAREST if is_label else cv2.INTER_AREA, 
+                            always_apply=True, 
+                            p=1)(image=image)["image"]
 
 def load_from_dataset_and_idx(dataset_name,i,im=True):
     if im:
@@ -737,10 +744,20 @@ def load_from_dataset_and_idx(dataset_name,i,im=True):
     raise ValueError("No image file found for dataset_name: "+dataset_name+", i: "+str(i))
 
 def load_raw_image_label(x,longest_side_resize=0,data_root=None):
-    assert isinstance(x,dict), "x must be a info dictionary"
+    assert isinstance(x,dict), "x must be a info dictionary, got: "+str(x)
     if data_root is None:
         data_root = str(Path(__file__).parent.parent / "data")
     return SegmentationDataset.load_raw_image_label(None,x,longest_side_resize,data_root)
+
+def load_raw_image_label_from_didx(didx,longest_side_resize=0,data_root=None):
+    assert isinstance(didx,list), "didx must be a list of didx strings"
+    assert all([isinstance(didx_i,str) for didx_i in didx]), "didx must be a list of didx strings"
+    assert all([len(didx_i.split("/"))==2 for didx_i in didx]), "didx must be a list of didx strings formatted as '{dataset_name}/{i}'"
+    x = [{"dataset_name": didx_i.split("/")[0],"i": int(didx_i.split("/")[1])} for didx_i in didx]
+    tuples = [load_raw_image_label(x2,longest_side_resize,data_root) for x2 in x]
+    ims = [t[0] for t in tuples]
+    gts = [t[1] for t in tuples]
+    return ims,gts
 
 def get_sam_aug(size,padval=255):
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),

@@ -25,12 +25,12 @@ from source.training import DiffusionModelTrainer
 # [4] add split_idx to datasets lacking them
 # [4] implement timestep delta from bit diffusion
 # [4] implement better corrupt from bit diffusion
-# [4] make num points depend on num labels
+# [4] make num points depend on num labels, size of label
 # [4] add data: VISOR, Totalsegmenter data, UVO
 # [5] implement all points in arguments
 # [5] check multiple workers works
 # [5] resume training by model_id
-# [6] 
+# [3] no bg points
 
 #training TODO
 # loop over lr

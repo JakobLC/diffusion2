@@ -321,9 +321,11 @@
         "versions": {
             "small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 8, "num_channels": "64;96;128"},
             "bs_small": {"input_scale": 0.01, "image_size": 64, "train_batch_size": 32},
-            "sam": {"image_encoder": "sam_vit_b","train_batch_size": 8},
+            "sam": {"image_encoder": "sam_vit_b","train_batch_size": 4},
             "big": {"num_channels": 128},
-            "bs": {"train_batch_size": 32}
+            "bs": {"train_batch_size": 32},
+            "nc128": {"class_type": "num_classes", "lr_warmup_steps": 10000},
+            "nc64": {"class_type": "num_classes", "image_size": 64, "lr_warmup_steps": 10000}
         },
         "crop_method": "sam_small",
         "weak_signals": true,

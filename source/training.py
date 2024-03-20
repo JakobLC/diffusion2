@@ -342,12 +342,12 @@ class DiffusionModelTrainer:
                 model_kwargs["image"].append(None)
             if self.args.weak_signals:
                 if self.args.weak_bbox_prob>0:
-                    if np.random.rand()<=self.args.weak_bbox_prob:
+                    if np.random.rand()<=self.args.weak_bbox_prob or gen:
                         raise NotImplementedError("bbox not implemented")
                     else:
                         model_kwargs["bbox"].append(None)
                 if self.args.weak_points_prob>0:
-                    if np.random.rand()<=self.args.weak_points_prob:
+                    if np.random.rand()<=self.args.weak_points_prob or gen:
                         model_kwargs["points"].append(points_image_from_label(x[i]))
                     else:
                         model_kwargs["points"].append(None)
@@ -359,7 +359,7 @@ class DiffusionModelTrainer:
                     model_kwargs["cond"].append(None)
             if self.args.class_type!="none":
                 if self.args.class_type=="num_classes" and self.args.classes_prob>0:
-                    if np.random.rand()<self.args.classes_prob:
+                    if np.random.rand()<self.args.classes_prob or gen:
                         model_kwargs["classes"].append(torch.tensor(info[i]["num_classes"],dtype=torch.long))
                     else:
                         model_kwargs["classes"].append(None)

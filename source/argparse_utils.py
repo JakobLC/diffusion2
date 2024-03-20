@@ -7,6 +7,7 @@ from functools import partial
 from collections import OrderedDict
 from utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
 import copy
+from shutil import rmtree
 
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     s_orig = copy.copy(s)
@@ -361,13 +362,19 @@ class TieredParser():
         else:
             return ""
 
-    def load_and_format_id_dict(self):
+    def load_and_format_id_dict(self,return_type="dict"):
         id_list = json.loads((Path(__file__).parent.parent/self.filename_ids).read_text())
-        id_dict = {}
+        if return_type=="list":
+            return id_list
+        elif return_type=="dict":
+            id_dict = {}
+        elif return_type=="ordereddict":
+            id_dict = OrderedDict()
+        else:
+            raise ValueError(f"return_type={return_type} not supported. must be 'list', 'dict', or 'ordereddict'.")
         for item in id_list:
             id_of_item = item[self.id_key]
             id_dict[id_of_item] = item
-            
         return id_dict
     
     def is_unique_id(self, id):
@@ -521,7 +528,13 @@ def add_folder_ids(folder,
             for sample_opts in sample_opts_list:
                 save_args(sample_opts)
 
-def overwrite_existing_args(args):
+def delete_existing_args(id,name_key="sample_opts"):
+    tp = TieredParser(name_key)
+    id_dict = tp.load_and_format_id_dict()
+    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys()."
+    overwrite_existing_args(argparse.Namespace(**id_dict[id]),delete_instead_of_overwrite=True)
+
+def overwrite_existing_args(args,delete_instead_of_overwrite=False):
     local_path, global_path = save_args(args,dry=True)
     if hasattr(args,"model_name"):
         tp = TieredParser("args")
@@ -535,13 +548,19 @@ def overwrite_existing_args(args):
     dict_list = load_json_to_dict_list(global_path)
     for i in range(len(dict_list)):
         if dict_list[i][tp.id_key] == args.__dict__[tp.id_key]:
-            dict_list[i] = args.__dict__
+            if delete_instead_of_overwrite:
+                del dict_list[i]
+            else:
+                dict_list[i] = args.__dict__
             break
     save_dict_list_to_json(dict_list,global_path,append=False)
     dict_list = load_json_to_dict_list(local_path)
     for i in range(len(dict_list)):
         if dict_list[i][tp.id_key] == args.__dict__[tp.id_key]:
-            dict_list[i] = args.__dict__
+            if delete_instead_of_overwrite:
+                del dict_list[i]
+            else:
+                dict_list[i] = args.__dict__
             break
     save_dict_list_to_json(dict_list,local_path,append=False)
 
@@ -597,6 +616,28 @@ def kill_missing_ids(name_key="args",dry=False,keep_criterion=None):
         new_dict_list = [id_dict[k] for k in include_keys]
         save_dict_list_to_json(new_dict_list,tp.filename_ids,append=False)
 
+def kill_by_id(id, name_key="sample_opts", dry=False):
+    tp = TieredParser(name_key)
+    id_dict = tp.load_and_format_id_dict(return_type="ordereddict")
+    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys()."
+    if dry:
+        print(f"Would remove id={id} from {name_key}.")
+    else:
+        if name_key=="args":
+            raise NotImplementedError("name_key=args not supported.")
+        else:
+            assert name_key=="sample_opts", f"name_key={name_key} not supported."
+            remove_keys = "grid_filename,light_stats_filename,raw_samples_folder,concat_inter_filename,inter_folder"
+            for k in remove_keys.split(","):
+                if id_dict[id][k]=="":
+                    continue
+                elif not Path(id_dict[id][k]).exists():
+                    continue
+                if k.endswith("_filename"):
+                    Path(id_dict[id][k]).unlink()
+                else:
+                    rmtree(id_dict[id][k])
+            delete_existing_args(id,name_key=name_key)
 
 def main():
     import argparse

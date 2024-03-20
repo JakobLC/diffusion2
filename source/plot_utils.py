@@ -718,6 +718,12 @@ def clean_up(filename,verbose=False):
 def get_matplotlib_color(color,num_channels=3):
     return render_axis_ticks(23,bg_color=color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})[12,12,:num_channels]
 
+def darker_color(x,power,mult):
+    if x.dtype==np.uint8:
+        return np.round((np.clip((x/255)**power*255*mult,0,255))).astype(np.uint8)
+    else:
+        return np.clip(x**power*mult,0,1)
+
 def render_axis_ticks(image_width=1000,
                       num_uniform_spaced=None,
                       bg_color="white",

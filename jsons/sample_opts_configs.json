@@ -25,6 +25,7 @@
     "all_ade20k": {
         "versions": {
             "ts_sweep": {"num_timesteps": "2;5;10;20;50;100;200;500;1000"},
+            "ts_sweep_ddim": {"num_timesteps": "2;5;10;20;50;100;200", "sampler_type": "ddim"},
             "gw_sweep": {"guidance_weight": "-1.0;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "num_timesteps": 20}
         },
         "num_timesteps": 100, "num_samples": -1, "plotting_functions": "grid","seed": 1, 
@@ -33,5 +34,13 @@
     "qual_ade20k": {
         "num_timesteps": 100, "num_samples": 64, "seed": 1, "num_save_raw_samples": 64, "plotting_functions": "grid",
         "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "ade20k",
-        "save_light_stats": true, "save_raw_samples": true}
+        "save_light_stats": true, "save_raw_samples": true},
+    "all_vali": {
+        "versions": {
+            "has_vali_set": {"datasets": "coco,pascal,ade20k,cityscapes"},
+            "nc": {"kwargs_mode": "classes"}
+        },
+        "num_timesteps": 25, "num_samples": -1, "plotting_functions": "","seed": 1, 
+        "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "coco,pascal,sa1b,coift,hrsod,to5k,ade20k,dram,cityscapes",
+        "save_light_stats": true}
 }

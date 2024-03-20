@@ -14,7 +14,8 @@ import datetime
 from functools import partial
 import re
 from pprint import pprint
-
+from collections import defaultdict
+import scipy.ndimage as nd
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
     keys = [sorted(list(d.keys())) for d in list_of_dicts]
@@ -228,11 +229,14 @@ def get_likelihood(pred,target,mask,ab,outside_mask_fill_value=0.0,clamp=True):
 
 def get_segment_metrics_np(pred,target,**kwargs):
     #simple wrapper for get_segment_metrics
-    assert isinstance(pred,np.ndarray), "pred must be a numpy array"
-    assert isinstance(target,np.ndarray), "target must be a numpy array"
+    assert isinstance(pred,np.ndarray), "pred must be a numpy array, got type: "+str(type(pred))
+    assert isinstance(target,np.ndarray), "target must be a numpy array, got type: "+str(type(target))
     if len(pred.shape)==len(target.shape)==2:
         pred = pred.copy()[None]
         target = target.copy()[None]
+    elif len(pred.shape)==len(target.shape)==3 and pred.shape[-1]==target.shape[-1]==1:
+        pred = pred.copy()[None,:,:,0]
+        target = target.copy()[None,:,:,0]
     if "mask" in kwargs:
         if kwargs["mask"] is not None:
             assert isinstance(kwargs["mask"],np.ndarray), "mask must be a numpy array"
@@ -246,6 +250,7 @@ def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],
         was_single = True
         pred = pred.unsqueeze(0)
         target = target.unsqueeze(0)
+        mask = mask.unsqueeze(0) if mask is not None else None
     else:
         was_single = False
     if not pred.shape[1]==target.shape[1]==1:
@@ -435,7 +440,7 @@ def ce2_logits_loss(logits, x, loss_mask=None, batch_dim=0):
     """BCEWithLogits loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(x.shape)) if i!=batch_dim]
     if loss_mask is None:
-        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(pred_x.device)
+        loss_mask = torch.ones_like(x)*(1/torch.numel(x[0])).to(logits.device)
     else:
         div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
         loss_mask = (loss_mask/div).to(logits.device)
@@ -813,7 +818,7 @@ def fancy_shape(item):
         out = f"np.Size({list(item.shape)})"
     return out
 
-def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=False,do_print=False):
+def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True,do_print=False,return_str=False):
     """
     Prints almost any object as a nested structure of shapes and lengths.
     Example:
@@ -822,7 +827,10 @@ def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=Fals
     """
     kwargs = {"max_recursions":max_recursions,
               "max_expand":max_expand,
-              "first_only":first_only}
+              "first_only":first_only,
+              "do_pprint": False,
+              "do_print": False,
+              "return_str": True}
     m = float("inf") if first_only else max_expand
     if is_type_for_dot_shape(x):
         out = fancy_shape(x)
@@ -849,9 +857,258 @@ def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=Fals
         pprint(out)
     if do_print:
         print(out)
+    if return_str:
+        return out
+
+def mask_from_list_of_shapes(imshape,resize):
+    assert isinstance(imshape,list), "imshape must be a list or tuple"
+    if not isinstance(resize,list):
+        assert isinstance(resize,int), "imsize must be an int or a list of ints"
+        resize = [resize]*len(imshape)
+    return [mask_from_imshape(sh,rs) for sh,rs in zip(imshape,resize)]
+
+def mask_from_imshape(imshape,resize,num_dims=2):
+    h,w = imshape[:2]
+    new_h,new_w = sam_resize_index(h,w,resize=resize)
+    mask = np.zeros((resize,resize),dtype=bool)
+    mask[:new_h,:new_w] = True
+    for _ in range(num_dims-2):
+        mask = mask[None]
+    return mask
+
+def sam_resize_index(h,w,resize=64):
+    if h>w:
+        new_h = resize
+        new_w = np.round(w/h*resize).astype(int)
+    else:
+        new_w = resize
+        new_h = np.round(h/w*resize).astype(int)
+    return new_h,new_w
+
+
+def segmentation_gaussian_filter(seg,sigma=1,skip_index=[],skip_spatial=None,padding="constant"):
+    assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1), f"expected seg to be of shape (H,W) or (H,W,1), found {seg.shape}"
+    assert seg.dtype==np.uint8, f"expected seg to be of type np.uint8, found {seg.dtype}"
+    if skip_spatial is not None:
+        assert skip_spatial.shape==seg.shape, f"skip_spatial.shape={skip_spatial.shape} != seg.shape={seg.shape}"
+        ssf = lambda x: np.logical_and(x,np.logical_not(skip_spatial))
+    else:
+        ssf = lambda x: x
+    uq = np.unique(seg)
+    best_val = np.zeros_like(seg,dtype=float)
+    best_idx = -np.ones_like(seg,dtype=int)
+    for i in uq:
+        if i in skip_index:
+            continue
+        val = nd.gaussian_filter(ssf(seg==i).astype(float),sigma=sigma,mode=padding)
+        mask = val>best_val
+        best_val[mask] = val[mask]
+        best_idx[mask] = i
+    if any(best_idx.flatten()<0):
+        #set all pixels that were not assigned to the closest set pixel class
+        _, idx = nd.distance_transform_edt(best_idx<0,return_indices=True)
+        best_idx[best_idx<0] = best_idx[tuple(idx[:,best_idx<0])]
+        #print("Warning: some pixels were not assigned to any class")
+    best_idx = best_idx.astype(np.uint8)
+    return best_idx
+
+def segmentation_filter(seg,skip_index=[],skip_spatial=None,padding="constant",kernel=np.ones((3,3))):
+    assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1)
+    assert seg.dtype==np.uint8
+    if skip_spatial is not None:
+        assert skip_spatial.shape==seg.shape, f"skip_spatial.shape={skip_spatial.shape} != seg.shape={seg.shape}"
+        ssf = lambda x: np.logical_and(x,np.logical_not(skip_spatial))
+    else:
+        ssf = lambda x: x
+    uq = np.unique(seg)
+    best_val = np.zeros_like(seg,dtype=float)
+    best_idx = -np.ones_like(seg,dtype=int)
+    for i in uq:
+        if i in skip_index:
+            continue
+        val = nd.convolve(ssf(seg==i).astype(float),kernel,mode=padding)
+        mask = val>best_val
+        best_val[mask] = val[mask]
+        best_idx[mask] = i
+    if any(best_idx.flatten()<0):
+        #set all pixels that were not assigned to the closest set pixel class
+        _, idx = nd.distance_transform_edt(best_idx<0,return_indices=True)
+        best_idx[best_idx<0] = best_idx[tuple(idx[:,best_idx<0])]
+        print("Warning: some pixels were not assigned to any class")
+    best_idx = best_idx.astype(np.uint8)
+    return best_idx
+
+def mult_if_float(x,multiplier):
+    if isinstance(x,float):
+        return np.round(x*multiplier).astype(int)
+    else:
+        assert isinstance(x,int)
+        return x*np.ones_like(multiplier)
+
+def postprocess_batch(seg_tensor,seg_kwargs={},overwrite=False,keep_same_type=True,list_of_imshape=None):
+    """
+    Wrapper for postprocess_list_of_segs that handles many types of 
+    batched inputs and returns the same type for the output.
+    """
+    expected_seg_tensor_msg = "Expected seg_tensor to be a torch.Tensor or np.ndarray or a list of torch.Tensor or np.ndarray"
+    bs = len(seg_tensor)
+    if list_of_imshape is not None:
+        assert isinstance(list_of_imshape,list), "expected list_of_imshape to be a list"
+        assert bs>0, "expected bs>0"
+        assert len(list_of_imshape)==len(seg_tensor), f"expected len(list_of_imshape)={len(list_of_imshape)} to be equal to len(seg_tensor)={len(seg_tensor)}"
+        assert all([isinstance(imshape,(tuple,list)) for imshape in list_of_imshape]), "expected all elements of list_of_imshape to be a tuple or list"
+        assert all([len(imshape)>=2 for imshape in list_of_imshape]), "expected all elements of list_of_imshape to have length >=2"
+
+    if torch.is_tensor(seg_tensor):
+        input_mode = "torch"
+        dtype = seg_tensor.dtype
+        device = seg_tensor.device
+        transform = lambda x: x.cpu().numpy()
+    elif isinstance(seg_tensor,np.ndarray):
+        input_mode = "np"
+        transform = lambda x: x
+    else:
+        assert isinstance(seg_tensor,list), expected_seg_tensor_msg+", found "+str(type(seg_tensor))
+        if torch.is_tensor(seg_tensor[0]):
+            input_mode = "list_of_torch"
+            dtype = seg_tensor[0].dtype
+            device = seg_tensor[0].device
+            transform = lambda x: x.cpu().numpy()
+        else:
+            assert isinstance(seg_tensor[0],np.ndarray), expected_seg_tensor_msg+", found "+str(type(seg_tensor))
+            input_mode = "list_of_np"
+            transform = lambda x: x
+    num_dims = [len(im.shape) for im in seg_tensor]
+    num_dims0 = num_dims[0]
+    assert all([nd==num_dims0 for nd in num_dims]), "expected all images to have the same number of dimensions"
+    dim_is_trivial = [all([im.shape[j]==1 for im in seg_tensor]) for j in range(num_dims0)]
+    trivial_idx = [i for i in range(num_dims0) if dim_is_trivial[i]]
+    dim_is_nontrivial = [not dit for dit in dim_is_trivial]
+    assert sum(dim_is_nontrivial)==2, "expected exactly 2 non-trivial dimensions, found dim_is_nontrivial="+str(dim_is_nontrivial)
+    d1,d2 = [i for i in range(num_dims0) if dim_is_nontrivial[i]]
+    resize = max([max(seg.shape) for seg in seg_tensor])
+    list_of_segs = []
+    crop_slices = []
+    for i in range(bs):
+        if list_of_imshape is None:
+            new_h,new_w = None,None
+        else:
+            new_h,new_w = sam_resize_index(*list_of_imshape[i],resize=resize)
+        crop_slice = [0 for _ in range(num_dims0)]
+        crop_slice[d1] = slice(0,new_h)
+        crop_slice[d2] = slice(0,new_w)
+        crop_slice = tuple(crop_slice)
+        list_of_segs.append(transform(seg_tensor[i])[crop_slice])
+        crop_slices.append(crop_slice)
+    list_of_segs = postprocess_list_of_segs(list_of_segs,seg_kwargs=seg_kwargs,overwrite=overwrite)
+    
+    if keep_same_type:
+        if input_mode=="torch":
+            for i in range(bs):
+                seg_tensor[i][crop_slices[i]] = torch.tensor(list_of_segs[i],dtype=dtype,device=device)
+        elif input_mode=="np":
+            for i in range(bs):
+                seg_tensor[i][crop_slices[i]] = list_of_segs[i]
+        elif input_mode=="list_of_torch":
+            seg_tensor = [torch.tensor(np.expand_dims(seg,trivial_idx),dtype=dtype,device=device) for seg in list_of_segs]
+        else:
+            seg_tensor = [np.expand_dims(seg,trivial_idx) for seg in list_of_segs]
+    else:
+        seg_tensor = list_of_segs
+    return seg_tensor
+
+def torch_expand_dims(x,list_of_dims):
+    # list_of_dims = 3, x.shape = (0,1,2)
+    assert max(list_of_dims)-len(list_of_dims)>=len(x.shape), "expected len(list_of_dims)-max(list_of_dims) to be >=len(x.shape)"
+    return x
+
+def postprocess_list_of_segs(list_of_segs,seg_kwargs={},overwrite=False):
+    out = []
+    for seg in list_of_segs:
+        out.append(postprocess_seg(seg,**seg_kwargs,overwrite=overwrite))
     return out
 
+def postprocess_seg(seg,
+                    mode="gauss_survive",
+                    replace_with="nearest",
+                    num_objects=8,
+                    min_area=0.005,
+                    sigma=0.001,
+                    overwrite=False):
+    """
+    Postprocess a segmentation by removing pixels of typically small objects or noise.
 
+    Args:
+    seg: np.ndarray, shape (H,W) or (H,W,1), dtype np.uint8
+        The segmentation to postprocess.
+    mode: str, one of ["num_objects", "min_area", "gauss_raw", "gauss_survive"]
+        The mode to use for postprocessing where:
+        - "num_objects": remove all but the largest `num_objects` objects
+        - "min_area": remove all objects with smaller relative area smaller than 
+            `min_area`
+        - "gauss_raw": apply a gaussian filter to the onehot of the segmentation
+        - "gauss_survive": apply a gaussian filter to the onehot of the segmentation
+            and keep the original segmentation for objects that survive the filter
+    replace_with: str, one of ["gauss", "new", "nearest"]
+        The method to use when replacing pixels of removed objects. Where:
+        - "gauss": replace with the result of the gaussian filter
+        - "new": replace with a unique label not found in the objects that were kept
+        - "nearest": replace with the label of the nearest object from a distance
+            transform
+    num_objects: int
+        The number of objects to keep if `mode` is "num_objects".
+    min_area: float
+        The minimum relative area of an object to keep if `mode` is "min_area".
+    sigma: float
+        The sigma of the gaussian filter
+
+    Returns:
+    np.ndarray, shape (H,W) or (H,W,1), dtype np.uint8
+        The postprocessed segmentation.
+    """
+    assert mode in ["num_objects", "min_area", "gauss_raw", "gauss_survive"], f"expected mode to be one of ['num_objects', 'min_area', 'gauss_raw', 'gauss_survive'], found {mode}"
+    assert replace_with in ["gauss", "new", "nearest"], f"expected replace_with to be one of ['gauss', 'new', 'nearest'], found {replace_with}"
+    assert isinstance(seg,np.ndarray), "expected seg to be an np.ndarray"
+    assert seg.dtype==np.uint8
+    assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1)
+    if not overwrite:
+        seg = seg.copy()
+    gauss_seg = None
+    sigma_in_pixels = sigma*np.sqrt(np.prod(seg.shape))
+    remove_mask = None
+    if mode=="num_objects":
+        assert num_objects>0 and isinstance(num_objects,int), "num_objects must be a positive integer. found: "+str(num_objects)
+        uq, counts = np.unique(seg.flatten(),return_counts=True)
+        if len(uq)>num_objects:
+            remove_labels = uq[np.argsort(counts)[:-num_objects]]
+            remove_mask = np.isin(seg,remove_labels)
+    elif mode=="min_area":
+        uq, counts = np.unique(seg,return_counts=True)
+        area = counts/seg.size
+        if any(area<min_area):
+            remove_labels = uq[area<min_area]
+            remove_mask = np.isin(seg,remove_labels)
+    elif mode=="gauss_raw":
+        seg = segmentation_gaussian_filter(seg,sigma=sigma_in_pixels)
+    elif mode=="gauss_survive":
+        gauss_seg = segmentation_gaussian_filter(seg,sigma=sigma_in_pixels)
+        uq = np.unique(gauss_seg)
+        remove_mask = np.logical_not(np.isin(seg,uq))
+    if np.all(remove_mask):
+        return np.zeros_like(seg)
+    replace_vals = None
+    if remove_mask is not None:
+        if replace_with=="nearest":
+            idx_of_nn = nd.distance_transform_edt(remove_mask,return_indices=True)[1]
+            replace_vals = seg[tuple(idx_of_nn)]
+        elif replace_with=="new":
+            uq = np.unique(seg[np.logical_not(remove_mask)])
+            first_idx_not_in_uq = [i for i in range(len(uq)+1) if i not in uq][0]
+            replace_vals = np.ones_like(seg)*first_idx_not_in_uq
+        elif replace_with=="gauss":
+            replace_vals = segmentation_gaussian_filter(seg,sigma=sigma_in_pixels,skip_spatial=remove_mask)
+        seg[remove_mask] = replace_vals[remove_mask]
+    return seg
 
 def main():
     import argparse
@@ -862,7 +1119,28 @@ def main():
     if args.unit_test==0:
         print("UNIT TEST 0: nuke test")
         nuke_saves_folder()
+    elif args.unit_test==1:
+        print("UNIT TEST 1: various inputs outputs for postprocess_batch test")
+        bs = 5
+        d1,d2 = 4,4
+        f_torch = lambda *dims: torch.randint(0,10,dims).type(torch.uint8)
+        f_np = lambda *dims: np.random.randint(0,10,dims).astype(np.uint8)
+        batch1 = f_torch(bs,d1,d2)
+        batch2 = f_torch(bs,1,1,d1,d2)
+        batch3 = [f_torch(1,d1,d2) for _ in range(bs)]
+        batch4 = [f_torch(1,d1,1,d2,1) for _ in range(bs)]
+        batch5 = [f_np(d1,d2) for _ in range(bs)]
+        batch6 = [f_np(1,d1,d2) for _ in range(bs)]
+        batch7 = f_np(bs,d1,d2)
+
+        batches = [batch1,batch2,batch3,batch4,batch5,batch6,batch7]
+        for k,batch in enumerate(batches):
+            print("TEST batch"+str(k+1))
+            shaprint(batch)
+            print("result:")
+            shaprint(postprocess_batch(batch,seg_kwargs={'mode':'gauss_raw'}))
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         
-if __name__=="__main__":nuke_saves_folder
+if __name__=="__main__":
+    main()
