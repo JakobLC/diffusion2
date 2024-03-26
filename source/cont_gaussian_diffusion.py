@@ -353,29 +353,9 @@ class ContinuousGaussianDiffusion():
         else:
             return x_s_dist['mean'] + x_s_dist['std'] * torch.randn_like(x_t)
         
-    def transform_guidance_weight(self, gw, x):
-        if gw is None:
-            return None
-        else:
-            bs = x.shape[0]
-            device = x.device
-            dtype = x.dtype
-            w = torch.tensor(gw, dtype=dtype, device=device) if not torch.is_tensor(gw) else gw
-            if w.numel() != bs:
-                assert w.numel() == 1, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
-                if abs(w)<1e-9:
-                    return None
-                w = w.repeat(bs)
-            else:
-                if (abs(w)<1e-9).all():
-                    return None
-            assert w.numel() == bs, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
-            w = w.view(bs,1,1,1)
-            return w
-        
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
                     guidance_weight=0.0, self_cond=False, progress_bar=False, save_i_steps=[], save_i_idx=[],
-                    guidance_kwargs=""):
+                    guidance_kwargs="",save_entropy_score=False):
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -383,7 +363,7 @@ class ContinuousGaussianDiffusion():
         else:
             raise NotImplementedError(sampler_type)
         
-        guidance_weight = self.transform_guidance_weight(guidance_weight,x_init)
+        guidance_weight = transform_guidance_weight(guidance_weight,x_init)
         if self.ab is not None:
             if self.ab.onehot:
                 assert x_init.shape[self.ab.bit_dim]==self.ab.num_classes, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_classes}, got {x_init.shape[self.ab.bit_dim]}"
@@ -400,7 +380,10 @@ class ContinuousGaussianDiffusion():
         if intermediate_save:
             inter_keys = ["x_t","pred_x","pred_eps","model_output","model_output_guidance","i","t"]
             sample_output["inter"] = {k: [] for k in inter_keys}
-            
+        
+        if save_entropy_score:
+            sample_output["entropy_score"] = []
+
         x_t = x_init
         
         for i in trange:
@@ -425,7 +408,10 @@ class ContinuousGaussianDiffusion():
                 if i in save_i_steps:
                     for key,value in zip(inter_keys,[x_t,pred_x,pred_eps,model_output,model_output_guidance,i,t]):
                         sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
-            
+
+            if save_entropy_score:
+                sample_output["entropy_score"].append(entropy_score_from_predx(pred_x))
+
             if self_cond:
                 model_kwargs['self_cond'] = pred_x
             
@@ -489,7 +475,27 @@ class ContinuousGaussianDiffusion():
         else:        
             raise NotImplementedError(x_logvar)
         return {'mean': mean, 'std': torch.sqrt(var), 'var': var, 'logvar': logvar}
-    
+
+def transform_guidance_weight(gw, x):
+    if gw is None:
+        return None
+    else:
+        bs = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        w = torch.tensor(gw, dtype=dtype, device=device) if not torch.is_tensor(gw) else gw
+        if w.numel() != bs:
+            assert w.numel() == 1, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
+            if abs(w)<1e-9:
+                return None
+            w = w.repeat(bs)
+        else:
+            if (abs(w)<1e-9).all():
+                return None
+        assert w.numel() == bs, f"guidance_weight must be a scalar or batch_size={bs} got {str(w.numel())}"
+        w = w.view(bs,1,1,1)
+        return w
+
 def create_diffusion_from_args(args):
     num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
     ab = AnalogBits(num_bits=num_bits,
@@ -508,6 +514,27 @@ def create_diffusion_from_args(args):
                                     logsnr_min=args.logsnr_min,
                                     logsnr_max=args.logsnr_max)
     return cgd
+
+def entropy_score_from_predx(predx,mean_reduce=True):
+    num_bits = predx.shape[1]
+    entropy = entropy_from_predx(predx,mean_reduce=False,as_onehot=False).sum(1)
+    entropy_score = 1-entropy*torch.log(-2**num_bits)
+    if mean_reduce:
+        entropy_score = torch.mean(entropy_score)
+    return entropy_score
+
+def entropy_from_predx(predx,mean_reduce=True,as_onehot=False):
+    num_bits = predx.shape[1]
+    if as_onehot:
+        probs = AnalogBits(num_bits=num_bits).bit2prob(predx)
+    else:
+        #each number is a probability, so we must add the complementary probability
+        probs = predx.unsqueeze(1)*0.5+0.5
+        probs = torch.cat([probs,1-probs],axis=1)
+    entropy = -torch.sum(probs*torch.log(probs+1e-9),dim=1)
+    if mean_reduce:
+        entropy = torch.mean(entropy)
+    return entropy
 
 def main():
     import argparse

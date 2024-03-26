@@ -31,6 +31,8 @@ from source.training import DiffusionModelTrainer
 # [5] check multiple workers works
 # [5] resume training by model_id
 # [3] no bg points
+# [5] eval on non-pretty data
+# [6] replace holes in labels with nearby pixels for dataloader
 
 #training TODO
 # loop over lr

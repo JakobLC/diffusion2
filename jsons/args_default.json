@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.0.2",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.2."],
+    "model_version": ["1.0.3",                      "Current version of the model. TYPE: str. DEFAULT: 1.0.2."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -98,7 +98,8 @@
         "crop_method": ["multicrop_most_border",    "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big']. DEFAULT: 'multicrop_most_border'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
-        "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "]
+        "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
+        "semantic_prob": [0.0,                      "Probability of semantic augmentation being used, otherwise instance. TYPE: float. DEFAULT: 0.0. "]
     },
     "version_backwards_compatability": {
         "classes_prob" : {"<1.0.0": 0.9},
@@ -108,7 +109,8 @@
         "ignore_padded": {"<1.0.0": false},
         "final_activation": {"<1.0.1": "none"},
         "split_method": {"<1.0.1": "random"},
-        "max_num_classes": {"<1.0.2": 8}
+        "max_num_classes": {"<1.0.2": 8},
+        "semantic_prob": {"<1.0.3": 0.5}
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'. "],

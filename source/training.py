@@ -35,6 +35,7 @@ from utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose)
+from torchvision.transforms.functional import resize
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -234,7 +235,8 @@ class DiffusionModelTrainer:
                                         crop_method=self.args.crop_method,
                                         label_padding_val=255 if self.args.ignore_padded else 0,
                                         split_method=self.args.split_method,
-                                        sam_features_idx=sam_features_idx)
+                                        sam_features_idx=sam_features_idx,
+                                        semantic_prob=self.args.semantic_prob)
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size,
@@ -254,15 +256,10 @@ class DiffusionModelTrainer:
                                         collate_fn=custom_collate_with_info,
                                         num_workers=self.args.dl_num_workers))
             if self.args.debug_run=="no_dl":
-                #self.tr = tracker.SummaryTracker()
                 dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
-            elif self.args.debug_run=="spam_getitem":
-                for i in range(1000):
-                    batch = next(dataloader)
-                    if i%10==0:
-                        mem_usage = psutil.virtual_memory().percent
-                        print(f"i: {i}, mem_usage: {mem_usage}")
-                
+            if self.args.debug_run=="only_dl":
+                for _ in tqdm(dataloader):
+                    pass
             if pure_gen_dataset_mode:
                 return dataloader
             else:
@@ -372,7 +369,7 @@ class DiffusionModelTrainer:
             if len(image_idx)>0:
                 image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
                 if not image.shape[-1]==image.shape[-2]==1024:
-                    image = F.interpolate(image,(1024,1024),mode="nearest-exact")
+                    image = resize(image,(1024,1024),antialias=True)
                 with torch.no_grad():
                     image_features = self.image_encoder(to_dev(image))
                 model_kwargs["image_features"] = torch.zeros(bs,*image_features.shape[1:],device=self.device)
@@ -780,7 +777,9 @@ def dummy_dataset_args():
                                 vali_batch_size=-1,
                                 dl_num_workers=4,
                                 seed=-1,
-                                debug_run="")
+                                debug_run="",
+                                image_encoder="none",
+                                semantic_prob=0.0)
     return args
 
 def main():

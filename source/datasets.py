@@ -12,6 +12,8 @@ import cv2
 import copy
 from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
+from unet import get_sam_image_encoder
+import tqdm
 
 turbo_jpeg = TurboJPEG()
 
@@ -363,7 +365,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             assert all([d in available_datasets for d in self.dataset_list]), "Unrecognized dataset. Available datasets are: "+str(available_datasets)+" got "+str(self.dataset_list)
         if split in ["train","vali","test","all"]:
             split = {"train": 0,"vali": 1, "test": 2, "all": 3}[split]
-        assert split in list(range(-1,4)), "invalid split input. must be one of [0,1,2,3] or ['train','vali','test','all']"
+        assert split in list(range(-1,4)), "invalid split input. must be one of [0,1,2,3] or ['train','vali','test','all'], found "+str(split)
         sr = split_ratio
         sr = np.array(sr)/sum(sr)
         self.split_start_and_stop = [[0,sr[0]],[sr[0],sr[0]+sr[1]],[sr[0]+sr[1],1.0],[0,1]]
@@ -573,8 +575,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     target_split[i] = j
                     break
         assert np.all(target_split>=0), "num fails: "+str(np.sum(target_split==-1))+", dataset_name: "+dataset_name
-
-        use_idx = np.where(target_split==self.split)[0]
+        if self.split==3:
+            use_idx = np.where(target_split>=0)[0]
+        else:
+            use_idx = np.where(target_split==self.split)[0]
         return use_idx
 
     def get_crop_params(self,label):
@@ -605,13 +609,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
     
     def map_label_to_valid_bits(self,label,info):
         """takes a uint8 label map and depending on the method, maps
-        each label to a number between 0 and max_num_classes-1"""
+        each label to a number between 0 and max_num_classes-1. also
+        keeps track of which classes correspond to idx and adds this 
+        dict to info.""" 
+        idx_to_class_name = {k: self.idx_to_class[info["dataset_name"]][str(c)] for k,c in enumerate(info["classes"])}
         is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
+        info["is_semantic"] = is_semantic
         if is_semantic:
             for i in np.unique(info["classes"]):
                 if sum([x==i for x in info["classes"]])>1:
                     idx_of_uq_i = np.where(info["classes"]==i)[0]
                     for j in idx_of_uq_i[1:]:
+                        del idx_to_class_name[j]
                         label[label==j] = idx_of_uq_i[0]
         counts = np.bincount(label.flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
         nnz = len(counts)-1
@@ -638,6 +647,16 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
             old_to_new = perm[old_to_new]
+        list_of_keys = list(idx_to_class_name.keys())
+        print("old_to_new: ",old_to_new)
+        print("list_of_keys: ",list_of_keys)
+        print("idx_to_class_name: ",idx_to_class_name)
+        for k in list_of_keys:
+            k_new = old_to_new[k]
+            v_new = idx_to_class_name[k]
+            del idx_to_class_name[k]
+            idx_to_class_name[k_new] = v_new
+        info["idx_to_class_name"] = idx_to_class_name
         if self.label_padding_val==255:
             pad_mask = label==255
         label = old_to_new[label]
@@ -706,6 +725,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
         label_path = os.path.join(self.data_root,dataset_name,info["label_path"])
         image = np.atleast_3d(open_image_fast(image_path))
+        if image.shape[2]==1:
+            image = np.repeat(image,3,axis=-1)
         label = open_image_fast(label_path)
         image,label = self.preprocess(image,label,info)
         label,info = self.map_label_to_valid_bits(label,info)
@@ -856,13 +877,10 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p
         raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray'] got "+str(augment_name))
     return A.Compose(list_of_augs)
 
-from unet import get_sam_image_encoder
-import tqdm
-
 def save_sam_features(datasets="ade20k",
                  sam_idx_or_name=0,
-                 split="all",
-                 split_method="random",
+                 split="vali",
+                 split_method="native",
                  batch_size=4,
                  ratio_of_dataset=1.0,
                  device="cuda",

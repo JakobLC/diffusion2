@@ -330,46 +330,65 @@ def gaussian_filter_xy(x,y,sigma):
         y2[i] = (y*filtered_weight).sum()
     return y2
 
-def mask_overlay_smooth(image,mask,
-                 pallete=None,
-                 alpha_mask=0.4):
+def get_mask(mask_vol,idx,onehot=False,onehot_dim=-1):
+    if onehot:
+        slice_idx = [slice(None) for _ in range(len(mask_vol.shape))]
+        slice_idx[onehot_dim] = idx
+        return np.expand_dims(mask_vol[tuple(slice_idx)],onehot_dim)
+    else:
+        return (mask_vol==idx).astype(float)
+
+def mask_overlay_smooth(image,
+                        mask,
+                        num_spatial_dims=2,
+                        pallete=None,
+                        alpha_mask=0.4,
+                        dont_show_idx=[255]):
     assert isinstance(image,np.ndarray)
     assert isinstance(mask,np.ndarray)
-    assert len(mask.shape)==3 or len(mask.shape)==2
-    mask = np.atleast_3d(mask)
+    assert len(image.shape)>=num_spatial_dims, "image must have at least num_spatial_dims dimensions"
+    assert len(mask.shape)>=num_spatial_dims, "mask must have at least num_spatial_dims dimensions"
+    assert image.shape[:num_spatial_dims]==mask.shape[:num_spatial_dims], "image and mask must have the same shape"
     if pallete is None:
         pallete = np.concatenate([np.array([[0,0,0]]),jlc.nc.largest_colors],axis=0)
-    is_integer_type = np.issubdtype(mask.dtype,np.integer)
-    if mask.shape[2]==1 and is_integer_type:
-        #convert to onehot
-        mask_old = mask[:,:,0].copy()
-        n = mask_old.max()+1
-        mask = np.zeros((mask_old.shape[0],mask_old.shape[1],n))
-        for i in range(n):
-            mask[:,:,i] = (mask_old==i)
-    if mask.dtype==np.uint8:
-        mask = mask.astype(float)/255
-    if isinstance(image,np.ndarray):
-        if image.dtype==np.uint8:
-            image = image.astype(float)/255
-            input_is_uint8 = True
-        else:
-            input_is_uint8 = False
+    if image.dtype==np.uint8:
+        was_uint8 = True
+        image = image.astype(float)/255
     else:
-        image = np.array(image).astype(float)/255
-        input_is_uint8 = True
-    num_colors = mask.shape[2]
+        was_uint8 = False
+    if len(mask.shape)==num_spatial_dims:
+        onehot = False
+        n = mask.max()+1
+        uq = np.unique(mask).tolist()
+        mask = np.expand_dims(mask,-1)
+    else:
+        assert len(mask.shape)==num_spatial_dims+1, "mask must have num_spatial_dims (with integers as classes) or num_spatial_dims+1 dimensions (with onehot encoding)"
+        if mask.shape[num_spatial_dims]==1:
+            onehot = False
+            n = mask.max()+1
+            uq = np.unique(mask).tolist()
+        else:
+            onehot = True
+            n = mask.shape[num_spatial_dims]
+            uq = np.arange(n).tolist()
     image_colored = image.copy()
-    for i in range(num_colors):
-        reshaped_color = pallete[i].reshape(1,1,3)/255
-        mask_coef = mask[:,:,i,None]*alpha_mask
+    if len(image_colored.shape)==num_spatial_dims:
+        image_colored = np.expand_dims(image_colored,-1)
+    #make rgb
+    if image_colored.shape[-1]==1:
+        image_colored = np.repeat(image_colored,3,axis=-1)
+    color_shape = tuple([1 for _ in range(num_spatial_dims)])+(3,)
+    for i in range(n):
+        if (not i in uq) or (i in dont_show_idx):
+            continue
+        reshaped_color = pallete[i].reshape(color_shape)/255
+        mask_coef = alpha_mask*get_mask(mask,i,onehot=onehot)
         image_coef = 1-mask_coef
         image_colored = image_colored*image_coef+reshaped_color*mask_coef
     image_colored = np.clip(image_colored,0,1)
-    if input_is_uint8: 
+    if was_uint8: 
         image_colored = (image_colored*255).astype(np.uint8)
     return image_colored
-    
 
 def analog_bits_on_image(x_bits,im,ab):
     assert isinstance(x_bits,torch.Tensor), "analog_bits_on_image expects a torch.Tensor"

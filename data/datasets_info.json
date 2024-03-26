@@ -407,5 +407,41 @@
             0,
             0
         ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 43225,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            38040,
+            1997,
+            3188
+        ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 0,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            0,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 43225,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            38040,
+            1997,
+            3188
+        ]
     }
 ]

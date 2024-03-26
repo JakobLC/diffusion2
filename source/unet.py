@@ -663,7 +663,10 @@ def create_unet_from_args(args):
         num_classes = args["max_num_classes"]+1
     else:
         raise ValueError(f"unknown class_type: {args['class_type']}")
-    unet = UNetModel(image_size=args["image_size"],
+    if args["debug_run"]=="dummymodel":
+        unet = DummyModel(out_channels)
+    else:
+        unet = UNetModel(image_size=args["image_size"],
                      is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
                     image_channels=1 if args["cat_ball_data"] else 3,
@@ -706,6 +709,25 @@ def get_sam_image_encoder(model_type="vit_b",device="cuda"):
     for p in sam_image_encoder.parameters():
         p.requires_grad = False
     return sam_image_encoder
+
+class DummyModel(nn.Module):
+    def __init__(self, num_bits):
+        super().__init__()
+        self.conv_layer = conv_nd(2,num_bits,num_bits,1)
+
+    def convert_to_fp32(self):
+        self.conv_layer.apply(convert_module_to_f32)
+
+    def convert_to_fp16(self):
+        self.conv_layer.apply(convert_module_to_f16)
+
+    @property
+    def inner_dtype(self):
+        return next(self.conv_layer.parameters()).dtype
+    
+    def forward(self,x,timesteps,**kwargs):
+        y = self.conv_layer(x.type(self.inner_dtype))
+        return y.type(x.dtype)
 
 def main():
     import argparse

@@ -22,6 +22,7 @@ from plot_utils import mask_overlay_smooth, darker_color, get_matplotlib_color
 import enum
 from collections import OrderedDict
 import pandas as pd
+import warnings
 
 def show_anns(anns):
     if len(anns) == 0:
@@ -39,13 +40,53 @@ def show_anns(anns):
     ax.imshow(img)
 
 def get_segmentation(anns):
+    if len(anns) == 0:
+        warnings.warn("No annotations found")
+        return np.zeros((1,1))
     h, w = anns[0]['segmentation'].shape
     segment = np.zeros((h,w), dtype=np.uint8)
     for k, ann in enumerate(anns):
         segment[ann['segmentation']] = min(255, k+1)
     return segment
 
-class SamAgnosticPredictor(SamPredictor):
+class SamAgnosticGenerator(SamAutomaticMaskGenerator):
+    def __init__(self, sam, **kwargs):
+        super().__init__(sam, **kwargs)
+        self.has_stored_features = False
+        self.data_root = os.path.abspath("./data")
+
+        self.predictor = SamAgnosticPredictor(sam)
+
+    def batched_generate(self, images, gts, image_features=None):
+        if image_features is not None:
+            self.predictor.store_image_batch(image_features)
+        masks = []
+        for i in range(len(images)):
+            image = images[i]
+            mask = self.generate(image)
+            masks.append(mask)
+        segmentations = [get_segmentation(mask) for mask in masks]
+        return segmentations
+
+    def batched_generate_raw(self, model_kwargs,info):
+        if "image_features" in model_kwargs.keys():
+            self.store_image_batch(model_kwargs["image_features"])
+        images = []
+        gts = []
+        for i in range(len(info)):
+            image_path = os.path.join(self.data_root,info[i]["dataset_name"],info[i]["image_path"])
+            label_path = os.path.join(self.data_root,info[i]["dataset_name"],info[i]["label_path"])
+            images.append(np.array(Image.open(image_path)))
+            gts.append(np.array(Image.open(label_path)))
+        bs = len(info)
+        masks = []
+        for i in range(bs):
+            image = images[i]
+            mask = self.generate(image)
+            masks.append(mask)
+        return masks, images, gts
+
+class SamAgnosticPredictor3(SamPredictor):
     def __init__(self, sam, generator_kwargs={}):
         super().__init__(sam)
         self.mask_generator = SamAutomaticMaskGenerator(sam,**generator_kwargs)
@@ -110,6 +151,39 @@ class SamAgnosticPredictor(SamPredictor):
             self.features = self.model.image_encoder(input_image)
         self.is_image_set = True
 
+class SamAgnosticPredictor(SamPredictor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def set_torch_image(self,transformed_image,original_image_size):
+        assert (
+            len(transformed_image.shape) == 4
+            and transformed_image.shape[1] == 3
+            and max(*transformed_image.shape[2:]) == self.model.image_encoder.img_size
+        ), f"set_torch_image input must be BCHW with long side {self.model.image_encoder.img_size}."
+        self.reset_image()
+        
+        self.original_size = original_image_size
+        self.input_size = tuple(transformed_image.shape[-2:])
+        if self.has_stored_features:
+            self.features = self.restore_next()
+        else:
+            self.features = self.model.image_encoder(self.model.preprocess(transformed_image))
+        self.is_image_set = True
+
+    def restore_next(self):
+        self.features = self.stored_features[self.stored_idx].unsqueeze(0)
+        self.stored_idx += 1
+        if self.stored_idx == len(self.stored_features):
+            self.has_stored_features = False
+        return self.features
+
+    def store_image_batch(self, features):
+        self.stored_features = features
+        self.has_stored_features = True
+        self.stored_idx = 0
+
 def to_cpu_if_torch(x):
     if torch.is_tensor(x):
         return x.cpu()
@@ -151,7 +225,7 @@ def evaluate_sam(datasets="ade20k",
     if isinstance(split,int):
         assert split in [0,1,2,3], "split must be one of [0,1,2,3] or one of [train,vali,test,all]"
         split = ["train","vali","test","all"][split]
-    assert num_return_segments<=64
+    assert num_return_segments<=64, "num_return_segments must be less than or equal to 64, due to memory constraints"
     assert isinstance(longest_side_resize,int), "longest_side_resize must be an integer"
 
     args = TieredParser().get_args(alt_parse_args=["--model_name", model_name_for_dataloader,
@@ -173,7 +247,7 @@ def evaluate_sam(datasets="ade20k",
     sam_checkpoint = "../segment-anything/segment_anything/checkpoint/"+ckpt_type_dict[model_type]
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     sam.to(device=device)
-    sam_agnostic = SamAgnosticPredictor(sam,generator_kwargs=generator_kwargs)
+    sam_agnostic = SamAgnosticGenerator(sam,**generator_kwargs)
     n = len(getattr(trainer,split+"_dl"))
     if isinstance(ratio_of_dataset,float) and ratio_of_dataset<=1:
         n_batches = np.ceil(n*ratio_of_dataset).astype(int)
@@ -294,18 +368,39 @@ def is_saved_samples(x):
     return out
 
 class SavedSamplesManager:
-    def __init__(self):
-        self.saved_samples = []
+    def __init__(self,saved_samples=None):
+        if saved_samples is None:
+            self.saved_samples = []
+        elif isinstance(saved_samples,list):
+            self.add_saved_samples(saved_samples)
     
     def __len__(self):
         return len(self.saved_samples)
-        
+    
+    def save(self,save_path):
+        list_of_save_dicts = [ss.save(save_path=None,return_instead_of_save=True) for ss in self.saved_samples]
+        torch.save(list_of_save_dicts,save_path)
+    
+    def load(self,load_path):
+        list_of_save_dicts = torch.load(load_path)
+        ss_list = []
+        for save_dict in list_of_save_dicts:
+            ss = SavedSamples()
+            ss.load(save_dict)
+            ss_list.append(ss)
+        self.add_saved_samples(ss_list)
+
     def add_saved_samples(self,saved_samples):
         if isinstance(saved_samples,list):
             assert all([is_saved_samples(ss) for ss in saved_samples]), "expected all elements in a list to be instances of SavedSamples, found "+str([type(ss) for ss in saved_samples])
             self.saved_samples.extend(saved_samples)
-        assert is_saved_samples(saved_samples), f"expected samples to be an instance of SavedSamples or a list of SavedSamples, found {type(saved_samples)}"
-        self.saved_samples.append(saved_samples)
+        else:
+            assert is_saved_samples(saved_samples), f"expected samples to be an instance of SavedSamples or a list of SavedSamples, found {type(saved_samples)}"
+            self.saved_samples.append(saved_samples)
+
+    def clear_all_heavy_data(self):
+        for ss in self.saved_samples:
+            ss.clear_heavy_data()
 
     def union_didx(self,heavy_only=False,ss_idx=None):
         didx = []
@@ -497,7 +592,7 @@ class SavedSamplesManager:
                 y = metrics[i][m]
                 if lines_instead_of_hist:
                     std_kernel = np.std(y)/10
-                    
+
         return 
     
     def metrics_for_plotting(self,metric_names=None,ss_idx=None,intersection_only=True,transpose_metric_ss=False):
@@ -855,6 +950,16 @@ class SavedSamples:
         self.segment_key = segment_key
         if name is not None:
             self.name = name
+        else:
+            self.name = "unnamed"
+
+    def clear_heavy_data(self):
+        self.heavy_data = [None for _ in range(len(self.heavy_data))]
+        old_to_new = {"unkown": "unknown", 
+                      "pos_loaded": "pos_not_loaded",
+                      "negative": "negative",
+                      "pos_not_loaded": "pos_not_loaded"}
+        self.heavy_available = {k: old_to_new[v] for k,v in self.heavy_available.items()}
 
     def downscale_heavy_data(self,longest_side_resize=128,keys=["gt","pred_int","image"]):
         if not isinstance(keys,list):
@@ -877,7 +982,7 @@ class SavedSamples:
             out = [o[self.segment_key] for o in out]
         return out
 
-    def save(self,save_path):
+    def save(self,save_path,return_instead_of_save=False):
         save_dict = {"name": self.name,
                     "heavy_data": self.heavy_data,
                     "light_data": self.light_data,
@@ -885,10 +990,16 @@ class SavedSamples:
                     "postprocess_kwargs": self.postprocess_kwargs,
                     "segment_key": self.segment_key,
                     "mem_threshold": self.mem_threshold}
-        torch.save(save_dict,save_path)
+        if return_instead_of_save:
+            return save_dict
+        else:
+            torch.save(save_dict,save_path)
 
-    def load(self,save_path):
-        load_dict = torch.load(save_path)
+    def load(self,save_path_or_dict):
+        if isinstance(save_path_or_dict,dict):
+            load_dict = save_path_or_dict
+        else:
+            load_dict = torch.load(save_path_or_dict)
         self.reset()
         self.name = load_dict["name"]
         self.segment_key = load_dict["segment_key"]
@@ -1393,3 +1504,22 @@ def plot_qual_seg(ims,preds,gts=None,names=None,
                 big_image[h_slice,w_slice] = pred
                 j += 1
     return big_image
+
+def kernel_hist(y,std_mult=0.1,n_points=200,minval=None,maxval=None,kernel="gaussian"):
+    sigma = np.std(y)*std_mult*(0.1443375 if kernel=="uniform" else 1)
+    if minval is None:
+        minval = np.min(y)-5*sigma
+    if maxval is None:
+        maxval = np.max(y)+5*sigma
+    assert kernel in ["gaussian","uniform"]
+    if kernel=="gaussian":
+        coef = 1/(np.sqrt(2*np.pi)*sigma)/len(y)
+        kernel_func = lambda t: np.exp(-0.5*(t/sigma)**2)
+    elif kernel=="uniform":
+        coef = 1/(2*sigma)/len(y)
+        kernel_func = lambda t: (np.abs(t)<sigma).astype(float)
+    t = np.linspace(minval,maxval,n_points)
+    h = []
+    for ti in t:
+        h.append(np.sum(kernel_func(y-ti))*coef)
+    return t,h

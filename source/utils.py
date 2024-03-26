@@ -1110,6 +1110,17 @@ def postprocess_seg(seg,
         seg[remove_mask] = replace_vals[remove_mask]
     return seg
 
+def quantile_normalize(x, alpha=0.001, q=None):
+    if alpha is not None:
+        assert q is None, "expected exactly 1 of alpha or q to be None"
+        q = [alpha, 1-alpha]
+    assert q is not None, "expected exactly 1 of alpha or q to be None"
+    assert len(q)==2, "expected len(q)==2"
+    minval,maxval = np.quantile(x,q)
+    x = (x-minval)/(maxval-minval)
+    x = np.clip(x,0,1)
+    return x
+
 def main():
     import argparse
     

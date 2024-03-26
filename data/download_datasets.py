@@ -19,7 +19,23 @@ import jlc.nc as nc
 from pathlib import Path
 import scipy.ndimage as nd
 import cv2
-from datasets import SegmentationDataset
+from datasets import SegmentationDataset, save_sam_features
+import pandas as pd
+
+def default_do_step():
+    return {"unpack": 0,
+                "delete_f_before": 0,
+                "make_f0": 1,
+                "save_images": 1,
+                "reset_info": 1,
+                "save_info": 1,
+                "save_global_info": 1,
+                "save_class_dict": 1,
+                "delete_unused_files": 0,
+                "prettify": 0,
+                "add_prettify_to_info": 1,
+                "sam_features": 0,
+                "add_sam_to_info": 0}
 
 class DatasetDownloader:
     def __init__(self, mainfolder = None):
@@ -55,17 +71,10 @@ class DatasetDownloader:
         for file in unpack_list:
             print(f"Unpacking {file}...")
             unpack_files(file)
-    
+
     def process_files(self, 
                       name, 
-                      do_step = {"unpack": 0,
-                                 "make_f0": 1,
-                                 "save_images": 1,
-                                 "reset_info": 1,
-                                 "save_info": 1,
-                                 "save_global_info": 1,
-                                 "save_class_dict": 1,
-                                 "delete_unused_files": 0}):
+                      do_step = default_do_step()):
         if isinstance(name,list):
             for n in name:
                 self.process_files(n, do_step=do_step)
@@ -87,22 +96,35 @@ class DatasetDownloader:
         if name=="pascal":
             with open(os.path.join(folder_path,"labels.txt")) as f:
                 lines = f.readlines()
+            with open(os.path.join(folder_path,"train.txt")) as f:
+                train = f.readlines()
+            train = [(t[:-1] if t.endswith("\n") else t) for t in train]
+            with open(os.path.join(folder_path,"val.txt")) as f:
+                val = f.readlines()
+            val = [(v[:-1] if v.endswith("\n") else v) for v in val]
             class_dict = {l[:l.find(":")]: l[l.find(":")+2:(-1 if l[-1]=="\n" else None)] for l in lines}
             class_dict[0] = "background"
             unpack_list = [os.path.join(folder_path, file_name) for file_name in ["trainval.tar.gz","trainval.tar","VOCtrainval_11-May-2012.tar"]]
             file_name_list = [file_name[:-4] for file_name in os.listdir(os.path.join(folder_path,"trainval"))]
             def load_image_label_info(file_name):
+                if file_name in train:
+                    split_idx = 0
+                elif file_name in val:
+                    split_idx = 1
+                else:
+                    raise ValueError("Image not found."+file_name)
                 label_path = os.path.join(folder_path,"trainval",f"{file_name}.mat")
-                image_path = os.path.join(folder_path,"VOCdevkit/VOC2012/JPEGImages",f"{file_name}.jpg")
+                image_path = os.path.join(folder_path,"VOCdevkit/VOC2010/JPEGImages",f"{file_name}.jpg")
                 label = loadmat(label_path)["LabelMap"]
                 image = Image.open(image_path)
                 uq = np.unique(label).tolist()
-                assert len(uq)<=256, "uint8 format fails if more than 256 classes are present."
                 label2 = np.zeros_like(label)
-                info = {"classes": [0]}
+                info = {"classes": [0], "split_idx": split_idx}
                 for i,u in enumerate(uq):
                     label2[label==u] = i
                     info["classes"].append(u)
+                    if i==255:
+                        break
                 label = Image.fromarray(label2)
                 return image,label,info
         elif name=="coco":
@@ -430,23 +452,66 @@ class DatasetDownloader:
                 image = Image.fromarray(image)
                 info = {"classes": [0]+[1 for _ in range(n_cc)],"split_idx": split_idx}
                 return image,label,info
+        elif name=="uvo":
+            labels_folder = Path(self.mainfolder) / "dram" / "DRAM_processed" / "labels"
+            file_name_list = list(labels_folder.glob("*/*/*.png"))
+            file_name_list = [str(f)[:-4] for f in file_name_list]
+            class_dict = {str(i+1): "foreground"+str(i+1) for i in range(5)}
+            class_dict["0"] = "background"
+            def load_image_label_info(file_name):
+                image_path = file_name.replace("labels","test")+".jpg"
+                label_path = file_name+".png"
+                image = Image.open(image_path)
+                label = np.array(Image.open(label_path))
+                info = {"classes": list(range(len(np.unique(label)))),"split_idx": 0}
+                label2 = np.zeros_like(label)
+                k = 0
+                for u in np.unique(label):
+                    if u>0:
+                        k += 1
+                        label2[label==u] = k
+                label = Image.fromarray(label2)
+                return image,label,info
+        elif name=="totseg":
+            file_name_list = [str(f) for f in (Path(folder_path)/"Totalsegmentator_dataset_v201").glob("*/samples/dim*_gt.png")]
+            class_dict_path = "/home/jloch/Desktop/diff/diffusion2/data/totseg/idx_to_class2.json"
+            class_dict = load_json_to_dict_list(class_dict_path)[0]
+            image_suffix = ".png"
+            meta = "/home/jloch/Desktop/diff/diffusion2/data/totseg/Totalsegmentator_dataset_v201/meta.csv"
+            meta_loaded = pd.read_csv(meta)
+            def load_image_label_info(file_name):
+                image_path = file_name.replace("_gt.","_im.")
+                label_path = file_name
+                image = Image.open(image_path)
+                label = np.array(Image.open(label_path))
+                image_id = file_name.split("/")[-3]
+                iloc_i = np.flatnonzero(meta_loaded["image_id"]==image_id)
+                split_str = meta_loaded.iloc[iloc_i]["split"].item()
+                split_idx = ["train","val","test"].index(split_str)
+                uq_classes, label = np.unique(label,return_inverse=True)
+                info = {"classes": uq_classes.tolist(),"split_idx": split_idx}
+                w,h = image.size
+                label = Image.fromarray(label.reshape((h,w)).astype(np.uint8))
+                return image,label,info
         else:
             raise ValueError(f"Dataset {name} not supported.")
+        if do_step["delete_f_before"]:
+            f_files = [f for f in os.listdir(folder_path) if re.match(r'f\d', f)]
+            for f in f_files:
+                print(f"Deleting {os.path.join(folder_path, f)}...")
+                shutil.rmtree(os.path.join(folder_path, f))
         #unpack files:
         if do_step["make_f0"]:
             os.makedirs(os.path.join(folder_path,f"f{folder_i}"),exist_ok=True)
         if do_step["save_class_dict"]:
-            save_dict_list_to_json(class_dict, os.path.join(folder_path,"idx_to_class.json"),append=False)
-
+            save_dict_list_to_json([class_dict], os.path.join(folder_path,"idx_to_class.json"),append=False)
         jsonl_save_path = os.path.join(folder_path,"info.jsonl")
         if do_step["reset_info"]:
             save_dict_list_to_json([], jsonl_save_path, append=False)
-            
-        if not any([do_step[k] for k in ["save_images","save_info","save_global_info","delete_unused_files"]]): return
-
         #loop over label-image pairs
         samples_per_split = [0,0,0]
         for file_name in tqdm.tqdm(file_name_list):
+            if not any([do_step[k] for k in ["save_images","save_info"]]): break
             has_run_long_enough = num_attempts>np.ceil(2/(self.allowed_failure_rate+0.01)) or self.allowed_failure_rate<0.01
             if (self.allowed_failure_rate*num_attempts >= file_i) and has_run_long_enough:
                 show_error_flag = True
@@ -493,11 +558,11 @@ class DatasetDownloader:
         if do_step["save_global_info"]:
             global_info = {"dataset_name": name,
                             "urls": [],
-                            "num_samples": len(file_name_list),
+                            "num_samples": file_i,
                             "num_classes": len(class_dict),
                             "file_format": image_suffix,
                             "samples_per_split": samples_per_split}
-            save_dict_list_to_json(global_info, "./datasets_info.json", append=True)
+            save_dict_list_to_json([global_info], "./data/datasets_info.json", append=True)
         #delete unused files
         if do_step["delete_unused_files"]:
             for file_name in os.listdir(folder_path):
@@ -511,8 +576,31 @@ class DatasetDownloader:
                         shutil.rmtree(file_path)
                     else:
                         os.rm(file_path)
-        
+        if do_step["prettify"]:
+            prettify_data(name)
+        if do_step["add_prettify_to_info"]:
+            add_existence_of_prettify_to_info_jsonl(name)
+        if do_step["sam_features"]:
+            print("Saving SAM features...")
+            save_sam_features(name)
+        if do_step["add_sam_to_info"]:
+            add_existence_of_sam_features_to_info_jsonl(name)
         print(f"Finished processing dataset: {name}. Num failures: {num_attempts-file_i}/{num_attempts}.")
+
+
+def delete_all_sam_features(sam_index=0,dry=False):
+    #delete all sam features to save memory
+    list_of_sam_features = list(Path("./data").glob(f"*/f*/*sam{sam_index}.pt"))
+    if dry:
+        n = len(list_of_sam_features)
+        idx = np.random.randint(n,size=5)
+        some_random_files = [list_of_sam_features[i] for i in idx]
+        print(f"Found {n} files for deletion. Some random files:")
+        for f in some_random_files:
+            print(f)
+    else:
+        for f in list_of_sam_features:
+            os.remove(f)
 
 def process_bg(label,
                 always_override=False,
@@ -648,8 +736,17 @@ def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidele
         dataset_counter += 1
     return dataset_counter/len(dataset)
 
-def add_existence_of_prettify_to_info_jsonl():
-    list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+def add_existence_of_prettify_to_info_jsonl(dataset_names=None):
+    if dataset_names is None:
+        list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+    elif isinstance(dataset_names,str):
+        list_of_info_jsons = [Path(f"./data/{dataset_names}/info.jsonl")]
+        assert list_of_info_jsons[0].exists(), f"File {list_of_info_jsons[0]} does not exist."
+    else:
+        list_of_info_jsons = []
+        for dataset_name in dataset_names:
+            list_of_info_jsons.append(Path(f"./data/{dataset_name}/info.jsonl"))
+            assert list_of_info_jsons[-1].exists(), f"File {list_of_info_jsons[-1]} does not exist."
     for infopath in tqdm.tqdm(list_of_info_jsons):
         infopath = str(infopath)
         info_list = load_json_to_dict_list(infopath)
@@ -663,8 +760,17 @@ def add_existence_of_prettify_to_info_jsonl():
                 info_list[j]["pretty"] = False
         save_dict_list_to_json(info_list,infopath,append=False)
 
-def add_existence_of_sam_features_to_info_jsonl():
-    list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+def add_existence_of_sam_features_to_info_jsonl(dataset_names=None):
+    if dataset_names is None:
+        list_of_info_jsons = Path("./data/").glob("*/info.jsonl")
+    elif isinstance(dataset_names,str):
+        list_of_info_jsons = [Path(f"./data/{dataset_names}/info.jsonl")]
+        assert list_of_info_jsons[0].exists(), f"File {list_of_info_jsons[0]} does not exist."
+    else:
+        list_of_info_jsons = []
+        for dataset_name in dataset_names:
+            list_of_info_jsons.append(Path(f"./data/{dataset_name}/info.jsonl"))
+            assert list_of_info_jsons[-1].exists(), f"File {list_of_info_jsons[-1]} does not exist."
     for infopath in tqdm.tqdm(list_of_info_jsons):
         infopath = str(infopath)
         info_list = load_json_to_dict_list(infopath)
@@ -678,7 +784,6 @@ def add_existence_of_sam_features_to_info_jsonl():
             info_list[j]["sam"] = sam_features
         save_dict_list_to_json(info_list,infopath,append=False)
 
-
 def main():
     import argparse
     
@@ -688,7 +793,21 @@ def main():
     if args.process==0:
         print("PROCESS 0: pascal")
         downloader = DatasetDownloader()
-        downloader.process_files("pascal")
+        do_step =               {"unpack": 0,
+                                 "delete_f_before": 0,
+                                 "make_f0": 0,
+                                 "save_images": 0,
+                                 "reset_info": 0,
+                                 "save_info": 0,
+                                 "save_global_info": 0,
+                                 "save_class_dict": 0,
+                                 "delete_unused_files": 0,
+                                 "prettify": 0,
+                                 "add_prettify_to_info": 1,
+                                 "sam_features": 0,
+                                 "add_sam_to_info":1}
+        
+        downloader.process_files("pascal",do_step=do_step)
     elif args.process==1:
         print("PROCESS 1: sa1b")
         downloader = DatasetDownloader()
@@ -722,7 +841,23 @@ def main():
     elif args.process==8:
         print("PROCESS 8: add_existence_of_sam_features_to_info_jsonl")
         add_existence_of_sam_features_to_info_jsonl()
+    elif args.process==9:
+        print("PROCESS 9: delete_all_sam_features dry")
+        delete_all_sam_features(dry=True)
+    elif args.process==10:
+        print("PROCESS 10: delete_all_sam_features")
+        delete_all_sam_features()
+    elif args.process==11:
+        print("PROCESS 3: totseg")
+        downloader = DatasetDownloader()
+        downloader.allowed_failure_rate = 0
+        do_step = default_do_step()
+        """do_step = {k: 0 for k in do_step.keys()}
+        do_step["save_class_dict"] = 1
+        do_step["save_global_info"] = 1"""
+        downloader.process_files("totseg",do_step=do_step)
     else:
         raise ValueError(f"Unknown process: {args.process}")
+    
 if __name__=="__main__":
     main()
