@@ -255,7 +255,7 @@ def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],
         h,w = target.shape[-2:]
         h1,w1 = pred.shape[-2:]
         if h1!=h or w1!=w:
-            ratio_diff = abs(h1/w1-h/w)
+            ratio_diff = min(abs(h1/w1-h/w),abs(w1/h1-w/h))
             assert ratio_diff<acceptable_ratio_diff, f"pred and target aspect ratios deviate too much. found pred.shape: {pred.shape}, target.shape: {target.shape}"
             pred = torch.nn.functional.interpolate(pred,(h,w),mode="nearest")
 

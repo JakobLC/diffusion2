@@ -426,6 +426,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
         
             class_dict = load_json_to_dict_list(os.path.join(self.data_root,dataset_name,"idx_to_class.json"))[0]
             self.idx_to_class[dataset_name] = class_dict
+            assert len(class_dict)==self.datasets_info[dataset_name]["num_classes"], ("num_classes in idx_to_class.json does not match num_classes in info.json. found "+
+                                                                                      str(len(class_dict))+" and "+str(self.datasets_info[dataset_name]["num_classes"])+
+                                                                                      " for dataset "+dataset_name)
             self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],s=self.image_size,train=split==0,geo_aug_p=self.geo_aug_p)
 
             self.length += len(items)
