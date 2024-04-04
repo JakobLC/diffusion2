@@ -8,7 +8,7 @@ import tqdm
 from unet import unet_kwarg_to_tensor
 from utils import (get_segment_metrics,get_time,save_dict_list_to_json,
                    check_keys_are_same,mask_from_imshape,postprocess_batch,
-                   sam_resize_index)
+                   sam_resize_index,apply_mask)
 from plot_utils import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from argparse_utils import TieredParser, save_args, overwrite_existing_args
 from pathlib import Path
@@ -252,11 +252,17 @@ class DiffusionSampler(object):
         if self.opts.postprocess!="none":
             if self.opts.postprocess=="area0.005":
                 votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.005},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
+            else:
+                raise ValueError(f"postprocess={self.opts.postprocess} is not a valid option.")
+        
         imsize = x_true.shape[-1]
         metrics = defaultdict(list)
         mask = torch.from_numpy(mask_from_imshape(info["imshape"],imsize,num_dims=3)).to(self.device)
         for i in range(len(votes)):
-            metrics_i = get_segment_metrics(votes_int[i],x_true,mask=mask)
+            if self.opts.pure_eval_mode:
+                metrics_i = get_segment_metrics(apply_mask(votes_int[i],info["imshape"]),info)
+            else:
+                metrics_i = get_segment_metrics(votes_int[i],x_true,mask=mask)
             for k in metrics_i.keys():
                 metrics[k].append(metrics_i[k])
         save_sample = self.opts.return_samples or bqi["save_grid"]

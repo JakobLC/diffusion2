@@ -12,7 +12,7 @@ from argparse_utils import TieredParser
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from plot_utils import mask_overlay_smooth,index_dict_with_bool,render_text_gridlike
 from collections import defaultdict
-from utils import get_segment_metrics_np, shaprint, load_json_to_dict_list,sam_resize_index, postprocess_list_of_segs
+from utils import get_segment_metrics, shaprint, load_json_to_dict_list,sam_resize_index, postprocess_list_of_segs
 import tqdm
 from pathlib import Path
 from datasets import AnalogBits,load_raw_image_label,load_raw_image_label_from_didx,longest_side_resize_func
@@ -282,7 +282,7 @@ def evaluate_sam(datasets="ade20k",
                 heavy_data.append({k: to_cpu_if_torch(hd[k]) for k in return_heavy_keys})
         #extend with None
         heavy_data.extend([None for _ in range(bs-n_heavy)])
-        metrics = [get_segment_metrics_np(gt,seg) for gt,seg in zip(gts,segmentations)]
+        metrics = [get_segment_metrics(segmentations[i][None],info[i]) for i in range(bs)]
         light_data_batch = []
         for i in range(bs):
             light_data_batch.append({"info": {k: v for k,v in info[i].items() if k in ["split_idx","i","dataset_name","num_classes"]},
@@ -1247,7 +1247,7 @@ class SavedSamples:
         else:
             segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
-            metrics = [get_segment_metrics_np(seg,gt) for seg,gt in zip(segments_pp,gts)]
+            metrics = [get_segment_metrics(seg,gt) for seg,gt in zip(segments_pp,gts)]
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]

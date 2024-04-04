@@ -17,7 +17,7 @@ import tqdm
 
 turbo_jpeg = TurboJPEG()
 
-def points_image_from_label(label,num_points=None):
+def points_image_from_label(label,num_points=None,padding_idx=255):
     assert torch.is_tensor(label)
     assert len(label.shape)==3
     assert label.shape[0]==1
@@ -27,6 +27,8 @@ def points_image_from_label(label,num_points=None):
                                        3,3,3,3,3,3,6,6,6,
                                        4,4,4,4,4,5,5,5,5])
     counts = torch.bincount(label.cpu().flatten())
+    if len(counts)>padding_idx:
+        counts[padding_idx] = 0
     nonzero_counts_idx = torch.where(counts>0)[0].cpu().numpy()
     label_indices = np.random.choice(nonzero_counts_idx,size=num_points,replace=True)
     D1 = torch.zeros(num_points,dtype=torch.int64)
@@ -303,7 +305,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       num_crops=3,
                       semantic_prob=0.5,
                       label_map_method="all",
-                      shuffle_nonzero_labels=True,
+                      shuffle_labels=True,
                       shuffle_zero=True,
                       shuffle_datasets=True,
                       data_root=None,
@@ -335,7 +337,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.crop_method = crop_method
         assert label_map_method in ["all","largest","random"]
         self.label_map_method = label_map_method
-        self.shuffle_nonzero_labels = shuffle_nonzero_labels
+        self.shuffle_labels = shuffle_labels
         self.shuffle_zero = shuffle_zero
         self.num_crops = num_crops
         self.downscale_thresholding_factor = 3
@@ -615,14 +617,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         idx_to_class_name = {k: self.idx_to_class[info["dataset_name"]][str(c)] for k,c in enumerate(info["classes"])}
         is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
         info["is_semantic"] = is_semantic
-        if is_semantic:
-            for i in np.unique(info["classes"]):
-                if sum([x==i for x in info["classes"]])>1:
-                    idx_of_uq_i = np.where(info["classes"]==i)[0]
-                    for j in idx_of_uq_i[1:]:
-                        del idx_to_class_name[j]
-                        label[label==j] = idx_of_uq_i[0]
-        counts = np.bincount(label.flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
+        counts = np.bincount(label[label!=self.label_padding_val].flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
         nnz = len(counts)-1
         mnc = self.max_num_classes
 
@@ -635,33 +630,39 @@ class SegmentationDataset(torch.utils.data.Dataset):
         elif self.label_map_method=="all":
             old_to_new = np.array([0]+list(np.argsort(np.argsort(-counts[1:]))+1),dtype=int)
             old_to_new[old_to_new>=mnc] = ((old_to_new[old_to_new>=mnc])%(mnc-1))+1
-        #map small classes to zero
-        if self.min_label_size>0:
-            for i in range(1,nnz+1):
-                if counts[i]<self.min_label_size*label.size:
-                    old_to_new[i] = 0
-        #shuffle nonzero
-        if self.shuffle_nonzero_labels:
+        elif self.label_map_method=="raw":
+            old_to_new = list(range(nnz+1))
+            
+        if self.shuffle_labels:
             if self.shuffle_zero:
                 perm = np.random.permutation(mnc)
             else:
                 perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
             old_to_new = perm[old_to_new]
-        list_of_keys = list(idx_to_class_name.keys())
-        print("old_to_new: ",old_to_new)
-        print("list_of_keys: ",list_of_keys)
-        print("idx_to_class_name: ",idx_to_class_name)
-        for k in list_of_keys:
-            k_new = old_to_new[k]
-            v_new = idx_to_class_name[k]
-            del idx_to_class_name[k]
-            idx_to_class_name[k_new] = v_new
+
+        if is_semantic:
+            #modify old_to_new so the same labels are always mapped to the same class (First instance chooses the class)
+            label_names = np.unique(list(idx_to_class_name.values()))
+            for name in label_names:
+                label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
+                if len(label_name_idx)>1:
+                    for i in label_name_idx[1:]:
+                        old_to_new[i] = old_to_new[label_name_idx[0]]
+        
+        if self.min_label_size>0:
+            class_too_small = counts<self.min_label_size*label.size
+            largest_class = np.argmax(counts)
+            old_to_new[class_too_small] = old_to_new[largest_class]
+            for k in np.flatnonzero(class_too_small):
+                idx_to_class_name[k] = idx_to_class_name[largest_class]
+
+        idx_to_class_name = {old_to_new[i]: idx_to_class_name[i] for i in range(nnz+1)}
+        idx_to_class_name[self.label_padding_val] = "padding"
+
         info["idx_to_class_name"] = idx_to_class_name
-        if self.label_padding_val==255:
-            pad_mask = label==255
-        label = old_to_new[label]
-        if self.label_padding_val==255:
-            label[pad_mask] = 255
+
+        label[self.label_padding_val!=label] = old_to_new[label[self.label_padding_val!=label]]
+        
         return label,info
 
     def preprocess(self,image,label,info):
@@ -964,7 +965,7 @@ def main():
                                                                      image_size=128,
                                                                      label_map_method="all",
                                                                      semantic_prob=0.5,
-                                                                     shuffle_nonzero_labels=True,
+                                                                     shuffle_labels=True,
                                                                      ),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
         x,info = next(iter(dataloader))
         im = torch.stack([info_i["image"] for info_i in info],dim=0)
@@ -1034,7 +1035,7 @@ def main():
                                     image_size=128,
                                     label_map_method="all",
                                     semantic_prob=1.0,
-                                    shuffle_nonzero_labels=False,
+                                    shuffle_labels=False,
                                     shuffle_datasets=False,
                                     )
         x,info = dataset[16]

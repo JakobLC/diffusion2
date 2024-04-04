@@ -249,7 +249,7 @@ class TieredParser():
             tier_name = tiers_dict_inv[tier_num]
             for k,v in tiers[tier_name].items():
                 if k not in self.type_dict.keys():
-                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closets known matches: {self.get_closest_matches(k,n=3)}")
+                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closest known matches: {self.get_closest_matches(k,n=3)}")
             args.update(tiers[tier_name])
             origin.update({k: tier_name for k in tiers[tier_name].keys()})
         tfo = [tiers_dict_inv[k] for k in tiers_for_origin]

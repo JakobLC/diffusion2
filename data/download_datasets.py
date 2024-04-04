@@ -21,6 +21,8 @@ import scipy.ndimage as nd
 import cv2
 from datasets import SegmentationDataset, save_sam_features
 import pandas as pd
+import zipfile
+import skimage
 
 def default_do_step():
     return {"unpack": 0,
@@ -93,6 +95,7 @@ class DatasetDownloader:
         
         if do_step["unpack"]:
             self.unpack_all_in_folder(name)
+
         if name=="pascal":
             with open(os.path.join(folder_path,"labels.txt")) as f:
                 lines = f.readlines()
@@ -486,12 +489,64 @@ class DatasetDownloader:
                 label = np.array(Image.open(label_path))
                 image_id = file_name.split("/")[-3]
                 iloc_i = np.flatnonzero(meta_loaded["image_id"]==image_id)
-                split_str = meta_loaded.iloc[iloc_i]["split"].item()
+                split_str = meta_loaded.iloc[iloc_i]["split_idx"].item()
                 split_idx = ["train","val","test"].index(split_str)
                 uq_classes, label = np.unique(label,return_inverse=True)
                 info = {"classes": uq_classes.tolist(),"split_idx": split_idx}
                 w,h = image.size
                 label = Image.fromarray(label.reshape((h,w)).astype(np.uint8))
+                return image,label,info
+        elif name=="visor":
+            zipname = "2v6cgv1x04ol22qp9rm9x2j6a7"
+            classes_filename = str(Path(folder_path)/zipname/"EPIC_100_noun_classes_v2.csv")
+            classes = np.loadtxt(classes_filename, dtype=str, delimiter=',', skiprows=1, usecols=(1)).tolist()
+            classes = ["background"]+[c[1:-1].replace(":", " ") for c in classes]
+            idx_to_class = dict(enumerate(classes))
+            class_to_idx = {v:k for k,v in idx_to_class.items()}
+            class_dict = idx_to_class
+            assert len(idx_to_class) == len(class_to_idx)
+            image_folder = Path(folder_path)/zipname/"GroundTruth-SparseAnnotations"/"rgb_frames/"
+            label_folder =  Path(folder_path)/zipname/"GroundTruth-SparseAnnotations"/"annotations/"
+            file_name_list = []
+            image_path_to_split = {}
+            for split in ["train","val"]:
+                list_of_files = [str(f) for f in Path(label_folder).glob(split+"/*.json")]
+                for file in tqdm.tqdm(list_of_files):
+                    gt = json.load(open(file))
+                    for v in gt["video_annotations"]:
+                        image_path = v["image"]["name"]
+                        file_name_list.append(image_path)
+                        image_path_to_split[image_path] = ["train","val"].index(split)
+            def load_image_label_info(image_path):
+                split = image_path_to_split[image_path]
+                split_name = ["train","val"][split]
+                idx1 = image_path.split("_")[0]
+                idx12 = "_".join(image_path.split("_")[:2])
+                label_filename = label_folder/split_name/f"{idx12}.json"
+                zip_filename = Path(image_folder)/split_name/f"{idx1}"/f"{idx12}.zip"
+                zip_sub_filename = image_path
+                with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+                    with zip_ref.open(zip_sub_filename) as f:
+                        image = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_COLOR)[:,:,::-1]
+                h,w = image.shape[:2]
+                label = np.zeros((h,w),dtype=np.uint8)
+                annotations = json.load(open(label_filename))["video_annotations"]
+                idx3 = [idx3 for idx3,v in enumerate(annotations) if v["image"]["name"]==image_path][0]
+                info = {"split_idx": split,
+                        "classes": [0]}
+                k = 0
+                for annotation_dict in annotations[idx3]["annotations"]:
+                    k += 1
+                    if k>255:
+                        break
+                    idx = annotation_dict["class_id"]+1
+                    info["classes"].append(idx)
+                    for poly in annotation_dict["segments"]:
+                        poly = np.array(poly)[:,::-1]
+                        mask = skimage.draw.polygon2mask((h,w), poly)
+                        label[mask] = k
+                image = Image.fromarray(image)
+                label = Image.fromarray(label)
                 return image,label,info
         else:
             raise ValueError(f"Dataset {name} not supported.")
@@ -789,25 +844,12 @@ def main():
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--process", type=int, default=0)
+    parser.add_argument("--dataset", type=str, default="pascal")
     args = parser.parse_args()
     if args.process==0:
-        print("PROCESS 0: pascal")
-        downloader = DatasetDownloader()
-        do_step =               {"unpack": 0,
-                                 "delete_f_before": 0,
-                                 "make_f0": 0,
-                                 "save_images": 0,
-                                 "reset_info": 0,
-                                 "save_info": 0,
-                                 "save_global_info": 0,
-                                 "save_class_dict": 0,
-                                 "delete_unused_files": 0,
-                                 "prettify": 0,
-                                 "add_prettify_to_info": 1,
-                                 "sam_features": 0,
-                                 "add_sam_to_info":1}
-        
-        downloader.process_files("pascal",do_step=do_step)
+        print("PROCESS 0: variable dataset")
+        downloader = DatasetDownloader()        
+        downloader.process_files(args.dataset)
     elif args.process==1:
         print("PROCESS 1: sa1b")
         downloader = DatasetDownloader()

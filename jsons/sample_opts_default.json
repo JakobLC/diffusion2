@@ -1,6 +1,6 @@
 {
     "gen_setup"                       : ["vali",          "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
-    "gen_version"                     : ["1.0.0",         "version of the generation to use. TYPE: str. DEFAULT: '1.0.0'"],
+    "gen_version"                     : ["1.1.0",         "version of the generation to use. TYPE: str. DEFAULT: '1.1.0'"],
     "dynamic": {
         "gen_id"                      : ["[gen_setup]_*", "Unique id of the generation. Replaces [key] with corrspnd str. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[gen_setup]_*'"],
         "model_id"                    : ["",              "Id of the model of the ckpt used sampling. TYPE: str. DEFAULT: ''"],
@@ -40,7 +40,8 @@
         "save_sample_opts"            : [true,            "Whether to save the sample options in the default_save_folder. TYPE: bool. DEFAULT: true"],
         "return_samples"              : [false,           "Whether to return samples. TYPE: bool. DEFAULT: false"],
         "remove_old"                  : [true,            "Should old plots matching the format and in the same folder of newly produced ones be removed? TYPE: bool. DEFAULT: true"],
-        "plotting_functions"          : ["grid,concat",   "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter','concat']. TYPE: str. DEFAULT: 'grid,concat'"]
+        "plotting_functions"          : ["grid,concat",   "Which plotting functions to use. Comma seperated string of zero or more of ['grid','inter','concat']. TYPE: str. DEFAULT: 'grid,concat'"],
+        "pure_eval_mode"              : [true,            "Whether to use pure evaluation mode (comparing with unprocessed gt). TYPE: bool. DEFAULT: true"]
     },
     "how much to sample": {
         "num_votes"                   : [3,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
@@ -52,7 +53,8 @@
         "inter_votes_per_sample"      : [1,               "How many votes per image (e.g. 1=only first vote) should intermediate steps be saved for. TYPE: int. DEFAULT: 1"]
     },
     "version_backwards_compatability": {
-        "num_votes": {"<1.0.0": 5}
+        "num_votes": {"<1.0.0": 5},
+        "pure_eval_mode": {"<1.1.0": false}
     },
     "deprecated": {
         

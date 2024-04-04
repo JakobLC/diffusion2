@@ -17,22 +17,21 @@ from source.training import DiffusionModelTrainer
 # [2] make so if you do --model_name m1;m1 --some_other_arg arg1;arg2, it will also loop when followed up with --mode cont
 # [3] fix SAM augmentations
 # [3] add model_name[ver1;ver2] argparsing
-# [3] try binary sampled and thresholded stepper
 # [3] implement forced xstart
 # [3] implement fixed batches for long training runs
 # [3] make so weights are created in order that allow loose state dict loading
 # [4] make MSE plot in forward pass show multiplied with loss weight but "MSE=" not multiplied
-# [4] add split_idx to datasets lacking them
 # [4] implement timestep delta from bit diffusion
 # [4] implement better corrupt from bit diffusion
 # [4] make num points depend on num labels, size of label
-# [4] add data: VISOR, Totalsegmenter data, UVO
 # [5] implement all points in arguments
 # [5] check multiple workers works
 # [5] resume training by model_id
-# [3] no bg points
-# [5] eval on non-pretty data
-# [6] replace holes in labels with nearby pixels for dataloader
+# [5] implement conditioning
+# [6] test and make model training possible on HPC
+# [6] find the best conditioning strategy
+# [4] make monu instance-compatible
+# [4] make i.e. 2x,4x imsize compared to diff sample 
 
 #training TODO
 # loop over lr

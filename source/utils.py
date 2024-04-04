@@ -16,6 +16,8 @@ import re
 from pprint import pprint
 from collections import defaultdict
 import scipy.ndimage as nd
+from PIL import Image
+
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
     keys = [sorted(list(d.keys())) for d in list_of_dicts]
@@ -182,12 +184,12 @@ class MatplotlibTempBackend():
 def bracket_glob_fix(x):
     return "[[]".join([a.replace("]","[]]") for a in x.split("[")])
 
-def get_all_metrics(output,ignore_idx=0,ab=None):
+def get_all_metrics(output,ab=None):
     assert isinstance(output,dict), "output must be an output dict"
     assert "pred_x" in output.keys(), "output must have a pred_x key"
     assert "x" in output.keys(), "output must have an x key"
     mask = output["loss_mask"] if "loss_mask" in output.keys() else None
-    metrics = {**get_segment_metrics(output["pred_x"],output["x"],mask=mask,ignore_idx=ignore_idx,ab=ab),
+    metrics = {**get_segment_metrics(output["pred_x"],output["x"],mask=mask,ab=ab),
                **get_mse_metrics(output)}
     metrics["likelihood"] = get_likelihood(output["pred_x"],output["x"],output["loss_mask"],ab)[1]
     return metrics
@@ -227,30 +229,55 @@ def get_likelihood(pred,target,mask,ab,outside_mask_fill_value=0.0,clamp=True):
         likelihood_images = likelihood_images[0]
     return likelihood_images, likelihood
 
-def get_segment_metrics_np(pred,target,**kwargs):
-    #simple wrapper for get_segment_metrics
-    assert isinstance(pred,np.ndarray), "pred must be a numpy array, got type: "+str(type(pred))
-    assert isinstance(target,np.ndarray), "target must be a numpy array, got type: "+str(type(target))
-    if len(pred.shape)==len(target.shape)==2:
-        pred = pred.copy()[None]
-        target = target.copy()[None]
-    elif len(pred.shape)==len(target.shape)==3 and pred.shape[-1]==target.shape[-1]==1:
-        pred = pred.copy()[None,:,:,0]
-        target = target.copy()[None,:,:,0]
-    if "mask" in kwargs:
-        if kwargs["mask"] is not None:
-            assert isinstance(kwargs["mask"],np.ndarray), "mask must be a numpy array"
-            kwargs["mask"] = torch.tensor(kwargs["mask"].copy())
-    return get_segment_metrics(torch.tensor(pred),torch.tensor(target),**kwargs)
+def load_raw_label(x):
+    if isinstance(x,dict):
+        assert "dataset_name" in x and "i" in x, "x must be a dictionary with the fields 'dataset_name' and 'i'"
+        dataset_name = x["dataset_name"]
+        i = x["i"]
+    elif isinstance(x,str):
+        assert len(x.split("/"))==2, "x must be a string formatted as '{dataset_name}/{i}'"
+        dataset_name = x.split("/")[0]
+        i = int(x.split("/")[1])
+    label_filename = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name,"f"+str(i//1000),f"{i}_la.png")
+    return np.array(Image.open(label_filename))
 
-def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ignore_idx=0,ab=None,reduce_to_mean=True):
-    assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
-    assert isinstance(target,torch.Tensor), "target must be a torch tensor"
+def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ab=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):
+    if isinstance(target,(dict,str)):
+        #we are in pure evaluation mode, i.e compare with the same target for any method in the native resolution
+        #load raw target and reshape pred
+        assert (len(pred.shape)==4 and pred.shape[1]==1) or len(pred.shape)==3, "pure evaluation mode expects non-batched 3D or 4D tensors"
+        assert mask is None, "mask must be None in pure evaluation mode. Manually apply your mask to the target."
+        if not torch.is_tensor(pred):
+            pred = torch.tensor(pred)
+        if len(pred.shape)==3:
+            pred = pred.unsqueeze(0)
+        target = torch.tensor(load_raw_label(target),device=pred.device).unsqueeze(0).unsqueeze(0)
+        h,w = target.shape[-2:]
+        h1,w1 = pred.shape[-2:]
+        if h1!=h or w1!=w:
+            ratio_diff = abs(h1/w1-h/w)
+            assert ratio_diff<acceptable_ratio_diff, f"pred and target aspect ratios deviate too much. found pred.shape: {pred.shape}, target.shape: {target.shape}"
+            pred = torch.nn.functional.interpolate(pred,(h,w),mode="nearest")
+
+    assert len(pred.shape)==len(target.shape)==3 or len(pred.shape)==len(target.shape)==4, "pred and target must be 3D or 4D torch tensors. found pred.shape: "+str(pred.shape)+", target.shape: "+str(target.shape)
+    assert pred.shape[-1]==target.shape[-1] and pred.shape[-2]==target.shape[-2], "pred and target must have the same spatial dimensions. found pred.shape: "+str(pred.shape)+", target.shape: "+str(target.shape)
+    if isinstance(pred,torch.Tensor):
+        assert isinstance(target,torch.Tensor), "target must be a torch tensor"
+        assert (mask is None) or isinstance(mask,torch.Tensor), "mask must be a torch tensor"
+    else:
+        assert isinstance(pred,np.ndarray), "pred must be a numpy array"
+        assert isinstance(target,np.ndarray), "target must be a numpy array"
+        assert (mask is None) or isinstance(mask,np.ndarray), "mask must be a numpy array"
+        pred = torch.tensor(pred)
+        target = torch.tensor(target)
+        if mask is not None:
+            mask = torch.tensor(mask)
     if len(pred.shape)==len(target.shape)==3:
         was_single = True
         pred = pred.unsqueeze(0)
         target = target.unsqueeze(0)
-        mask = mask.unsqueeze(0) if mask is not None else None
+        if mask is not None:
+            mask = mask.unsqueeze(0)
     else:
         was_single = False
     if not pred.shape[1]==target.shape[1]==1:
@@ -283,7 +310,6 @@ def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],
             out[metric] = np.mean(out[metric])
     return out
 
-
 def adjusted_rand_score_stable(target,pred):
     (tn, fp), (fn, tp) = pair_confusion_matrix(target.astype(np.uint64),pred.astype(np.uint64))
     tn,fp,fn,tp = np.float64(tn),np.float64(fp),np.float64(fn),np.float64(tp)
@@ -302,7 +328,7 @@ def handle_empty(metric_func):
             return metric_func(target,pred,*args,**kwargs)
     return wrapped
 
-def metric_preprocess(target,pred,mask=None,dtype=np.int64):
+def metric_preprocess(target,pred,mask=None):
     assert isinstance(target,np.ndarray) or isinstance(target,torch.Tensor), "target must be a torch tensor or numpy array"
     assert isinstance(pred,np.ndarray) or isinstance(pred,torch.Tensor), "pred must be a torch tensor or numpy array"
     if isinstance(target,torch.Tensor):
@@ -796,6 +822,21 @@ def format_save_path(args):
 def is_type_for_dot_shape(item):
     return isinstance(item,np.ndarray) or torch.is_tensor(item)
 
+def is_deepest_expand(x,expand_deepest,max_expand):
+    if expand_deepest:
+        if isinstance(x,str):
+            if len(x)<=max_expand:
+                out = True
+            else:
+                out = False
+        elif isinstance(x,(int,float)):
+            out = True
+        else:
+            out = False
+    else:
+        out = False
+    return out
+
 def is_type_for_recursion(item,m=20):
     out = False
     if isinstance(item,list) or isinstance(item,dict):
@@ -818,22 +859,25 @@ def fancy_shape(item):
         out = f"np.Size({list(item.shape)})"
     return out
 
-def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True,do_print=False,return_str=False):
+def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True,do_print=False,return_str=False, expand_deepest=False):
     """
     Prints almost any object as a nested structure of shapes and lengths.
     Example:
     strange_object = {"a":np.random.rand(3,4,5),"b": [np.random.rand(3,4,5) for _ in range(3)],"c": {"d": [torch.rand(3,4,5),[[1,2,3],[4,5,6]]]}}
-    shaprint(strange_object,first_only=False),do_pprint=True)
+    shaprint(strange_object)
     """
     kwargs = {"max_recursions":max_recursions,
               "max_expand":max_expand,
               "first_only":first_only,
               "do_pprint": False,
               "do_print": False,
-              "return_str": True}
+              "return_str": True,
+              "expand_deepest":expand_deepest}
     m = float("inf") if first_only else max_expand
     if is_type_for_dot_shape(x):
         out = fancy_shape(x)
+    elif is_deepest_expand(x,expand_deepest,max_expand):
+        out = x
     elif is_type_for_recursion(x,m):
         if kwargs["max_recursions"]<=0:
             out = reduce_baseline(x)
@@ -851,7 +895,7 @@ def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True
                 else:
                     out = {k:shaprint(v,**kwargs) for k,v in x.items()}
                 
-    else:
+    else:    
         out = reduce_baseline(x)
     if do_pprint:
         pprint(out)
@@ -1120,6 +1164,39 @@ def quantile_normalize(x, alpha=0.001, q=None):
     x = (x-minval)/(maxval-minval)
     x = np.clip(x,0,1)
     return x
+
+def apply_mask(x,mask,is_shape=True):
+    assert len(x.shape)>=2, "expected at least 2 dimensions in x"
+    assert x.shape[-1]==x.shape[-2], "expected a square image, found "+str(x.shape)
+    if is_shape:
+        assert len(mask)>=2, "expected len(mask)>=2 when is_shape=True"
+        new_h,new_w = sam_resize_index(*mask[:2],resize=x.shape[-1])
+    else:
+        #use the bbox of nonzero values in mask
+        assert len(x.shape)>=2 and len(mask.shape)>=2, "expected at least 2 dimensions in x and mask"
+        assert x.shape[-2]==mask.shape[-2] and x.shape[-1]==mask.shape[-1], "expected x.shape[-2:] to be equal to mask.shape[-2:]"
+        
+        new_h,new_w = max_nonzero_per_dim(mask)[-2:]
+    slices = [slice(None) for _ in range(len(x.shape)-2)]+[slice(0,new_h),slice(0,new_w)]
+    return x[tuple(slices)]
+
+def torch_any_multiple(x,axis):
+    out = x
+    for dim in axis:
+        out = out.any(dim=dim)
+    return out
+
+def max_nonzero_per_dim(x,add_one=True):
+    if isinstance(x,np.ndarray):
+        f = lambda x,dim: np.nonzero(np.any(x,axis=tuple([i for i in range(x.ndim) if i!=dim])))[0].tolist()
+    else:
+        f = lambda x,dim: torch.nonzero(torch_any_multiple(x,axis=[i for i in range(x.ndim) if i!=dim])).flatten().tolist()
+
+    nnz = [f(x,i) for i in range(x.ndim)]
+    print(nnz)
+    nnz = [max([0]+v)+int(add_one) for v in nnz]
+    return nnz
+    
 
 def main():
     import argparse

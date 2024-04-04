@@ -443,5 +443,17 @@
             1997,
             3188
         ]
+    },
+    {
+        "dataset_name": "visor",
+        "urls": [],
+        "num_samples": 40604,
+        "num_classes": 306,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            32857,
+            7747,
+            0
+        ]
     }
 ]

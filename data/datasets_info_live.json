@@ -244,5 +244,24 @@
             3188
         ],
         "thin_bg": "never"
+    },
+    {
+        "dataset_name": "visor",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 40604,
+        "num_classes": 306,
+        "file_format": "jpg",
+        "rel_weight": 1.0,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            38040,
+            1997,
+            3188
+        ],
+        "thin_bg": "never"
     }
 ]
