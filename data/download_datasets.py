@@ -869,7 +869,7 @@ def main():
         downloader.process_files("monu4")
     elif args.process==5:
         print("PROCESS 5: prettify_data")
-        for dataset in ["coco","hrsod","to5k","dram","coift","cityscapes","pascal","sa1b","ade20k","monu4"]:
+        for dataset in ["sa1b","coco","ade20k"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
     elif args.process==6:
