@@ -342,6 +342,8 @@ def mask_overlay_smooth(image,
                         mask,
                         num_spatial_dims=2,
                         pallete=None,
+                        pixel_mult=1,
+                        show_border=False,
                         alpha_mask=0.4,
                         dont_show_idx=[255]):
     assert isinstance(image,np.ndarray)

@@ -548,6 +548,119 @@ class DatasetDownloader:
                 image = Image.fromarray(image)
                 label = Image.fromarray(label)
                 return image,label,info
+        elif name=="duts":
+            cascade_folder = "/home/jloch/Desktop/diff/sam-hq-training/data/cascade_psp/"
+            class_dict = {"0": "background", "1": "foreground"}
+            filenames_train =  [str(f) for f in (Path(cascade_folder)/"DUTS-TR").glob("*.png")]
+            filenames_test =  [str(f) for f in (Path(cascade_folder)/"DUTS-TE").glob("*.png")]
+            filename_to_split = {f:i for i,f in zip([0]*len(filenames_train)+[1]*len(filenames_test),filenames_train+filenames_test)}
+            file_name_list = filenames_train+filenames_test
+            def load_image_label_info(filename):
+                label = np.array(Image.open(filename))
+                label = (label>=128)
+                if len(label.shape)==3:
+                    label = label.mean(2)
+                assert 0 in np.unique(label)
+                assert 1 in np.unique(label)
+                label = Image.fromarray(label.astype(np.uint8))
+                image = Image.open(filename.replace(".png",".jpg"))
+                info = {"split_idx": filename_to_split[filename],
+                        "classes": [0,1]}
+                return image,label,info
+        elif name=="ecssd":
+            cascade_folder = "/home/jloch/Desktop/diff/sam-hq-training/data/cascade_psp/"
+            file_name_list =  [str(f) for f in (Path(cascade_folder)/"ecssd").glob("*.png")]
+            class_dict = {"0": "background", "1": "foreground"}
+            def load_image_label_info(filename):
+                label = np.array(Image.open(filename))
+                label = (label>=128)
+                if len(label.shape)==3:
+                    label = label.mean(2)
+                assert 0 in np.unique(label)
+                assert 1 in np.unique(label)
+                label = Image.fromarray(label.astype(np.uint8))
+                image = Image.open(filename.replace(".png",".jpg"))
+                info = {"split_idx": 0,
+                        "classes": [0,1]}
+                return image,label,info
+        elif name=="fss":
+            cascade_folder = "/home/jloch/Desktop/diff/sam-hq-training/data/cascade_psp/"
+            file_name_list =  [str(f) for f in (Path(cascade_folder)/"fss_all").glob("*.png")]
+            foreground_classes = []
+            for f in file_name_list:
+                f = " ".join(Path(f).name.split("_")[:-1])
+                if f not in foreground_classes:
+                    foreground_classes.append(f)
+
+            class_dict = {"0": "background"}
+            class_dict.update({str(i+1): c for i,c in enumerate(foreground_classes)})
+            class_dict_inv = {v:k for k,v in class_dict.items()}
+
+            def load_image_label_info(filename):
+                label = np.array(Image.open(filename))
+                label = (label>=128).mean(2).astype(np.uint8)
+                assert 0 in np.unique(label)
+                assert 1 in np.unique(label)
+                label = Image.fromarray(label)
+                image = Image.open(filename.replace(".png",".jpg"))
+                class_name = " ".join(Path(filename).name.split("_")[:-1])
+                info = {"split_idx": 0,
+                        "classes": [0,int(class_dict_inv[class_name])]}
+                return image,label,info
+        elif name=="msra":
+            cascade_folder = "/home/jloch/Desktop/diff/sam-hq-training/data/cascade_psp/"
+            file_name_list =  [str(f) for f in (Path(cascade_folder)/"MSRA_10K").glob("*.png")]
+            class_dict = {"0": "background", "1": "foreground"}
+            def load_image_label_info(filename):
+                label = np.array(Image.open(filename))
+                label = (label>=128)
+                if len(label.shape)==3:
+                    label = label.mean(2)
+                assert 0 in np.unique(label)
+                assert 1 in np.unique(label)
+                label = Image.fromarray(label.astype(np.uint8))
+                image = Image.open(filename.replace(".png",".jpg"))
+                info = {"split_idx": 0,
+                        "classes": [0,1]}
+                return image,label,info
+        elif name=="dis":
+            dis_folder = '/home/jloch/Desktop/diff/sam-hq-training/data/DIS5K/'
+            filenames_train =  [str(f) for f in (Path(dis_folder)/"DIS-TR"/"gt").glob("*.png")]
+            filenames_vali =  [str(f) for f in (Path(dis_folder)/"DIS-VD"/"gt").glob("*.png")]
+            filename_to_split = {f:i for i,f in zip([0]*len(filenames_train)+[1]*len(filenames_vali),filenames_train+filenames_vali)}
+            file_name_list = filenames_train+filenames_vali
+            def replace_upper_with_lower_and_space(s):
+                alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                for a in alphabet:
+                    s = s.replace(a," "+a.lower())
+                if s[0] == " ":
+                    s = s[1:]
+                return s
+            foreground_classes = []
+            for f in file_name_list:
+                f = Path(f).name.split("#")[3]
+                f = replace_upper_with_lower_and_space(f)
+                if f not in foreground_classes:
+                    foreground_classes.append(f)
+            class_dict = {"0": "background"}
+            class_dict.update({str(i+1): c for i,c in enumerate(foreground_classes)})
+            class_dict_inv = {v:k for k,v in class_dict.items()}
+
+            def load_image_label_info(filename):
+                label = np.array(Image.open(filename))
+                label = (label>=128)
+                if len(label.shape)==3:
+                    label = label.mean(2)
+                assert 0 in np.unique(label)
+                assert 1 in np.unique(label)
+                label = Image.fromarray(label.astype(np.uint8))
+                image_filename = filename.replace(".png",".jpg").replace("/gt/","/im/")
+                image = Image.open(image_filename)
+                class_name = Path(filename).name.split("#")[3]
+                class_name = replace_upper_with_lower_and_space(class_name)
+                info = {"split_idx": filename_to_split[filename],
+                        "classes": [0,int(class_dict_inv[class_name])]}
+                return image,label,info
         else:
             raise ValueError(f"Dataset {name} not supported.")
         if do_step["delete_f_before"]:
@@ -603,7 +716,7 @@ class DatasetDownloader:
                     save_dict_list_to_json(info, jsonl_save_path, append=True)
                 
                 file_i += 1
-                if num_saved_images==self.files_per_folder:
+                if num_saved_images==self.files_per_folder and file_i<len(file_name_list):
                     folder_i += 1
                     num_saved_images = 0
                     os.makedirs(os.path.join(folder_path,f"f{folder_i}"),exist_ok=True)
@@ -775,7 +888,7 @@ def prettify_data(dataset,suffix="p",max_save_sidelength=1024,max_process_sidele
             label = cv2.resize(label,(w1,h1),interpolation=cv2.INTER_NEAREST)
             label_after = process_bg(label,conn_comp_r_balls_all=5)
         else:
-            raise ValueError("thin_bg must be in ['always','never','sometimes']")
+            raise ValueError("thin_bg must be in ['always','never','sometimes','sa1b']")
 
         label_after = cv2.resize(label_after,(w2,h2),interpolation=cv2.INTER_NEAREST)
         if transposed:
@@ -868,7 +981,7 @@ def main():
         downloader.allowed_failure_rate = 0
         downloader.process_files("monu4")
     elif args.process==5:
-        print("PROCESS 5: prettify_data")
+        print("PROCESS 5: prettify_data only ugly datasets")
         for dataset in ["sa1b","coco","ade20k"]:
             prop = prettify_data(dataset)
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
@@ -890,7 +1003,7 @@ def main():
         print("PROCESS 10: delete_all_sam_features")
         delete_all_sam_features()
     elif args.process==11:
-        print("PROCESS 3: totseg")
+        print("PROCESS 11: totseg")
         downloader = DatasetDownloader()
         downloader.allowed_failure_rate = 0
         do_step = default_do_step()
@@ -898,6 +1011,26 @@ def main():
         do_step["save_class_dict"] = 1
         do_step["save_global_info"] = 1"""
         downloader.process_files("totseg",do_step=do_step)
+    elif args.process==12:
+        print("PROCESS 12: duts, ecssd, fss, msra, dis")
+        names = ["duts","ecssd","fss","msra","dis"]
+        downloader = DatasetDownloader()        
+        downloader.process_files(names)
+    elif args.process==13:
+        print("PROCESS 13: prettify_data all datasets, loaded from live info")
+        live_info = load_json_to_dict_list("./data/datasets_info_live.json")
+        #live_datasets = [d["dataset_name"] for d in live_info if d["live"]]
+        live_datasets = ['duts', 'ecssd', 'fss', 'msra', 'dis']
+        for dataset in live_datasets:
+            print(f"Processing {dataset}")
+            info_jsonl = load_json_to_dict_list(f"./data/{dataset}/info.jsonl")
+            if any([inf["pretty"] for inf in info_jsonl if "pretty" in inf.keys()]):
+                print(f"{dataset} already prettified. Skipping.")
+                continue            
+            prop = prettify_data(dataset)
+            print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
+        #add existence of prettify to info jsonl
+        add_existence_of_prettify_to_info_jsonl()
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

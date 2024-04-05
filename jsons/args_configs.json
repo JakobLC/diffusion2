@@ -339,7 +339,8 @@
     "alldata": {
         "versions": {
             "hpc128": {"train_batch_size": 32, "image_size": 128, "input_scale": 0.006, "max_iter": 300000},
-            "hpc64": {"train_batch_size": 32, "max_iter": 300000}
+            "hpc64": {"train_batch_size": 32, "max_iter": 300000},
+            "hpc128_nonmed": {"train_batch_size": 32, "image_size": 128, "input_scale": 0.006, "datasets": "non-medical", "max_iter": 300000}
         },
         "datasets": "all"
     }

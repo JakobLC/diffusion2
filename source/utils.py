@@ -839,7 +839,7 @@ def is_deepest_expand(x,expand_deepest,max_expand):
 
 def is_type_for_recursion(item,m=20):
     out = False
-    if isinstance(item,list) or isinstance(item,dict):
+    if isinstance(item,(list,dict,tuple)):
         if len(item)<=m:
             out = True
     return out
@@ -894,6 +894,11 @@ def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True
                     out = {k0: shaprint(x[k0],**kwargs)}
                 else:
                     out = {k:shaprint(v,**kwargs) for k,v in x.items()}
+            elif isinstance(x,tuple):
+                if first_only:
+                    out = tuple([shaprint(x[0],**kwargs)])
+                else:
+                    out = tuple([shaprint(a,**kwargs) for a in x])
                 
     else:    
         out = reduce_baseline(x)

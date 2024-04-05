@@ -455,5 +455,137 @@
             7747,
             0
         ]
+    },
+    {
+        "dataset_name": "duts",
+        "urls": [],
+        "num_samples": 15572,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10553,
+            5019,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ecssd",
+        "urls": [],
+        "num_samples": 1000,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            1000,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "fss",
+        "urls": [],
+        "num_samples": 9999,
+        "num_classes": 1001,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            9999,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "msra",
+        "urls": [],
+        "num_samples": 10000,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10000,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "fss",
+        "urls": [],
+        "num_samples": 9999,
+        "num_classes": 1001,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            9999,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "dis",
+        "urls": [],
+        "num_samples": 3470,
+        "num_classes": 221,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            3000,
+            470,
+            0
+        ]
+    },
+    {
+        "dataset_name": "duts",
+        "urls": [],
+        "num_samples": 15572,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10553,
+            5019,
+            0
+        ]
+    },
+    {
+        "dataset_name": "ecssd",
+        "urls": [],
+        "num_samples": 1000,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            1000,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "fss",
+        "urls": [],
+        "num_samples": 9999,
+        "num_classes": 1001,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            9999,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "msra",
+        "urls": [],
+        "num_samples": 10000,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            10000,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "dis",
+        "urls": [],
+        "num_samples": 3470,
+        "num_classes": 221,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            3000,
+            470,
+            0
+        ]
     }
 ]

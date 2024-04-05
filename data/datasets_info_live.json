@@ -263,5 +263,100 @@
             0
         ],
         "thin_bg": "never"
+    },
+    {
+        "dataset_name": "duts",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 15572,
+        "num_classes": 2,
+        "file_format": "jpg",
+        "rel_weight": 0.5,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            10553,
+            5019,
+            0
+        ],
+        "thin_bg": "never"
+    },
+    {
+        "dataset_name": "ecssd",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 1000,
+        "num_classes": 2,
+        "file_format": "jpg",
+        "rel_weight": 0.1,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            1000,
+            0,
+            0
+        ],
+        "thin_bg": "never"
+    },
+    {
+        "dataset_name": "fss",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 9999,
+        "num_classes": 1001,
+        "file_format": "jpg",
+        "rel_weight": 0.5,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            9999,
+            0,
+            0
+        ],
+        "thin_bg": "never"
+    },
+    {
+        "dataset_name": "msra",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 10000,
+        "num_classes": 2,
+        "file_format": "jpg",
+        "rel_weight": 0.5,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            10000,
+            0,
+            0
+        ],
+        "thin_bg": "never"
+    },
+    {
+        "dataset_name": "dis",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 3470,
+        "num_classes": 221,
+        "file_format": "jpg",
+        "rel_weight": 0.5,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            3000,
+            470,
+            0
+        ],
+        "thin_bg": "never"
     }
 ]

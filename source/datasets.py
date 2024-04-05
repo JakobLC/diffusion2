@@ -647,7 +647,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
             #modify old_to_new so the same labels are always mapped to the same class (First instance chooses the class)
             label_names = np.unique(list(idx_to_class_name.values()))
             for name in label_names:
-                label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
+                try:
+                    label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
+                except KeyError:
+                    print("info: ",info)
+                    print(idx_to_class_name)
+                    raise KeyError
                 if len(label_name_idx)>1:
                     for i in label_name_idx[1:]:
                         old_to_new[i] = old_to_new[label_name_idx[0]]
@@ -658,8 +663,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
             old_to_new[class_too_small] = old_to_new[largest_class]
             for k in np.flatnonzero(class_too_small):
                 idx_to_class_name[k] = idx_to_class_name[largest_class]
-
         idx_to_class_name = {old_to_new[i]: idx_to_class_name[i] for i in range(nnz+1)}
+        
         idx_to_class_name[self.label_padding_val] = "padding"
 
         info["idx_to_class_name"] = idx_to_class_name
