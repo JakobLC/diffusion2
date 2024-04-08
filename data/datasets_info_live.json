@@ -16,7 +16,8 @@
             5000,
             0
         ],
-        "thin_bg": "sometimes"
+        "thin_bg": "sometimes",
+        "quality": "low"
     },
     {
         "dataset_name": "pascal",
@@ -35,7 +36,8 @@
             5105,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "sa1b",
@@ -54,7 +56,8 @@
             0,
             0
         ],
-        "thin_bg": "sa1b"
+        "thin_bg": "sa1b",
+        "quality": "low"
     },
     {
         "dataset_name": "coift",
@@ -73,7 +76,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "hrsod",
@@ -92,7 +96,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "to5k",
@@ -111,26 +116,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
-    },
-    {
-        "dataset_name": "monu",
-        "type": "medical",
-        "live": true,
-        "symmetries": "all",
-        "num_samples": 51,
-        "num_classes": 2,
-        "file_format": "tif",
-        "rel_weight": 0.1,
-        "aug": "medical_color",
-        "bg_prob": 0.2,
-        "overlap": false,
-        "samples_per_split": [
-            37,
-            14,
-            0
-        ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "medium"
     },
     {
         "dataset_name": "monu4",
@@ -149,7 +136,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "medium"
     },
     {
         "dataset_name": "ade20k",
@@ -168,25 +156,8 @@
             1990,
             0
         ],
-        "thin_bg": "always"
-    },
-    {
-        "dataset_name": "ade20k_v2",
-        "type": "pictures",
-        "live": false,
-        "symmetries": "horizontal",
-        "num_samples": 27564,
-        "num_classes": 3688,
-        "file_format": "jpg",
-        "rel_weight": 1.0,
-        "aug": "pictures",
-        "bg_prob": 0.5,
-        "overlap": true,
-        "samples_per_split": [
-            25574,
-            1990,
-            0
-        ]
+        "thin_bg": "always",
+        "quality": "medium"
     },
     {
         "dataset_name": "dram",
@@ -205,7 +176,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "medium"
     },
     {
         "dataset_name": "cityscapes",
@@ -224,7 +196,8 @@
             500,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "medium"
     },
     {
         "dataset_name": "totseg",
@@ -243,7 +216,8 @@
             1997,
             3188
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "visor",
@@ -262,7 +236,8 @@
             7747,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "duts",
@@ -281,7 +256,8 @@
             5019,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "ecssd",
@@ -300,7 +276,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "fss",
@@ -319,7 +296,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "msra",
@@ -338,7 +316,8 @@
             0,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     },
     {
         "dataset_name": "dis",
@@ -357,6 +336,7 @@
             470,
             0
         ],
-        "thin_bg": "never"
+        "thin_bg": "never",
+        "quality": "high"
     }
 ]

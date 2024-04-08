@@ -357,6 +357,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
                         self.dataset_list.append(d["dataset_name"])
         elif self.datasets==["all"] or self.datasets=="all":
             self.dataset_list = available_datasets
+        elif self.datasets==["high-qual"] or self.datasets=="high-qual":
+            self.dataset_list = []
+            for d in self.datasets_info:
+                if d["live"]:
+                    if d["quality"]=="high":
+                        self.dataset_list.append(d["dataset_name"])
+        elif self.datasets==["non-low-qual"] or self.datasets=="non-low-qual":
+            self.dataset_list = []
+            for d in self.datasets_info:
+                if d["live"]:
+                    if d["quality"]!="low":
+                        self.dataset_list.append(d["dataset_name"])
         else:
             if isinstance(self.datasets,list):
                 self.dataset_list = self.datasets
@@ -885,6 +897,11 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p
     else:
         raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray'] got "+str(augment_name))
     return A.Compose(list_of_augs)
+
+def get_all_valid_datasets():
+    datasets_info = load_json_to_dict_list("./data/datasets_info_live.json")
+    valid_datasets = [d["dataset_name"] for d in datasets_info if d["live"]]
+    return valid_datasets
 
 def save_sam_features(datasets="ade20k",
                  sam_idx_or_name=0,

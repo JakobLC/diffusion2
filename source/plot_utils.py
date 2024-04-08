@@ -19,6 +19,7 @@ import scipy.ndimage as nd
 import copy
 from utils import wildcard_match
 from matplotlib.patheffects import withStroke
+from skimage.measure import find_contours
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
@@ -338,14 +339,23 @@ def get_mask(mask_vol,idx,onehot=False,onehot_dim=-1):
     else:
         return (mask_vol==idx).astype(float)
 
+def distance_transform_edt_border(mask):
+    padded = np.pad(mask,1,mode="constant",constant_values=0)
+    dist = nd.distance_transform_edt(padded)
+    return dist[1:-1,1:-1]
+
 def mask_overlay_smooth(image,
                         mask,
                         num_spatial_dims=2,
                         pallete=None,
                         pixel_mult=1,
+                        class_names=None,
                         show_border=False,
+                        border_color="darker",
                         alpha_mask=0.4,
-                        dont_show_idx=[255]):
+                        dont_show_idx=[255],
+                        fontsize=12,
+                        text_color="class"):
     assert isinstance(image,np.ndarray)
     assert isinstance(mask,np.ndarray)
     assert len(image.shape)>=num_spatial_dims, "image must have at least num_spatial_dims dimensions"
@@ -380,16 +390,62 @@ def mask_overlay_smooth(image,
     if image_colored.shape[-1]==1:
         image_colored = np.repeat(image_colored,3,axis=-1)
     color_shape = tuple([1 for _ in range(num_spatial_dims)])+(3,)
-    for i in range(n):
-        if (not i in uq) or (i in dont_show_idx):
-            continue
+    show_idx = [i for i in uq if (not i in dont_show_idx)]
+    for i in show_idx:
         reshaped_color = pallete[i].reshape(color_shape)/255
         mask_coef = alpha_mask*get_mask(mask,i,onehot=onehot)
         image_coef = 1-mask_coef
         image_colored = image_colored*image_coef+reshaped_color*mask_coef
+    if class_names is not None:
+        assert isinstance(class_names,dict), "class_names must be a dictionary that maps class indices to class names"
+        for i in uq:
+            assert i in class_names.keys(), f"class_names must have a key for each class index, found i={i} not in class_names.keys()"
+    assert isinstance(pixel_mult,int), "pixel_mult must be an integer"
+    
+    if pixel_mult>1:
+        image_colored = cv2.resize(image_colored,None,fx=pixel_mult,fy=pixel_mult,interpolation=cv2.INTER_NEAREST)
+    
     image_colored = np.clip(image_colored,0,1)
-    if was_uint8: 
+    if show_border or (class_names is not None):
         image_colored = (image_colored*255).astype(np.uint8)
+        h,w = image_colored.shape[:2]
+        with RenderMatplotlibAxis(h,w) as ax:
+            plt.imshow(image_colored)
+            
+            for i in show_idx:
+                mask_coef = get_mask(mask,i,onehot=onehot)
+                if pixel_mult>1:
+                    mask_coef = cv2.resize(mask_coef,None,fx=pixel_mult,fy=pixel_mult,interpolation=cv2.INTER_LANCZOS4)
+                else:
+                    mask_coef = mask_coef.reshape(h,w)
+                if show_border:                    
+                    curves = find_contours(mask_coef, 0.5)
+                    if border_color=="darker":
+                        border_color_i = darker_color(pallete[i]/255)
+                    else:
+                        border_color_i = border_color
+                    k = 0
+                    for curve in curves:
+                        plt.plot(curve[:, 1], curve[:, 0], linewidth=1, color=border_color_i)
+                        k += 1
+
+                if class_names is not None:
+                    t = class_names[i]
+                    if len(t)>0:
+                        dist = distance_transform_edt_border(mask_coef)
+                        y,x = np.unravel_index(np.argmax(dist),dist.shape)
+                        if text_color=="class":
+                            text_color_i = pallete[i]/255
+                        else:
+                            text_color_i = text_color
+                        text_kwargs = {"fontsize": int(fontsize*pixel_mult),
+                                       "color": text_color_i,
+                                       "backgroundcolor": "black" if np.mean(text_color_i)>0.5 else "white"}
+                        plt.text(x,y,t,**text_kwargs)
+        image_colored = ax.image
+    else:
+        if was_uint8: 
+            image_colored = (image_colored*255).astype(np.uint8)
     return image_colored
 
 def analog_bits_on_image(x_bits,im,ab):
@@ -739,9 +795,11 @@ def clean_up(filename,verbose=False):
 def get_matplotlib_color(color,num_channels=3):
     return render_axis_ticks(23,bg_color=color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})[12,12,:num_channels]
 
-def darker_color(x,power,mult):
-    if x.dtype==np.uint8:
-        return np.round((np.clip((x/255)**power*255*mult,0,255))).astype(np.uint8)
+def darker_color(x,power=2,mult=0.5):
+    assert isinstance(x,np.ndarray), "darker_color expects an np.ndarray"
+    is_int_type = x.dtype in [np.uint8,np.uint16,np.int8,np.int16,np.int32,np.int64]
+    if is_int_type:
+        return np.round(255*darker_color(x/255,power=power,mult=mult)).astype(np.uint8)
     else:
         return np.clip(x**power*mult,0,1)
 
@@ -981,7 +1039,7 @@ def index_w_bool(item,bool_iterable,keys,raise_error_on_wrong_bs=True,ignore_wei
     return out
 
 class RenderMatplotlibAxis:
-    def __init__(self, height, width=None, with_axis=False, with_alpha=False, dpi=1000):
+    def __init__(self, height, width=None, with_axis=False, set_lims=False, with_alpha=False, dpi=100):
         if (width is None) and isinstance(height, (tuple, list)):
             #height is a shape
             height,width = height[:2]
@@ -1000,6 +1058,7 @@ class RenderMatplotlibAxis:
         self.ax = None
         self._image = None
         self.with_axis = with_axis
+        self.set_lims = set_lims
 
     @property
     def image(self):
@@ -1008,7 +1067,8 @@ class RenderMatplotlibAxis:
     def __enter__(self):
         matplotlib.rcParams['figure.dpi'] = self.dpi
         matplotlib.use('Agg')
-        self.fig = plt.figure(figsize=(self.width/self.dpi, self.height/self.dpi))
+        figsize = (self.width/self.dpi, self.height/self.dpi)
+        self.fig = plt.figure(figsize=figsize,dpi=self.dpi)
         self.ax = plt.Axes(self.fig, [0., 0., 1., 1.])
         if not self.with_axis:
             self.ax.set_frame_on(False)
@@ -1020,6 +1080,14 @@ class RenderMatplotlibAxis:
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type is None:
             # If no exception occurred, save the image to the _image property
+            if self.set_lims:
+                self.ax.set_xlim(0, self.width)
+                #see if current axis is inreasing in y dir
+                matrix_notation = self.ax.transData.transform((0,0))[1] < self.ax.transData.transform((0,1))[1]
+                if matrix_notation:
+                    self.ax.set_ylim(0, self.height)
+                else:
+                    self.ax.set_ylim(self.height, 0)
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=self.dpi)
             buf.seek(0)
@@ -1130,7 +1198,7 @@ def render_text_gridlike(image, x_sizes, y_sizes,
         x_sizes = [x/x_sum*w for x in x_sizes]
     if not y_sum==1.0:
         y_sizes = [y/y_sum*h for y in y_sizes]
-    with RenderMatplotlibAxis(w,h) as renderer:
+    with RenderMatplotlibAxis(w,h) as renderer: #TODO (is this an error? w,h should be switched)
         plt.imshow(image/255)
         for xi in range(len(x_sizes)):
             for yi in range(len(y_sizes)):

@@ -26,12 +26,10 @@ from source.training import DiffusionModelTrainer
 # [4] make num points depend on num labels, size of label
 # [5] implement all points in arguments
 # [5] check multiple workers works
+# [4] make i.e. 2x,4x imsize compared to diff sample 
 # [5] resume training by model_id
 # [5] implement conditioning
-# [6] test and make model training possible on HPC
 # [6] find the best conditioning strategy
-# [4] make monu instance-compatible
-# [4] make i.e. 2x,4x imsize compared to diff sample 
 
 #training TODO
 # loop over lr

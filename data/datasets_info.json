@@ -587,5 +587,43 @@
             470,
             0
         ]
+    },
+    {
+        "dataset_name": "ade20k_v2",
+        "type": "pictures",
+        "live": false,
+        "symmetries": "horizontal",
+        "num_samples": 27564,
+        "num_classes": 3688,
+        "file_format": "jpg",
+        "rel_weight": 1.0,
+        "aug": "pictures",
+        "bg_prob": 0.5,
+        "overlap": true,
+        "samples_per_split": [
+            25574,
+            1990,
+            0
+        ]
+    },
+    {
+        "dataset_name": "monu",
+        "type": "medical",
+        "live": false,
+        "symmetries": "all",
+        "num_samples": 51,
+        "num_classes": 2,
+        "file_format": "tif",
+        "rel_weight": 0.1,
+        "aug": "medical_color",
+        "bg_prob": 0.2,
+        "overlap": false,
+        "samples_per_split": [
+            37,
+            14,
+            0
+        ],
+        "thin_bg": "never",
+        "quality": "medium"
     }
 ]
