@@ -124,7 +124,7 @@ class DatasetDownloader:
                 label2 = np.zeros_like(label)
                 info = {"classes": [0], "split_idx": split_idx}
                 for i,u in enumerate(uq):
-                    label2[label==u] = i
+                    label2[label==u] = i+1
                     info["classes"].append(u)
                     if i==255:
                         break
@@ -477,7 +477,15 @@ class DatasetDownloader:
                 return image,label,info
         elif name=="totseg":
             file_name_list = [str(f) for f in (Path(folder_path)/"Totalsegmentator_dataset_v201").glob("*/samples/dim*_gt.png")]
-            class_dict_path = "/home/jloch/Desktop/diff/diffusion2/data/totseg/idx_to_class2.json"
+            
+            #filter out uninteresting images
+            mean_image_values = []
+            for f in file_name_list:
+                mean_image_values.append((np.array(Image.open(f.replace("_gt","_im")))<30).mean())
+            #at most 80% of the image in the very low intensity interval of [0,29]
+            file_name_list = [f for f,m in zip(file_name_list,mean_image_values) if m<0.8]
+
+            class_dict_path = "/home/jloch/Desktop/diff/diffusion2/data/totseg/Totalsegmentator_dataset_v201/idx_to_class_alphabetical.json"
             class_dict = load_json_to_dict_list(class_dict_path)[0]
             image_suffix = ".png"
             meta = "/home/jloch/Desktop/diff/diffusion2/data/totseg/Totalsegmentator_dataset_v201/meta.csv"
@@ -489,7 +497,7 @@ class DatasetDownloader:
                 label = np.array(Image.open(label_path))
                 image_id = file_name.split("/")[-3]
                 iloc_i = np.flatnonzero(meta_loaded["image_id"]==image_id)
-                split_str = meta_loaded.iloc[iloc_i]["split_idx"].item()
+                split_str = meta_loaded.iloc[iloc_i]["split"].item()
                 split_idx = ["train","val","test"].index(split_str)
                 uq_classes, label = np.unique(label,return_inverse=True)
                 info = {"classes": uq_classes.tolist(),"split_idx": split_idx}
@@ -1007,9 +1015,7 @@ def main():
         downloader = DatasetDownloader()
         downloader.allowed_failure_rate = 0
         do_step = default_do_step()
-        """do_step = {k: 0 for k in do_step.keys()}
-        do_step["save_class_dict"] = 1
-        do_step["save_global_info"] = 1"""
+        do_step["delete_f_before"] = 1
         downloader.process_files("totseg",do_step=do_step)
     elif args.process==12:
         print("PROCESS 12: duts, ecssd, fss, msra, dis")

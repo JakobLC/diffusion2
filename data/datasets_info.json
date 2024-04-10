@@ -625,5 +625,41 @@
         ],
         "thin_bg": "never",
         "quality": "medium"
+    },
+    {
+        "dataset_name": "pascal",
+        "urls": [],
+        "num_samples": 10103,
+        "num_classes": 460,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            4998,
+            5105,
+            0
+        ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 38080,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            33525,
+            1769,
+            2786
+        ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 38080,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            33525,
+            1769,
+            2786
+        ]
     }
 ]

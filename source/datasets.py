@@ -314,7 +314,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       label_padding_val=255,
                       split_method="random",
                       sam_features_idx=-1,
-                      ignore_sam_idx=-1):
+                      ignore_sam_idx=-1,
+                      conditioning=False,
+                      delete_info_keys=[]):
+        self.conditioning = conditioning
         self.ignore_sam_idx = ignore_sam_idx
         self.sam_features_idx = sam_features_idx
         self.geo_aug_p = geo_aug_p
@@ -410,7 +413,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 randperm = np.arange(N)
             
-            
             if split_method=="native_train":
                 use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
             elif split_method=="native":
@@ -433,6 +435,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 if self.use_pretty_data and item.get("pretty",False):
                     item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
                     item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
+                if self.conditioning:
+                    item = self.process_conditioning(item,use_idx)                 
+                else:
+                    del item["conditioning"]
+                for k in delete_info_keys:
+                    del item[k]
                 item["dataset_name"] = dataset_name
                 items.append(item)
         
@@ -457,6 +465,17 @@ class SegmentationDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return self.length
+    
+    def process_conditioning(self,item,use_idx,keep_atmost=8):
+        item["conditioning"]["same_dataset"] = np.random.choice(use_idx,min(keep_atmost,len(use_idx)),replace=False).tolist()
+        filter_keys = ["same_vol","adjecent","same_classes"]
+        for key in filter_keys:
+            if key in item["conditioning"]:
+                good_idx = np.flatnonzero(np.isin(item["conditioning"][key],use_idx))
+                if len(good_idx)>keep_atmost:
+                    good_idx = good_idx[:keep_atmost]
+                item["conditioning"][key] = np.array(item["conditioning"][key])[good_idx].tolist()
+        return item
     
     def get_sampler(self,seed=None):
         if seed is None:
@@ -775,9 +794,9 @@ def longest_side_resize_func(image,is_label=True,max_size=256):
 
 def load_from_dataset_and_idx(dataset_name,i,im=True):
     if im:
-        possible_filesnames = ["_im.jpg","_im.png","_pim.jpg","_pim.png"]
+        possible_filesnames = ["_pim.jpg","_pim.png","_im.jpg","_im.png"]
     else:
-        possible_filesnames = ["_la.png","_pla.png"]
+        possible_filesnames = ["_pla.png","_la.png"]
     root_name = f"f{str(i//1000)}{os.sep}{str(i)}"
     root_dir = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name)
     for pf in possible_filesnames:

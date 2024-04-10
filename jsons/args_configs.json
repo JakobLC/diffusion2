@@ -343,5 +343,17 @@
             "hpc128_nonmed": {"train_batch_size": 32, "image_size": 128, "input_scale": 0.006, "datasets": "non-medical", "max_iter": 300000}
         },
         "datasets": "all"
+    },
+    "hq": {
+        "versions": {
+            "also_med": {"datasets": "non-low-qual"}
+        },
+        "datasets": "high-qual",
+        "image_size": 128,
+        "max_iter": 300000,
+        "input_scale": 0.006,
+        "lr_decay_steps": 100000,
+        "lr_warmup_steps": 10000,
+        "class_type": "num_classes"
     }
 }

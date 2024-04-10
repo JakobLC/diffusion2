@@ -355,7 +355,10 @@ def mask_overlay_smooth(image,
                         alpha_mask=0.4,
                         dont_show_idx=[255],
                         fontsize=12,
-                        text_color="class"):
+                        text_color="class",
+                        text_alpha=1.0,
+                        text_border_instead_of_background=True,
+                        set_lims=True):
     assert isinstance(image,np.ndarray)
     assert isinstance(mask,np.ndarray)
     assert len(image.shape)>=num_spatial_dims, "image must have at least num_spatial_dims dimensions"
@@ -409,9 +412,8 @@ def mask_overlay_smooth(image,
     if show_border or (class_names is not None):
         image_colored = (image_colored*255).astype(np.uint8)
         h,w = image_colored.shape[:2]
-        with RenderMatplotlibAxis(h,w) as ax:
+        with RenderMatplotlibAxis(h,w,set_lims=set_lims) as ax:
             plt.imshow(image_colored)
-            
             for i in show_idx:
                 mask_coef = get_mask(mask,i,onehot=onehot)
                 if pixel_mult>1:
@@ -440,8 +442,13 @@ def mask_overlay_smooth(image,
                             text_color_i = text_color
                         text_kwargs = {"fontsize": int(fontsize*pixel_mult),
                                        "color": text_color_i,
-                                       "backgroundcolor": "black" if np.mean(text_color_i)>0.5 else "white"}
-                        plt.text(x,y,t,**text_kwargs)
+                                       "alpha": text_alpha}
+                        col_bg = "black" if np.mean(text_color_i)>0.5 else "white"             
+                        t = plt.text(x,y,t,**text_kwargs)
+                        if text_border_instead_of_background:
+                            t.set_path_effects([withStroke(linewidth=3, foreground=col_bg)])
+                        else:
+                            t.set_bbox(dict(facecolor=col_bg, alpha=text_alpha, linewidth=0))
         image_colored = ax.image
     else:
         if was_uint8: 
@@ -1089,7 +1096,7 @@ class RenderMatplotlibAxis:
                 else:
                     self.ax.set_ylim(self.height, 0)
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=self.dpi)
+            plt.savefig(buf, format='png', pad_inches=0, dpi=self.dpi)
             buf.seek(0)
             self._image = np.array(Image.open(buf))
 

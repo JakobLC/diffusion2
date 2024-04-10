@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
+from segment_anything.modeling import ImageEncoderViT
 
 from fp16_util import convert_module_to_f16, convert_module_to_f32
 from nn import (
@@ -709,6 +710,53 @@ def get_sam_image_encoder(model_type="vit_b",device="cuda"):
     for p in sam_image_encoder.parameters():
         p.requires_grad = False
     return sam_image_encoder
+
+image_encoder_vit_defaults = {'out_chans': 256,
+                            'img_size': 1024,
+                            'patch_size': 16,
+                            'qkv_bias': True,
+                            'use_rel_pos': True,
+                            'window_size': 14,
+                            'mlp_ratio': 4}
+
+image_encoder_vit_idx_args = {  'num_params': [5113088, 28510720, 89670912, 308278272, 637026048],
+                                'model_name': ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
+                                'idx': [-2, -1, 0, 1, 2],
+                                'embed_dim': [256, 512, 768, 1024, 1280],
+                                'depth': [4, 8, 12, 24, 32],
+                                'num_heads': [4, 8, 12, 16, 16],
+                                'global_attn_indexes': [[1, 2, 3],[1, 3, 5, 7],[2, 5, 8, 11],[5, 11, 17, 23],[7, 15, 23, 31]]}
+
+class DynamicViT(ImageEncoderViT):
+    def __init__(self, special_tokens=["same_vol","adjecent","same_dataset","same_classes"], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.special_tokens = special_tokens
+        self.special_token_embeddings = nn.Embedding(len(special_tokens), self.embed_dim)
+        self.tokens_per_image = self.patch_embed.num_patches
+
+    def forward(self, input_dict):
+        assert all([k in self.special_tokens for k in input_dict.keys()]), "input_dict keys must all be special_tokens"
+        #change all values to list if they are not
+        input_dict = {k: ([v] if not isinstance(v,list) else v) for (k,v) in input_dict.items()}
+        num_images = sum([len(v) for v in input_dict.values()])
+        num_special_tokens = len(input_dict)
+        total_seq_len = num_images*self.tokens_per_image+num_special_tokens
+        x = torch.zeros((total_seq_len, self.embed_dim), device=input_dict[list(input_dict.keys())[0]].device)
+        seq_idx = 0
+        for k,v in input_dict.items():
+            token_idx = torch.tensor([self.special_tokens.index(k)]).to(x.device)
+            token_emb = self.special_token_embeddings(token_idx)
+            seq_idx += 1
+        x = self.patch_embed(x)
+        if self.pos_embed is not None:
+            x = x + self.pos_embed
+
+        for blk in self.blocks:
+            x = blk(x)
+
+        x = self.neck(x.permute(0, 3, 1, 2))
+
+        return x
 
 class DummyModel(nn.Module):
     def __init__(self, num_bits):

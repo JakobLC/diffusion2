@@ -204,7 +204,7 @@
         "type": "medical",
         "live": true,
         "symmetries": "all",
-        "num_samples": 43225,
+        "num_samples": 38080,
         "num_classes": 118,
         "file_format": "png",
         "rel_weight": 1.0,
@@ -212,9 +212,9 @@
         "bg_prob": 0.1,
         "overlap": false,
         "samples_per_split": [
-            38040,
-            1997,
-            3188
+            33525,
+            1769,
+            2786
         ],
         "thin_bg": "never",
         "quality": "high"
