@@ -9,7 +9,7 @@ import glob
 from pathlib import Path
 from PIL import Image
 from argparse_utils import TieredParser
-from utils import bracket_glob_fix, save_dict_list_to_json, imagenet_preprocess, get_likelihood
+from utils import bracket_glob_fix, save_dict_list_to_json, imagenet_preprocess, get_likelihood, load_json_to_dict_list
 import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
@@ -20,6 +20,7 @@ import copy
 from utils import wildcard_match
 from matplotlib.patheffects import withStroke
 from skimage.measure import find_contours
+from datasets import load_raw_image_label
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
@@ -1225,6 +1226,68 @@ def render_text_gridlike(image, x_sizes, y_sizes,
         text_pos_kwargs2.update(text_pos_kwargs)
         rendered = add_text_axis_to_image(rendered,**text_pos_kwargs2)
     return rendered
+
+def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,longest_side_resize=256):
+    idx_to_class_filename = f"./data/{dataset_name}/idx_to_class.json"
+    idx_to_class = load_json_to_dict_list(idx_to_class_filename)[0]
+    
+    kwargs = {"show_border": 1,
+        "border_color": "black",
+        "alpha_mask": 0.5,
+        "pixel_mult": 1,
+        "set_lims": True,
+        "fontsize": 12,
+        "text_alpha": 1.0,
+        "text_border_instead_of_background": True,
+        }
+    lsr = longest_side_resize
+    image_overlays = []
+    text = []
+    for info in info_list[:num_roots]:
+        image,label = load_raw_image_label(info,longest_side_resize=lsr)
+        
+        class_names = {i: idx_to_class[str(idx)] for i,idx in enumerate(info["classes"])}
+        image_overlay = mask_overlay_smooth(image,label,class_names=class_names,**kwargs)
+        image_overlays.append([image_overlay])
+        text.append([f"{info['dataset_name']}/{info['i']}"])
+        idx = info["conditioning"]["same_classes"]
+        for i,idx_i in zip(range(num_show_neighbours),idx):
+            info_i = info_list[idx_i]
+            image_i,label_i = load_raw_image_label(info_i,longest_side_resize=lsr)
+            class_names_i = {i: idx_to_class[str(idx)] for i,idx in enumerate(info_i["classes"])}
+            text[-1].append(f"idx={idx_i}")
+            image_overlay_i = mask_overlay_smooth(image_i,label_i,class_names=class_names_i,**kwargs)
+            image_overlays[-1].append(image_overlay_i)
+    jlc.montage(image_overlays,text=text,text_color="red")
+    jlc.zoom()
+    return image_overlays
+
+
+def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
+            "border_color": "black",
+            "alpha_mask": 0.5,
+            "pixel_mult": 1,
+            "set_lims": True,
+            "fontsize": 12,
+            "text_alpha": 1.0,
+            "text_border_instead_of_background": True,
+            }
+            ):
+    image_overlays = []
+    info_jsonl_path = f"./data/{dataset_name}/info.jsonl"
+    idx_to_class = load_json_to_dict_list(f"./data/{dataset_name}/idx_to_class.json")[0]
+    info_list = load_json_to_dict_list(info_jsonl_path)
+    info_list = [{**item,"dataset_name": dataset_name} for item in info_list]
+    for k in range(num_images):
+        idx = np.random.randint(0,len(info_list))
+        info = info_list[idx]
+        image,label = load_raw_image_label(info,longest_side_resize=512)
+
+        class_names = {i: idx_to_class[str(idx)] for i,idx in enumerate(info["classes"])}
+        image_overlay = mask_overlay_smooth(image,label,class_names=class_names,**overlay_kwargs)
+        image_overlays.append(image_overlay)
+    jlc.montage(image_overlays)
+    jlc.zoom()
 
 def main():
     import argparse

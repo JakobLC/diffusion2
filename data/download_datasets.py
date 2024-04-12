@@ -18,11 +18,13 @@ import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
+from utils import quantile_normalize
 import cv2
-from datasets import SegmentationDataset, save_sam_features
+from datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
 import zipfile
 import skimage
+import nibabel as nib
 
 def default_do_step():
     return {"unpack": 0,
@@ -477,13 +479,13 @@ class DatasetDownloader:
                 return image,label,info
         elif name=="totseg":
             file_name_list = [str(f) for f in (Path(folder_path)/"Totalsegmentator_dataset_v201").glob("*/samples/dim*_gt.png")]
-            
+            """
             #filter out uninteresting images
             mean_image_values = []
             for f in file_name_list:
                 mean_image_values.append((np.array(Image.open(f.replace("_gt","_im")))<30).mean())
             #at most 80% of the image in the very low intensity interval of [0,29]
-            file_name_list = [f for f,m in zip(file_name_list,mean_image_values) if m<0.8]
+            file_name_list = [f for f,m in zip(file_name_list,mean_image_values) if m<0.8]"""
 
             class_dict_path = "/home/jloch/Desktop/diff/diffusion2/data/totseg/Totalsegmentator_dataset_v201/idx_to_class_alphabetical.json"
             class_dict = load_json_to_dict_list(class_dict_path)[0]
@@ -959,6 +961,309 @@ def add_existence_of_sam_features_to_info_jsonl(dataset_names=None):
                 sam_features.append(filename.exists())
             info_list[j]["sam"] = sam_features
         save_dict_list_to_json(info_list,infopath,append=False)
+
+def class_dict_from_info(info,ignore_zero=True):
+    class_dict = {}
+    for class_idx,class_count in zip(info["classes"],info["class_counts"]):
+        if ignore_zero:
+            if class_idx!=0:
+                class_dict[class_idx] = class_count
+        else:
+            class_dict[class_idx] = class_count
+    L2_norm = np.linalg.norm(list(class_dict.values()))+1e-12
+    class_dict = {k: v/L2_norm for k,v in class_dict.items()}
+    return class_dict
+
+def class_balance_similarity(info1,info2,ignore_zero=True):
+    class_dict1 = class_dict_from_info(info1,ignore_zero)
+    class_dict2 = class_dict_from_info(info2,ignore_zero)
+    intersection_keys = set(class_dict1.keys()).intersection(set(class_dict2.keys()))
+    sim = 0
+    for key in intersection_keys:
+        c1,c2 = class_dict1[key],class_dict2[key]
+        sim += c1*c2
+    return sim
+    
+
+def add_same_class_reference(datasets=get_all_valid_datasets(),
+                             max_neighbours=32,
+                             save=True,
+                             num_search_neighbours=1000,
+                             num_per_dataset=-1,
+                             min_sim=0.5,
+                             dry=True,
+                             add_dataset_name_key=False):
+    if not isinstance(datasets,list):
+        assert isinstance(datasets,str), "datasets must be a string or a list of strings"
+        datasets = [datasets]
+
+    live_info_path = "./data/datasets_info_live.json"
+    live_info = load_json_to_dict_list(live_info_path)
+    #pprint([(item["dataset_name"],item["num_classes"]) for item in live_info])
+    for global_info in live_info:
+        dataset_name = global_info["dataset_name"]
+        if not global_info["live"]:
+            continue
+        if not dataset_name in datasets:
+            continue
+        if global_info["num_classes"]<=2:
+            continue
+        print(f"Processing: {dataset_name}")
+        info_jsonl_path = f"./data/{dataset_name}/info.jsonl"
+        info_list = load_json_to_dict_list(info_jsonl_path)
+        if add_dataset_name_key:
+            info_list = [{"dataset_name": dataset_name, **info} for info in info_list]
+        info_add = []
+        irange = tqdm.tqdm(range(num_per_dataset) if num_per_dataset>0 else range(len(info_list)))
+        for i in irange:
+            info = info_list[i]
+            class_sim = {-i:0 for i in range(1,1+max_neighbours)}
+            for info2_idx in np.random.choice(range(len(info_list)),min(num_search_neighbours,len(info_list)),replace=False):
+                info2 = info_list[info2_idx]
+                if info2["i"]!=info["i"]:
+                    sim = class_balance_similarity(info,info2)
+                    if sim>min(class_sim.values()):
+                        min_key = min(class_sim,key=class_sim.get)
+                        del class_sim[min_key]
+                        class_sim[info2["i"]] = sim
+            class_sim = {"sim": [int(round(v,3)*1000) for v in class_sim.values()], "idx": [k for k in class_sim.keys()]}
+            #remove sim too low or negative index
+            mask = np.flatnonzero(np.logical_and(np.array(class_sim["sim"])>=min_sim*1000,np.array(class_sim["idx"])>=0))
+            class_sim = {k: [class_sim[k][i] for i in mask] for k in class_sim.keys()}
+            order_by_sim = np.argsort(class_sim["sim"])[::-1]
+            same_classes =[class_sim["idx"][i] for i in order_by_sim]
+            class_sim = {"same_classes": same_classes}
+            info_add.append(class_sim)
+        for i in range(len(info_list)):
+            if "conditioning" in info_list[i].keys():
+                info_list[i]["conditioning"].update(info_add[i])
+            else:
+                info_list[i]["conditioning"] = info_add[i]
+        if save:
+            if dry:
+                save_dict_list_to_json(info_list,info_jsonl_path.replace(".jsonl","_dry.jsonl"))
+            else:
+                save_dict_list_to_json(info_list,info_jsonl_path)
+    return info_list, info_add
+
+
+def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neighbours=32,save=True):
+    info_jsonl_path = f"./data/{dataset_name}/info.jsonl"
+    info_list = load_json_to_dict_list(info_jsonl_path)
+    info_add = [{"adjecent": [], "same_vol": []} for _ in info_list]
+    if dataset_name=="totseg":
+        samples_dict = {}
+        for i,info in enumerate(info_list):
+            sample_name = info["fn"].split('/')[-3]
+            if not sample_name in samples_dict.keys():
+                samples_dict[sample_name] = []
+            samples_dict[sample_name].append(i)
+        col_names = ["info_idx","name","volname","dim","slice_idx"]
+        for k,v in tqdm.tqdm(samples_dict.items()):
+            df = pd.DataFrame(columns=col_names)
+            for idx in v:
+                sample = {"info_idx": idx, "adjecent": []}
+                sample["name"] = Path(info_list[idx]["fn"]).name
+                sample["volname"] = k
+                sample["dim"] = int(sample["name"].split('_')[0][3:])
+                sample["slice_idx"] = int(sample["name"].split('_')[1][5:])
+                # add the sample
+                new_row_df = pd.DataFrame([sample])
+                df = pd.concat([df,new_row_df], ignore_index=True)
+            #sort by first dim, otherwise slices:
+            df = df.sort_values(by=["dim","slice_idx"])
+            for i in range(len(df)):
+                dim_now = df.iloc[i]["dim"]
+                if i>0:
+                    dim_prev = df.iloc[i-1]["dim"]
+                    if dim_now == dim_prev:
+                        df.iloc[i]["adjecent"].append(df.iloc[i-1]["info_idx"])
+                if i<len(df)-1:
+                    dim_next = df.iloc[i+1]["dim"]
+                    if dim_now == dim_next:
+                        df.iloc[i]["adjecent"].append(df.iloc[i+1]["info_idx"])
+            for row in df.iterrows():
+                idx = row[1]["info_idx"]
+                info_add[idx]["adjecent"] = row[1]["adjecent"]
+                n = min(max_neighbours,len(df))
+                info_add[idx]["same_vol"] = np.random.choice(df["info_idx"].tolist(),n,replace=False).tolist()
+    
+    elif dataset_name=="visor":
+        samples_dict = {}
+        for i,info in enumerate(info_list):
+            sample_name = "_".join(info["fn"].split('_')[:2])
+            if not sample_name in samples_dict.keys():
+                samples_dict[sample_name] = []
+            samples_dict[sample_name].append(i)
+        col_names = ["info_idx","name","volname","framenum"]
+        for k,v in tqdm.tqdm(samples_dict.items()):
+            df = pd.DataFrame(columns=col_names)
+            for idx in v:
+                sample = {"info_idx": idx, "adjecent": []}
+                sample["name"] = Path(info_list[idx]["fn"]).name
+                sample["volname"] = k
+                sample["framenum"] = int(sample["name"].split('_')[3][:-4])
+                # add the sample
+                new_row_df = pd.DataFrame([sample])
+                df = pd.concat([df,new_row_df], ignore_index=True)
+            #sort by first dim, otherwise slices:
+            df = df.sort_values(by=["framenum"])
+            for i in range(len(df)):
+                volname_now = df.iloc[i]["volname"]
+                if i>0:
+                    volname_prev = df.iloc[i-1]["volname"]
+                    if volname_now == volname_prev:
+                        df.iloc[i]["adjecent"].append(df.iloc[i-1]["info_idx"])
+                if i<len(df)-1:
+                    volname_next = df.iloc[i+1]["volname"]
+                    if volname_now == volname_next:
+                        df.iloc[i]["adjecent"].append(df.iloc[i+1]["info_idx"])
+            for row in df.iterrows():
+                idx = row[1]["info_idx"]
+                info_add[idx]["adjecent"] = row[1]["adjecent"]
+                n = min(max_neighbours,len(df))
+                info_add[idx]["same_vol"] = np.random.choice(df["info_idx"].tolist(),n,replace=False).tolist()
+    else:
+        raise NotImplementedError()
+    for i in range(len(info_list)):
+        if "conditioning" in info_list[i].keys():
+            info_list[i]["conditioning"].update(info_add[i])
+        else:
+            info_list[i]["conditioning"] = info_add[i]
+    
+    if save:
+        save_dict_list_to_json(info_list,info_jsonl_path)
+    return info_list
+
+def create_totseg_label(f):
+    #saves a segmentation as a combined file in the same folder as the volume 
+    f2 = f.replace("ct.nii.gz","seg.nii.gz")
+    vol, seg = load_totseg(f)
+    nib.save(nib.Nifti1Image(seg, np.eye(4)), f2)
+
+def load_totseg(f,class_to_idx=None):
+    #loads a volume and its segmentation
+    vol = nib.load(f).get_fdata()
+    if os.path.exists(f.replace("ct.nii.gz","seg.nii.gz")):
+        seg = nib.load(f.replace("ct.nii.gz","seg.nii.gz")).get_fdata().astype(np.uint8)
+    else:
+        assert class_to_idx is not None 
+        seg_files = Path(f).parent.glob("segmentations/*.nii.gz")
+        seg = np.zeros(vol.shape,dtype=np.uint8)
+        for s in seg_files:
+            class_name = Path(s).name.replace(".nii.gz","")
+            mask = nib.load(s).get_fdata()>0
+            seg[mask] = class_to_idx[class_name]
+    return vol, seg
+
+def totseg_vol_to_slices(f,delta=10):
+    vol, seg = load_totseg(f)
+    vol = quantile_normalize(vol)
+    s = vol.shape
+    slice_idx = [list(range(0,s[dim_i],delta)) for dim_i in range(3)]
+    slices = []
+    slice_segs = []
+    for dim_i in range(3):
+        idx = [slice(None) for _ in range(3)]
+        slices.append([])
+        slice_segs.append([])
+        for i in slice_idx[dim_i]:
+            idx[dim_i] = i
+            slices[-1].append(vol[tuple(idx)])
+            slice_segs[-1].append(seg[tuple(idx)])
+    return slices, slice_segs
+
+def axis_metrics(vol,seg,vol_alpha=0.01):
+    """sums values along xy, xz, yz, also returns 
+    bounding boxes for the segmentation and volume (approximate)
+    bbox returned as [min_d1,max_d1,min_d2,max_d2,min_d3,max_d3]
+    Note that max_d1 is inclusive, so the slice should be [min_d1:max_d1+1]
+    """
+    sum_dims = [[1,2],[0,2],[0,1]]
+    summed_vals_vol = []
+    summed_vals_seg = []
+    for d in range(3):
+        summed_vals_vol.append(np.sum(vol,axis=tuple(sum_dims[d])))
+        summed_vals_seg.append(np.sum(seg,axis=tuple(sum_dims[d])))
+    summed_vals_vol = [v/np.sum(v) for v in summed_vals_vol]
+    bbox_vol = []
+    bbox_seg = []
+    assert seg.sum()>0, "no segmentation found"
+    cumsum_vals_vol = [np.cumsum(v) for v in summed_vals_vol]
+    for d in range(3):
+        first_vol, last_vol = np.logical_and(cumsum_vals_vol[d]>vol_alpha,cumsum_vals_vol[d]<1-vol_alpha).nonzero()[0][[0,-1]]
+
+        bbox_vol.extend([first_vol,last_vol])
+        seg_bool = np.flatnonzero(summed_vals_seg[d])
+        first_seg, last_seg = seg_bool[0], seg_bool[-1]
+        bbox_seg.extend([first_seg,last_seg])
+    max_bbox = sum([[s-1,s-1] for s in seg.shape[:3]],[])
+    min_bbox = [0 for _ in range(6)]
+    bbox_vol = [max(min_bbox[i],bbox_vol[i]) for i in range(6)]
+    bbox_vol = [min(max_bbox[i],bbox_vol[i]) for i in range(6)]
+    bbox_seg = [max(min_bbox[i],bbox_seg[i]) for i in range(6)]
+    bbox_seg = [min(max_bbox[i],bbox_seg[i]) for i in range(6)]
+    return summed_vals_vol, summed_vals_seg, bbox_vol, bbox_seg
+
+def create_totseg_samples(f,
+                        save=False,
+                        delta_abs=0,
+                        delta_rel=0.2,
+                        max_images=20,
+                        min_dist=10,
+                        delete_before=False):
+    vol,seg = load_totseg(f)
+    vol = quantile_normalize(vol)
+    bbox_seg = axis_metrics(vol,seg)[-1]
+
+    vol = np.clip(np.round(vol*255),0,255).astype(np.uint8)
+    idx_sample = axis_bbox_to_idx(vol.shape,bbox_seg,delta_abs=delta_abs,delta_rel=delta_rel,
+                                            max_images=max_images,min_dist=min_dist)
+    samples = {"name": [], "image": [], "gt": []}
+    for dim_i in range(len(idx_sample)):
+        for i in idx_sample[dim_i]:
+            samples["name"].append(f"dim{dim_i}_slice{i}")
+            s = [slice(None) for _ in range(3)]
+            s[dim_i] = i
+            t = vol[tuple(s)]
+            samples["image"].append(vol[tuple(s)])
+            samples["gt"].append(seg[tuple(s)])
+    if delete_before:
+        f = Path(f)
+        f2 = f.parent / "samples"
+        if f2.exists():
+            shutil.rmtree(f2)
+    t = samples["image"][0]
+    if save:
+        save_folder = Path(f).parent / "samples"
+        os.makedirs(save_folder,exist_ok=True)
+        for i in range(len(samples["name"])):
+            name = samples["name"][i]
+            img1 = Image.fromarray(samples["image"][i])
+            img1.save(f"{save_folder}/{name}_im.png")
+            img2 = Image.fromarray(samples["gt"][i])
+            img2.putpalette(nc.largest_pallete)
+            img2.save(f"{save_folder}/{name}_gt.png")
+    return samples
+
+def axis_bbox_to_idx(volshape,bbox_seg,delta_abs=0,delta_rel=0.05,
+                     max_images=20,
+                     min_dist=10):
+    min_bbox = [0 for _ in range(6)]
+    max_bbox = sum([[s-1,s-1] for s in volshape],[])
+    width = [bbox_seg[i+1]-bbox_seg[i] for i in [0,2,4]]
+    delta = [delta_abs+delta_rel*w for w in width]
+    bbox_delta = sum([[-d,d] for d in delta],[])
+    bbox = [bbox_seg[i]+bbox_delta[i] for i in range(6)]
+    bbox = [max(min_bbox[i],bbox[i]) for i in range(6)]
+    bbox = [min(max_bbox[i],bbox[i]) for i in range(6)]
+    
+    idx_sample = []
+    for d in range(3):
+        width = bbox[d*2+1]-bbox[d*2]
+        n = np.round(min(max_images,width//min_dist)).astype(int)
+        idx_sample.append(np.round(np.linspace(bbox[d*2],bbox[d*2+1],n)).astype(int).tolist())
+    return idx_sample
 
 def main():
     import argparse

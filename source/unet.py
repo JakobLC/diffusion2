@@ -718,7 +718,7 @@ image_encoder_vit_defaults = {'out_chans': 256,
                             'use_rel_pos': True,
                             'window_size': 14,
                             'mlp_ratio': 4}
-
+meta_vit_keys = ["num_params","model_name","idx"]
 image_encoder_vit_idx_args = {  'num_params': [5113088, 28510720, 89670912, 308278272, 637026048],
                                 'model_name': ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
                                 'idx': [-2, -1, 0, 1, 2],
@@ -727,35 +727,86 @@ image_encoder_vit_idx_args = {  'num_params': [5113088, 28510720, 89670912, 3082
                                 'num_heads': [4, 8, 12, 16, 16],
                                 'global_attn_indexes': [[1, 2, 3],[1, 3, 5, 7],[2, 5, 8, 11],[5, 11, 17, 23],[7, 15, 23, 31]]}
 
-class DynamicViT(ImageEncoderViT):
-    def __init__(self, special_tokens=["same_vol","adjecent","same_dataset","same_classes"], *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.special_tokens = special_tokens
-        self.special_token_embeddings = nn.Embedding(len(special_tokens), self.embed_dim)
-        self.tokens_per_image = self.patch_embed.num_patches
+def get_dynamic_vit(model_type="vit_b",device="cuda"):
+    if isinstance(model_type,int):
+        assert model_type in image_encoder_vit_idx_args["idx"]
+        model_idx = image_encoder_vit_idx_args["idx"].index(model_type)
+    elif isinstance(model_type,str):
+        assert model_type in image_encoder_vit_idx_args["model_name"]
+        model_idx = image_encoder_vit_idx_args["model_name"].index(model_type)
+    else:
+        raise ValueError("model_type must be int or str")
+    args_from_idx = {k:image_encoder_vit_idx_args[k][model_idx] for k in image_encoder_vit_idx_args.keys() if k not in meta_vit_keys}
+    model_args =  {**image_encoder_vit_defaults, **args_from_idx}
+    dyn_vit = DynamicViT(**model_args)
+    dyn_vit.to(device=device)
+    dyn_vit.train()
+    return dyn_vit
 
-    def forward(self, input_dict):
+class DynamicViT(ImageEncoderViT):
+    def __init__(self, token_dict={"same_vol": 3+6, 
+                                   "adjecent": 3+6,
+                                   "same_dataset": 3+6,
+                                   "same_classes": 3+6,
+                                   }, 
+                                   *args, **kwargs):
+        """token dict has either
+
+            1.[key]: image_[channels] to specify image with [channels] channels, i.e. "same_vol": image_9
+                Requires an input during training/inference as a tensor of shape [batch_size, channels, image_size, image_size]
+
+            2.[key]: discrete_[n] to specify a discrete variable with [n] categories, i.e. "num_classes": discrete_64
+                Requires an input during training/inference as a tensor of shape [batch_size] with values in range [0,n)
+
+            3.[key]: continuous_[min]_[max] to specify a continuous variable with [n] dimensions, i.e. "timestep": continuous_0_1
+                Requires an input during training/inference as a tensor of shape [batch_size] with values in range [min,max]
+
+            4.[key]: vocab_[n] to specify a vocabulary of embedding vectors, i.e. "class_names": vocab_1024
+                Requires an input during training/inference as a tensor of shape [batch_size, m] with values in range [0,n), representing a sequence of tokens/words
+            """
+        
+        super().__init__(*args, **kwargs)
+        defaults_if_not_in_kwargs = {"patch_size":16, "image_size": 1024, "embed_dim": 768}
+        self.special_tokens = token_dict
+        self.embed_dim = kwargs.get("embed_dim",defaults_if_not_in_kwargs["embed_dim"])
+        self.patch_size = kwargs.get("patch_size",defaults_if_not_in_kwargs["patch_size"])
+        self.image_size = kwargs.get("image_size",defaults_if_not_in_kwargs["image_size"])
+        self.special_token_embeddings = nn.Embedding(len(token_dict), self.embed_dim)
+        self.tokens_per_image = (self.image_size//self.patch_size)**2
+
+    def construct_input_from_dict(self, input_dict):
         assert all([k in self.special_tokens for k in input_dict.keys()]), "input_dict keys must all be special_tokens"
         #change all values to list if they are not
         input_dict = {k: ([v] if not isinstance(v,list) else v) for (k,v) in input_dict.items()}
         num_images = sum([len(v) for v in input_dict.values()])
         num_special_tokens = len(input_dict)
         total_seq_len = num_images*self.tokens_per_image+num_special_tokens
-        x = torch.zeros((total_seq_len, self.embed_dim), device=input_dict[list(input_dict.keys())[0]].device)
+        bs = [v for v in input_dict.values() if len(v)>0][0].shape[0]
+        x = torch.zeros((bs,total_seq_len, self.embed_dim), device=input_dict[list(input_dict.keys())[0]].device)
         seq_idx = 0
         for k,v in input_dict.items():
             token_idx = torch.tensor([self.special_tokens.index(k)]).to(x.device)
             token_emb = self.special_token_embeddings(token_idx)
+            x[:,seq_idx] = token_emb
             seq_idx += 1
-        x = self.patch_embed(x)
-        if self.pos_embed is not None:
-            x = x + self.pos_embed
-
+            for image in v:
+                image_tokenized = self.patch_embed(image)
+                if self.pos_embed is not None:
+                    image_tokenized = image_tokenized + self.pos_embed
+                x[:,seq_idx:seq_idx+self.tokens_per_image] = image_tokenized
+                seq_idx += self.tokens_per_image
+        
+    def forward(self, input_dict, reduction="none"):
+        x = self.construct_input_from_dict(input_dict)
         for blk in self.blocks:
             x = blk(x)
-
         x = self.neck(x.permute(0, 3, 1, 2))
-
+        if reduction=="mean":
+            x = x.mean(dim=(2,3))
+        elif reduction=="sum":
+            x = x.sum(dim=(2,3))
+        else:
+            assert reduction=="none", "reduction must be 'mean', 'sum', or 'none'"
         return x
 
 class DummyModel(nn.Module):

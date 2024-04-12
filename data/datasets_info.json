@@ -661,5 +661,17 @@
             1769,
             2786
         ]
+    },
+    {
+        "dataset_name": "totseg",
+        "urls": [],
+        "num_samples": 63007,
+        "num_classes": 118,
+        "file_format": ".png",
+        "samples_per_split": [
+            55361,
+            2914,
+            4732
+        ]
     }
 ]

@@ -438,7 +438,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 if self.conditioning:
                     item = self.process_conditioning(item,use_idx)                 
                 else:
-                    del item["conditioning"]
+                    if "conditioning" in item:
+                        del item["conditioning"]
                 for k in delete_info_keys:
                     del item[k]
                 item["dataset_name"] = dataset_name
