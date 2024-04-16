@@ -4,7 +4,7 @@ import sys, os
 sys.path.append(os.path.abspath('./source/'))
 
 #from source.utils import SmartParser
-from source.argparse_utils import TieredParser, save_args, load_existing_args
+from source.utils.argparse_utils import TieredParser, save_args, load_existing_args
 from source.training import DiffusionModelTrainer
 
 #import warnings

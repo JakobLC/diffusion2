@@ -12,7 +12,7 @@ import cv2
 import copy
 from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
-from unet import get_sam_image_encoder
+from source.models.unet import get_sam_image_encoder
 import tqdm
 
 turbo_jpeg = TurboJPEG()

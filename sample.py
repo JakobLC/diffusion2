@@ -6,7 +6,7 @@ from source.training import DiffusionModelTrainer
 import warnings
 from pathlib import Path
 warnings.filterwarnings('ignore', category=DeprecationWarning)
-from source.argparse_utils import TieredParser, load_existing_args, get_ckpt_name
+from source.utils.argparse_utils import TieredParser, load_existing_args, get_ckpt_name
 import json
 
 def main(**modified_args):
