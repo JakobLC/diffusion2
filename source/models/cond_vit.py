@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Type
 import copy
 import math
 import warnings
+import pandas as pd
 
 vit_seperate_params = { 'num_params':          [5113088, 28510720, 89670912, 308278272, 637026048],
                         'model_name':          ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
@@ -157,38 +158,56 @@ cond_vit_setup_long = {1: {"option_name": "preprocess" ,
                            "a": "Stack channels spatially",
                            "b": "No reduction"},
                        2: {"option_name": "attention", "multiple": True,
-                           "a": "Global attention",
-                           "b": "Shifted window attention",
-                           "c": "Grouped attention",
-                           "d": "Cross attention"},
+                           "a": "global",
+                           "b": "image",
+                           "c": "cross",
+                           "d": "grouped",
+                           "e": "window",
+                           "f": "window_shifted"},
                        3: {"option_name": "postprocess",
                            "a": "Only cls token",
                            "b": "Mean token",
                            "c": "Mean without spatial reduction",
                            "d": "No reduction"},
-                       4: {"option_name": "injection"  , "requires": {"a": {3: ["b","c"]}, "c": {3: "c"}}, 
-                           "a": "Global attention",
+                       4: {"option_name": "injection"  , "requires": {"a": {3: ["a","b"]}, "c": {3: ["c"]}, "d": {3: ["c"]}},
+                           "a": "Embed vec (single token)",
                            "b": "UNet cross-attention",
-                           "c": "Grouped attention"}}
+                           "c": "Spatial Embed (once)",
+                           "d": "Spatial Embed (many times)"}}
+
+def get_appropriate_block_types(depth=12,block_types="ae",transform_to_names=True):
+    for letter in block_types:
+        assert letter in cond_vit_setup_long[2].keys(), "did not recognize letter, found: "+letter+" in "+block_types+" should be in "+str(cond_vit_setup_long[2].keys())
+    block_types = block_types[::-1]
+    if block_types.find("f")<0:
+        block_types = block_types.replace("e","ef")
+    block_types = (block_types*depth)[:depth] #repeat pattern and crop
+    if transform_to_names:
+        block_types = [cond_vit_setup_long[2][b] for b in block_types]
+    return block_types
 
 def fancy_vit_from_args(args):
     keys = ["cond_vit_setup",
             "max_num_classes",
             "cond_img_size",
             "cond_patch_size",
-            "cond_size",
             "cond_sam_idx"]
+    if not isinstance(args,dict):
+        args = args.__dict__
     index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
     assert all([k in args.keys() for k in keys]), "Missing keys in args: "+str([k for k in keys if k not in args.keys()])
-    diff_channels = torch.log2(torch.tensor(args["max_num_classes"])).round().item()
-    del_keys = "max_seq_len,input_dict,block_types,img_size,patch_size,global_attn_indexes,block_types"
-    fancy_vit_args = fancy_vit_from_idx(-1,del_keys=del_keys.split(","))
+    diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
+    del_keys = "max_seq_len,input_dict,img_size,patch_size,global_attn_indexes,block_types"
+    fancy_vit_args = fancy_vit_from_idx(args["cond_sam_idx"],del_keys=del_keys.split(","))
     fancy_vit_args["input_dict"] = default_input_dict(img_size=args["cond_img_size"],
                                                         patch_size=args["cond_patch_size"],
                                                         image_channels=3,
                                                         diff_channels=diff_channels)
     fancy_vit_args["pre_reduction"] = {"a": "spatial", "b": "none"}[index_to_opt[1]]
     fancy_vit_args["post_reduction"] = {"a": "cls_token", "b": "mean_token", "c": "spatial", "d": "none"}[index_to_opt[3]]
+    block_types = get_appropriate_block_types(depth=fancy_vit_args["depth"],block_types=index_to_opt[2])
+    fancy_vit_args["block_types"] = block_types
+    return fancy_vit_args
 
 
 def is_valid_cond_vit_setup(cond_vit_setup,long_names_instead=False):
@@ -202,20 +221,22 @@ def is_valid_cond_vit_setup(cond_vit_setup,long_names_instead=False):
     index_to_opt = {k: cond_vit_setup[index_of_on[k-1]+1:index_of_on[k]] for k in opt_numbers}
     index_to_opt2 = {}
     for k,v in cond_vit_setup_long.items():
-        letters = list(index_to_opt[k])
+        letters = index_to_opt[k]
         mult = v.get("multiple",False)
         if len(letters)>1:
             assert mult, "Option "+str(k)+" does not allow multiple values"
         for letter in letters:
             assert letter in v.keys(), "Invalid option for "+str(k)+": "+letter+" not in "+str([k for k in v.keys() if len(k)==1])
             if long_names_instead:
-                val = [cond_vit_setup_long[k]["option_name"]+": "+cond_vit_setup_long[k][v] for v in letters]
+                val = "\n".join([cond_vit_setup_long[k]["option_name"]+": "+cond_vit_setup_long[k][v] for v in letters])
             else:
                 val = letters
-            if mult:
-                index_to_opt2[k] = val
-            else:
-                index_to_opt2[k] = val[0]
+            index_to_opt2[k] = val
+        if "requires" in v.keys():
+            if val in v["requires"].keys():
+                for k_req,v_req in v["requires"][val].items():
+                    assert index_to_opt2[k_req] in v_req, f"Invalid requirement. When having option {str(k)+val}, you need one of: {[str(k_req)+item for item in v_req]}, found: {str(k_req)+index_to_opt2[k_req]}"
+
     return index_to_opt2
 
 class FancyViT(nn.Module):
@@ -234,7 +255,6 @@ class FancyViT(nn.Module):
         rel_pos_zero_init: bool = True,
         window_size: int = 14,
         block_types: list = [],
-        group_size: int = 0,
         share_image_rel_pos: bool = True,
         share_image_patch_embed: bool = True,
         input_dict: dict = default_input_dict(),
@@ -253,20 +273,20 @@ class FancyViT(nn.Module):
         self.share_image_patch_embed = share_image_patch_embed
         valid_input_types = ["image","scalar_continuous","scalar_discrete","vocabulary"]
         assert len(block_types)==depth, "Fancy block type must be specified for each block"
-        self.img_size = []
-        self.patch_size = []
+        self.img_sizes = []
+        self.patch_sizes = []
         self.in_chans = []
         
-        if self.post_reduction=="cls_token":
-            #manually add to input dict
-            input_dict["cls"] = {"input_type": "scalar_discrete", "size": 1}
-
+        input_dict["cls"] = {"input_type": "scalar_discrete", "size": 1}
+        
         for input_name, input_info in input_dict.items():
             t = input_info["input_type"]
             assert t in valid_input_types, f"Invalid input type specified. Found {t}"
             if t=="image":
-                self.img_size.append(input_info["img_size"])
-                self.patch_size.append(input_info["patch_size"])
+                for k in ["img_size","patch_size","in_chans"]:
+                    assert isinstance(input_info[k],int), f"Expected {k} to be int, found {input_info[k]}"
+                self.img_sizes.append(input_info["img_size"])
+                self.patch_sizes.append(input_info["patch_size"])
                 self.in_chans.append(input_info["in_chans"])
             elif t=="scalar_continuous":
                 setattr(self, input_name+"_embed", ContinuousVariable(dim=embed_dim, min_val=input_info["min"], max_val=input_info["max"]))
@@ -275,12 +295,26 @@ class FancyViT(nn.Module):
             elif t=="vocabulary":
                 setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
         self.input_dict = input_dict
+        self.img_size = self.img_sizes[0]
+        self.patch_size = self.patch_sizes[0]
+        if self.pre_reduction=="spatial":
+            assert self.share_image_patch_embed, "Must share image patch embed for spatial reduction"
+            irsum = lambda x: int(round(sum(x)))
+            image_input_names = [k for k,v in input_dict.items() if v["input_type"]=="image"]
+            self.cls_image_channel_slice = {n: slice(irsum(self.in_chans[:i]),
+                                                     irsum(self.in_chans[:i+1]
+                                                           )) for i,n in enumerate(image_input_names)}
+            self.in_chans = [irsum(self.in_chans)]
+            self.cls_image_size = lambda bs: (bs,self.in_chans[0],self.img_size,self.img_size)
+            self.input_dict["cls_image"] = {"input_type": "image", 
+                                            "img_size": self.img_size, 
+                                            "patch_size": self.patch_size, 
+                                            "in_chans": self.in_chans[0]}
+        
         if self.share_image_patch_embed:
             #assert we have same patch_size and image_size
-            assert len(set(self.img_size))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
-            assert len(set(self.patch_size))==1, "Patch sizes must be the same for shared patch embed. found: "+str(self.patch_size)
-            self.patch_size=self.patch_size[0]
-            self.img_size=self.img_size[0]
+            assert len(set(self.img_sizes))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
+            assert len(set(self.patch_sizes))==1, "Patch sizes must be the same for shared patch embed. found: "+str(self.patch_size)
             self.shared_patch_embed = PatchEmbed(
                 kernel_size=(self.patch_size, self.patch_size),
                 stride=(self.patch_size, self.patch_size),
@@ -305,13 +339,17 @@ class FancyViT(nn.Module):
                         embed_dim=self.embed_dim,
                     )
                     setattr(self, input_name+"_embed", patch_embed)
-        attn_size_dict = {"global": self.token_img_size,
+
+
+
+        attn_size_dict = {"global": None,
+                        "image": self.token_img_size,
                         "window": window_size,
                         "window_shifted": window_size,
                         "grouped": self.token_img_size,
                         "cross": None}
         self.blocks = nn.ModuleList()
-        use_rel_pos_attention_types = ["grouped","window","window_shifted"]
+        use_rel_pos_attention_types = ["window","window_shifted","image"]
         for i in range(depth):
             attention_type = block_types[i]
             attention_size = attn_size_dict[attention_type]
@@ -373,7 +411,7 @@ class FancyViT(nn.Module):
                     v_i = v[i]
                     if v_i is not None:
                         if self.input_dict[k]["input_type"]=="image":
-                            if ae: assert v_i.shape[1]==v_i.shape[2]==self.input_dict[k]["img_size"], f"Expected image size {self.input_dict[k]['img_size']}, got {v.shape[2]}x{v.shape[3]}"
+                            if ae: assert v_i.shape[1]==v_i.shape[2]==self.input_dict[k]["img_size"], f"Expected image size {self.input_dict[k]['img_size']}, got {v.shape[2]}x{v.shape[3]} for k={k}"
                             seq_len[i] += self.token_img_size**2
                         elif self.input_dict[k]["input_type"]=="scalar_continuous":
                             if ae: assert v_i.shape[0]==1, f"Expected scalar_continuous to have shape (bs,1), got {v.shape}"
@@ -388,18 +426,30 @@ class FancyViT(nn.Module):
     
     def tokenize_inputs(self, inputs, 
                         crop_unused_tokens=True, 
-                        raise_error_on_zero_tokens=True):
-        if torch.is_tensor(inputs):
-            inputs = {"image": inputs}
-        device,bs = get_device_and_bs_from_input_dict(inputs)
-        if self.postprocess=="cls_token":
-            inputs["cls"] = torch.tensor([0 for _ in range(bs)],device=device).unsqueeze(1)
+                        raise_error_on_zero_tokens=False):
+        if "bs_device_for_empty_input" in inputs:
+            bs,device = inputs["bs_device_for_empty_input"]
+            del inputs["bs_device_for_empty_input"]
+        else:
+            if torch.is_tensor(inputs):
+                inputs = {"image": inputs}
+            device,bs = get_device_and_bs_from_input_dict(inputs)
+            assert bs is not None, "No inputs found. Manually pass batch_size and device with key 'bs_device_for_empty_input' to avoid errors"
+        #always have atleast a cls token to avoid problems with no inputs
+        inputs["cls"] = torch.tensor([0 for _ in range(bs)],device=device).unsqueeze(1)
+        
         max_seq_len = self.get_seq_len(inputs,bs)
         self.reset_idx(bs)
         tokens = [[] for _ in range(bs)]
         token_info = [[] for _ in range(bs)]
-        
-        for input_name, item in inputs.items():
+        input_names = list(inputs.keys())
+        if self.pre_reduction=="spatial":
+            inputs["cls_image"] = torch.zeros(self.cls_image_size(bs),device=device)
+            #make sure "cls_image" is at the end so it contains all the information
+            input_names.append("cls_image")
+
+        for input_name in input_names:
+            item = inputs[input_name]
             assert input_name in self.input_dict, f"Input name {input_name} not found in input_dict. Has to be one of: {self.input_dict.keys()}"
             t = self.input_dict[input_name]["input_type"]
             if item is None:
@@ -415,6 +465,9 @@ class FancyViT(nn.Module):
                 info_i = None
                 tokenized_item = None
                 if t=="image":
+                    if self.pre_reduction=="spatial" and input_name!="cls_image":
+                        inputs["cls_image"][i,self.cls_image_channel_slice[input_name]] = item_i
+                        continue
                     if self.share_image_patch_embed:
                         if item_i.shape[1]<max(self.in_chans):
                             item_i = F.pad(item_i,(0,0,0,0,0,max(self.in_chans)-item_i.shape[1]))
@@ -447,13 +500,16 @@ class FancyViT(nn.Module):
                 seq_len = tokenized_item.shape[1]
                 space_enough,seq_idx = self.iterate_idx(i,seq_len,self.max_seq_len)
                 if not space_enough:
-                    continue
+                    raise ValueError("Not enough space for tokens, increase max_seq_len")
                 else:
                     if info_i is None:
                         info_i = [{"input_name": input_name, "input_type": t, "j": j} for j in range(seq_len)]
                     if space_enough:
                         tokens[i].append(tokenized_item)
                         token_info[i].append(info_i)
+        if self.pre_reduction=="spatial":
+            pass
+        #tokens = [torch.cat(item,dim=1) if len(item)>0 else torch.zeros(1,0,self.embed_dim,device=device) for item in tokens]
         tokens = [torch.cat(item,dim=1) for item in tokens]
         token_info = [sum(item,[]) for item in token_info]
         if self.max_seq_len is None:
@@ -479,12 +535,23 @@ class FancyViT(nn.Module):
             #assert all bs has 1 cls token
             cls_idx = [[j for j in range(len(ti)) if ti[j]["input_name"]=="cls"] for ti in token_info]
             assert all([len(idx)==1 for idx in cls_idx]), "Expected 1 cls token per batch, got: "+str(cls_idx)
-            cls_idx = [idx[0] for idx in cls_idx]
-            x = x[:,cls_idx]
+            cls_idx = torch.tensor([idx[0] for idx in cls_idx])
+            x = x[range(len(cls_idx)),cls_idx]
         elif self.post_reduction=="mean_token":
-            x = x.mean(dim=-1)
+            x_mean = []
+            for i in range(len(x)):
+                nonpad_mask = [j for j in range(len(token_info[i])) if token_info[i][j]["input_name"]!="padding"]
+                x_mean.append(x[i,nonpad_mask].mean(dim=0))
+            x = torch.stack(x_mean)
         elif self.post_reduction=="spatial":
-            x = x.reshape(x.shape[0],self.token_img_size,self.token_img_size,self.embed_dim)
+            x, _ = group_window_multi(x,
+                                    token_info=token_info,
+                                    window_size=self.token_img_size,
+                                    window_delta=0,
+                                    full_image_is_window=True,
+                                    reduce_spatially=True)
+            # old, only works with 1 image and no non-image tokens.
+            #  x = x.reshape(x.shape[0],self.token_img_size,self.token_img_size,self.embed_dim)
             x = self.neck(x.permute(0, 3, 1, 2))
         elif self.post_reduction=="none":
             pass
@@ -659,8 +726,8 @@ class FancyBlock(nn.Module):
     ) -> None:
         super().__init__()
         attn_func_dict = {
-            "global": GlobalAttention,#GlobalAttention2,#
-            "image": ImageAttention,
+            "global": GlobalAttention,
+            "image": WindowedAttention,
             "window": WindowedAttention,
             "window_shifted": partial(WindowedAttention, is_shifted=True),
             "grouped": GroupedAttention,
@@ -932,85 +999,125 @@ class GlobalAttention(Attention):
         x = self.proj(x)
         return x
     
+def group_tokens_for_2d_window(x, window_size, window_delta):
+    assert len(x.shape)==4, "Expected tokens to be stored in a (B,H,W,C) tensor, found size: "+str(x.shape)
+    s,d = window_size, window_delta
+    B, H, W, C = x.shape
+    pad_h0,pad_w0 = (s-d)%s,(s-d)%s
+    pad_h1,pad_w1 = s-((H+pad_h0)%s), s-((W+pad_w0)%s)
+    paddings = [0,0,pad_w0,pad_w1,pad_h0,pad_h1] #F.pad uses reverse dim order, so (C0, C1, W0, W1, H0, H1)
+    paddings = [p%s for p in paddings]
+    x_padded = torch.nn.functional.pad(x,paddings)
+    _, H2, W2, _ = x_padded.shape
+    group_inv = {"unpad_slice_H": slice(paddings[4],H2-paddings[5]),
+                "unpad_slice_W": slice(paddings[2],W2-paddings[3]),
+                "x_padded.shape": x_padded.shape}
+    group_slice = []
+    groups = []
+    nH,nW = x_padded.shape[1]//s, x_padded.shape[2]//s
+    for bs_i in range(B):
+        for i in range(nH):
+            for j in range(nW):
+                slice_H = slice(i*s,(i+1)*s)
+                slice_W = slice(j*s,(j+1)*s)
+                groups.append(x_padded[bs_i,slice_H,slice_W,:])
+                group_slice.append({"slice_H":slice_H,
+                                "slice_W":slice_W,
+                                "bs_i":bs_i})
+    group_inv["group_slice"] = group_slice
+    groups = torch.stack(groups,dim=0)
+    return groups, group_inv
+
+def ungroup_tokens_for_2d_window(groups,group_inv):
+    x_padded = torch.zeros(group_inv["x_padded.shape"],dtype=groups.dtype,device=groups.device)
+    for i,group in enumerate(groups):
+        slice_H = group_inv["group_slice"][i]["slice_H"]
+        slice_W = group_inv["group_slice"][i]["slice_W"]
+        bs_i = group_inv["group_slice"][i]["bs_i"]
+        x_padded[bs_i,slice_H,slice_W,:] = group
+    x = x_padded[:,group_inv["unpad_slice_H"],group_inv["unpad_slice_W"]]
+    return x
+
+def group_window_multi(x,token_info, window_size, window_delta, 
+                       full_image_is_window=False,
+                       reduce_spatially=False,
+                       reduce_spatially_add_zeros_on_missing=True,
+                       ):
+    """groups tokens for window attention with multiple images, based on information in token_info"""
+    assert len(x.shape)==3, "Expected tokens to be stored in a (B,L,C) tensor when using the token_info argument, found size: "+str(x.shape)
+    assert len(token_info)==x.shape[0], "Expected token_info to have length equal to batch size, got: "+str(len(token_info))
+    B, L, C = x.shape
+    #raise NotImplementedError
+    if full_image_is_window:
+        H = W = window_size
+        group_inv_for_image_attention = {"unpad_slice_H": slice(None),
+                                    "unpad_slice_W": slice(None),
+                                    "x_padded.shape": (B,H,W,C),
+                                    "group_slice": [{"slice_H": slice(None),
+                                                    "slice_W": slice(None),
+                                                    "bs_i": i} for i in range(B)]}
+        assert window_delta==0, "Expected window_delta to be 0 for when the full image is the window, got: "+str(window_delta)
+
+    group_inv_multi = []
+    window_grouped_tokens = []
+    for i in range(B):
+        input_types = [token_info[i][j].get("input_type","padding") for j in range(len(token_info[i]))]
+        input_names = [token_info[i][j].get("input_name","padding") for j in range(len(token_info[i]))]
+        unique_image_input_names = list(set([n for n,t in zip(input_names,input_types) if t=="image"]))
+        for n_ij in unique_image_input_names:
+            y,idx_x = extract_image_from_tokens(x_i=x[i],token_info_i=token_info[i],input_name=n_ij)
+            if full_image_is_window:
+                assert y.shape[1]==H and y.shape[2]==W, f"Expected image to have shape ({H},{W}), got: {y.shape}"
+                z = y
+                group_inv = group_inv_for_image_attention
+            else:
+                z,group_inv = group_tokens_for_2d_window(y, window_size, window_delta)
+            lwgt = sum([len(w) for w in window_grouped_tokens])
+            idx_z = slice(lwgt,lwgt+len(z))
+            group_inv_multi.append({"i": i,
+                                    "n": n_ij,
+                                    "idx_x": idx_x,
+                                    "idx_z": idx_z,
+                                    "group_inv": group_inv})
+            window_grouped_tokens.append(z)
+    if reduce_spatially:
+        rsazom = reduce_spatially_add_zeros_on_missing
+        batch_i = [g["i"] for g in group_inv_multi]
+        num_images_per_batch_i = [sum([bi==i for bi in batch_i]) for i in range(B)]
+        window_grouped_tokens_new = []
+        for i,num_images in enumerate(num_images_per_batch_i):
+            images = []
+            if num_images==0:
+                if rsazom:
+                    images.append(torch.zeros((1,H,W,C),dtype=window_grouped_tokens[0].dtype,device=window_grouped_tokens[0].device))
+                else:
+                    continue
+            else:
+                for _ in range(num_images):
+                    images.append(window_grouped_tokens.pop(0))
+            window_grouped_tokens_new.append(torch.cat(images,dim=0).mean(dim=0,keepdim=True))
+        window_grouped_tokens = window_grouped_tokens_new
+    window_grouped_tokens = torch.cat(window_grouped_tokens,dim=0) if len(window_grouped_tokens)>0 else None
+    return window_grouped_tokens, group_inv_multi
+
+def ungroup_window_multi(x,z,group_inv_multi):
+    for g in group_inv_multi:
+        i,idx_x,idx_z,group_inv = g["i"],g["idx_x"],g["idx_z"],g["group_inv"]
+        y = ungroup_tokens_for_2d_window(z[idx_z],group_inv)
+        x[i,idx_x] = y.reshape(-1,y.shape[-1])
+    return x
+
 class WindowedAttention(Attention):
-    def __init__(self, *args, is_shifted=False, is_cyclical=False, **kwargs):
+    def __init__(self, *args, is_shifted=False, is_cyclical=False, full_image_is_window=False, **kwargs):
         super().__init__(*args, **kwargs)
+        self.full_image_is_window = full_image_is_window
         self.window_size = self.input_size[0]
         assert self.window_size>0, "Window size must be greater than 0"
         if is_shifted:
             self.window_delta = self.window_size//2
         else:
             self.window_delta = 0
-        self.old_window = False
     
-    def group_tokens_for_2d_window(self,x):
-        assert len(x.shape)==4, "Expected tokens to be stored in a (B,H,W,C) tensor, found size: "+str(x.shape)
-        s,d = self.window_size, self.window_delta
-        B, H, W, C = x.shape
-        pad_h0,pad_w0 = (s-d)%s,(s-d)%s
-        pad_h1,pad_w1 = s-((H+pad_h0)%s), s-((W+pad_w0)%s)
-        paddings = [0,0,pad_w0,pad_w1,pad_h0,pad_h1] #F.pad uses reverse dim order, so (C0, C1, W0, W1, H0, H1)
-        paddings = [p%s for p in paddings]
-        x_padded = torch.nn.functional.pad(x,paddings)
-        _, H2, W2, _ = x_padded.shape
-        group_inv = {"unpad_slice_H": slice(paddings[4],H2-paddings[5]),
-                    "unpad_slice_W": slice(paddings[2],W2-paddings[3]),
-                    "x_padded.shape": x_padded.shape}
-        group_slice = []
-        groups = []
-        nH,nW = x_padded.shape[1]//s, x_padded.shape[2]//s
-        for bs_i in range(B):
-            for i in range(nH):
-                for j in range(nW):
-                    slice_H = slice(i*s,(i+1)*s)
-                    slice_W = slice(j*s,(j+1)*s)
-                    groups.append(x_padded[bs_i,slice_H,slice_W,:])
-                    group_slice.append({"slice_H":slice_H,
-                                    "slice_W":slice_W,
-                                    "bs_i":bs_i})
-        group_inv["group_slice"] = group_slice
-        groups = torch.stack(groups,dim=0)
-        return groups, group_inv
-    
-    def ungroup_tokens_for_2d_window(self,groups,group_inv):
-        x_padded = torch.zeros(group_inv["x_padded.shape"],dtype=groups.dtype,device=groups.device)
-        for i,group in enumerate(groups):
-            slice_H = group_inv["group_slice"][i]["slice_H"]
-            slice_W = group_inv["group_slice"][i]["slice_W"]
-            bs_i = group_inv["group_slice"][i]["bs_i"]
-            x_padded[bs_i,slice_H,slice_W,:] = group
-        x = x_padded[:,group_inv["unpad_slice_H"],group_inv["unpad_slice_W"]]
-        return x
-    
-    def group_window_multi(self,x,token_info):
-        """groups tokens for window attention with multiple images, based on information in token_info"""
-        group_inv_multi = []
-        window_grouped_tokens = []
-        for i in range(len(token_info)):
-            input_types = [token_info[i][j].get("input_type","padding") for j in range(len(token_info[i]))]
-            input_names = [token_info[i][j].get("input_name","padding") for j in range(len(token_info[i]))]
-            unique_image_input_names = list(set([n for n,t in zip(input_names,input_types) if t=="image"]))
-            for n_ij in unique_image_input_names:
-                y,idx_x = extract_image_from_tokens(x_i=x[i],token_info_i=token_info[i],input_name=n_ij)
-                z,group_inv = self.group_tokens_for_2d_window(y)
-                lwgt = sum([len(w) for w in window_grouped_tokens])
-                idx_z = slice(lwgt,lwgt+len(z))
-                group_inv_multi.append({"i": i,
-                                            "n": n_ij,
-                                            "idx_x": idx_x,
-                                            "idx_z": idx_z,
-                                            "group_inv": group_inv})
-                window_grouped_tokens.append(z)
-        window_grouped_tokens = torch.cat(window_grouped_tokens,dim=0)
-        return window_grouped_tokens, group_inv_multi
-
-    def ungroup_window_multi(self,x,z,group_inv_multi):
-        for g in group_inv_multi:
-            i,idx_x,idx_z,group_inv = g["i"],g["idx_x"],g["idx_z"],g["group_inv"]
-            y = self.ungroup_tokens_for_2d_window(z[idx_z],group_inv)
-            x[i,idx_x] = y.reshape(-1,y.shape[-1])
-        return x
-            
     def forward_wrapped_w_window_partition(self, x, token_info = None):
         assert len(x.shape)==4, "Expected tokens to be stored in a (B,H,W,C) tensor, found size: "+str(x.shape)
         H, W = x.shape[1], x.shape[2]
@@ -1019,20 +1126,22 @@ class WindowedAttention(Attention):
         x = window_unpartition(x, self.window_size, pad_hw, (H, W))
         return x
     
+    def forward_wrapped_w_old_window(self, x, token_info = None):
+        B,HW,C = x.shape
+        H = W = int(round(HW**0.5))
+        h = w = self.window_size
+        x, group_inv = self.group_tokens_for_2d_window(x.reshape((B,H,W,C)))
+        b = x.shape[0]
+        x = self.forward(x).reshape((b,h,w,C))
+        x = self.ungroup_tokens_for_2d_window(x, group_inv).reshape((B,HW,C))
+        return x
+    
     def forward_wrapped(self, x, token_info = None):
-        if self.old_window:
-            B,HW,C = x.shape
-            H = W = int(round(HW**0.5))
-            h = w = self.window_size
-            x, group_inv = self.group_tokens_for_2d_window(x.reshape((B,H,W,C)))
-            b = x.shape[0]
-            x = self.forward(x).reshape((b,h,w,C))
-            x = self.ungroup_tokens_for_2d_window(x, group_inv).reshape((B,HW,C))
-        else:
-            assert len(x.shape)==3, "Expected tokens to be stored in a (B,L,C) tensor when using the token_info argument, found size: "+str(x.shape)
-            y,group_inv_multi = self.group_window_multi(x,token_info)
-            y = self.forward(y)
-            x = self.ungroup_window_multi(x,y,group_inv_multi)
+        assert len(x.shape)==3, "Expected tokens to be stored in a (B,L,C) tensor when using the token_info argument, found size: "+str(x.shape)
+        y,group_inv_multi = group_window_multi(x,token_info,self.window_size,self.window_delta,full_image_is_window=self.full_image_is_window)
+        if y is None: return x #fix for when we have no images in x
+        y = self.forward(y)
+        x = ungroup_window_multi(x,y,group_inv_multi)
         return x
 
 def extract_image_from_tokens(x_i,token_info_i,input_name,pad_if_missing=False):
@@ -1069,6 +1178,7 @@ class CrossAttention(Attention):
         super().__init__(*args, **kwargs)
         self.nametype_to_query = nametype_to_query
         self.nh = self.num_heads
+        self.largest_neg_value = -torch.finfo(torch.float32).max
         if self.use_rel_pos:
             warnings.warn("Relative positional embeddings are not supported for cross attention")
 
@@ -1115,7 +1225,7 @@ class CrossAttention(Attention):
             bs_slice = slice(idx*self.nh,(idx+1)*self.nh)
             sub_q[bs_slice,:len(attn_idx[idx]),:] = q[bs_slice,attn_idx[idx],:]
         attn = (sub_q * self.scale) @ k.transpose(-2, -1)
-        attn[padding] = -float("inf")
+        attn[padding] = self.largest_neg_value
         attn = attn.softmax(dim=-1)
         y = (attn @ v).view(B, self.num_heads, Lx, C_heads).permute(0, 2, 1, 3).reshape(B, Lx, C)
         #change only the subset of tokens that were in the query group
@@ -1157,6 +1267,7 @@ class GroupedAttention(GlobalAttention):
         assert token_info is not None, "token_info must be provided for grouped attention"
         B, L, C = x.shape
         y, group_inv = group_tokens(x, token_info, self.token_info_to_group)
+        if y is None: return x #fix for when we have no groups in x
         y = self.forward_wrapped_ga(y)
         x = ungroup_tokens(x, y, group_inv)
         return x
@@ -1180,6 +1291,9 @@ def group_tokens(x: torch.Tensor,
                                   "group_idx": group_idx,
                                   "j": j})
                 j += 1
+    
+    if len(groups)==0:
+        return None, group_inv
     len_per_group = [len(g) for g in groups]
     max_len = max(len_per_group)
 
@@ -1244,7 +1358,7 @@ def window_unpartition(
     return x
 
 
-def token_info_overview(token_info,only_len=True):
+def token_info_overview(token_info,only_len=True,as_df=False):
     bs = len(token_info)
     out = [{} for _ in range(bs)]
     for i in range(bs):
@@ -1259,6 +1373,8 @@ def token_info_overview(token_info,only_len=True):
                 out[i][k] = len(out[i][k])
             else:
                 out[i][k] = convert_to_slice_if_possible(out[i][k])
+    if as_df:
+        out = pd.DataFrame(out).fillna(0).astype(int)
     return out
 
 def get_rel_pos(q_size: int, k_size: int, rel_pos: torch.Tensor) -> torch.Tensor:
@@ -1361,7 +1477,6 @@ class PatchEmbed(nn.Module):
             embed_dim (int): Patch embedding dimension.
         """
         super().__init__()
-
         self.proj = nn.Conv2d(
             in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding
         )
@@ -1416,7 +1531,8 @@ def main():
         set_random_seed(123)
         dim = 128
         num_heads = 8
-        block_types = ["global","window","window_shifted","cross","grouped"]*2
+        block_types = ["global","window","window_shifted","image","cross","grouped"]*2
+        #block_types = ["cross"]*1
         depth = len(block_types)
         model = FancyViT(embed_dim=dim,block_types=block_types,depth=depth,input_dict=inputs,num_heads=num_heads)
         import jlc
@@ -1433,11 +1549,11 @@ def main():
                     "time": 0.5,
                     "num_classes": 0.5,
                     "class_names": 0.5}
-        input_dict = {"image": torch.rand(bs,3,img_size,img_size),
-                      "same_vol": torch.rand(bs,3+6,img_size,img_size),
-                    "same_classes": torch.rand(bs,3+6,img_size,img_size),
-                    "same_dataset": torch.rand(bs,3+6,img_size,img_size),
-                    "adjecant": torch.rand(bs,3+6,img_size,img_size),
+        input_dict = {"image": torch.randn(bs,3,img_size,img_size),
+                      "same_vol": torch.randn(bs,3+6,img_size,img_size),
+                    "same_classes": torch.randn(bs,3+6,img_size,img_size),
+                    "same_dataset": torch.randn(bs,3+6,img_size,img_size),
+                    "adjecant": torch.randn(bs,3+6,img_size,img_size),
                     "time": torch.rand(bs,1),
                     "num_classes": torch.randint(0,64,(bs,1)),
                     "class_names": class_names}
@@ -1445,9 +1561,60 @@ def main():
         pred = model(input_dict)
         print("input sizes: ",{k: v.shape if torch.is_tensor(v) else len(v) for k,v in input_dict.items() if v is not None})
         print(f"output shape: {pred.shape}")
-        token_info = model.tokenize_inputs(input_dict)[1]
-        print("token_info_overview:")
-        print(token_info_overview(token_info))
+        if False:
+            token_info = model.tokenize_inputs(input_dict)[1]
+            print("token_info_overview:")
+            print(token_info_overview(token_info))
+    elif args.unit_test==3:
+        with torch.no_grad():
+            for _ in range(10):
+                print("UNIT TEST 3: fancy_vit_from_args")
+                device = "cuda"
+                seed = set_random_seed(None)
+                print("seed: ",seed)
+                args = {"cond_vit_setup": "1b2abcde3a4b", #err: ["1b2abcde3c4b"]
+                        "max_num_classes": 64,
+                        "cond_img_size": 128,
+                        "cond_patch_size": 16,
+                        "cond_sam_idx": -1}
+                fancy_vit_args = fancy_vit_from_args(args)
+                model = FancyViT(**fancy_vit_args)
+                model = model.to(device)
+                import jlc
+                jlc.num_of_params(model)
+                img_size = model.img_size
+                bs = 16
+                class_name_length = 7
+                class_names = torch.randint(0,8096,(bs,class_name_length))
+                padding_mask = 0.4>torch.rand(bs,class_name_length)
+                class_names[padding_mask] = -1
+                probs_per_arg = {"image": 0.5,
+                            "same_vol": 0.5,
+                            "same_classes": 0.5,
+                            "same_dataset": 0.5,
+                            "adjecant": 0.5,
+                            "time": 0.5,
+                            "num_classes": 0.5,
+                            "class_names": 0.5}
+                probs_per_arg = {k: 0.5 for k in probs_per_arg.keys()}
+                input_dict = {"image": torch.randn(bs,3,img_size,img_size),
+                            "same_vol": torch.randn(bs,3+6,img_size,img_size),
+                            "same_classes": torch.randn(bs,3+6,img_size,img_size),
+                            "same_dataset": torch.randn(bs,3+6,img_size,img_size),
+                            "adjecant": torch.randn(bs,3+6,img_size,img_size),
+                            "time": torch.rand(bs,1),
+                            "num_classes": torch.randint(0,64,(bs,1)),
+                            "class_names": class_names}
+                input_dict = {k: v.to(device) if torch.is_tensor(v) else v for k,v in input_dict.items()}
+                input_dict = {k: [v[i] if torch.rand(1)<probs_per_arg[k] else None for i in range(bs)] for k,v in input_dict.items()}
+                input_dict["bs_device_for_empty_input"] = bs,device
+                pred = model(input_dict)
+                print("input sizes: ",{k: v.shape if torch.is_tensor(v) else len(v) for k,v in input_dict.items() if v is not None})
+                print(f"output shape: {pred.shape}")
+                if True:
+                    token_info = model.tokenize_inputs(input_dict)[1]
+                    print("token_info_overview:")
+                    print(token_info_overview(token_info,as_df=1))
     else:
         raise ValueError("Invalid unit test")
     
