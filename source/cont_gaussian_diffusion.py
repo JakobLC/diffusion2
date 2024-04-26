@@ -4,7 +4,7 @@ import enum
 import numpy as np
 import torch
 from datasets import AnalogBits
-from utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
+from source.utils.utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):

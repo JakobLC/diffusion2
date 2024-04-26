@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
-from utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
+from utils.utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
 import copy
 from shutil import rmtree
 
@@ -50,7 +50,7 @@ def load_defaults(idx=0,ordered_dict=False,filename="jsons/args_default.json",
                   version=None):
     if version is not None:
         assert idx==0, f"version={version} not supported with idx={idx}."
-    default_path = Path(__file__).parent.parent/filename
+    default_path = Path(__file__).parent.parent.parent/filename
     if ordered_dict:
         args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
     else:
@@ -275,7 +275,7 @@ class TieredParser():
         assert isinstance(name,str), f"name={name} not a valid type."
         if name.find(";")>=0:
             return {}, {}, {}
-        name_based_args = json.loads((Path(__file__).parent.parent/self.filename_model).read_text())
+        name_based_args = json.loads((Path(__file__).parent.parent.parent/self.filename_model).read_text())
 
         if "+" in name:
             plus_names = name.split("+")[1:]
@@ -363,7 +363,7 @@ class TieredParser():
             return ""
 
     def load_and_format_id_dict(self,return_type="dict"):
-        id_list = json.loads((Path(__file__).parent.parent/self.filename_ids).read_text())
+        id_list = json.loads((Path(__file__).parent.parent.parent/self.filename_ids).read_text())
         if return_type=="list":
             return id_list
         elif return_type=="dict":
@@ -382,8 +382,8 @@ class TieredParser():
         return id not in id_dict.keys()
 
     def get_unique_id(self, args):
-        if not (Path(__file__).parent.parent/self.filename_ids).exists():
-            (Path(__file__).parent.parent/self.filename_ids).write_text("[]")
+        if not (Path(__file__).parent.parent.parent/self.filename_ids).exists():
+            (Path(__file__).parent.parent.parent/self.filename_ids).write_text("[]")
         id_dict = self.load_and_format_id_dict()
         id = args.__dict__[self.id_key]
         for k,v in args.__dict__.items():

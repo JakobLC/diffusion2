@@ -144,14 +144,19 @@ def default_input_dict(img_size=1024,patch_size=16,image_channels=3,diff_channel
                "img_size": img_size, 
                "patch_size": patch_size, 
                "in_chans": image_channels+diff_channels}
-    inputs = {"image":        {**im_dict, "in_chans": 3},
+    inputs = {"sample":       {**im_dict, "in_chans": diff_channels},
+            "image":          {**im_dict, "in_chans": 3},
+            "points":         {**im_dict, "in_chans": diff_channels},
+            "bbox":           {**im_dict, "in_chans": diff_channels},
+            "self_cond":      {**im_dict, "in_chans": diff_channels},
             "same_vol":       im_dict,
             "same_classes":   im_dict,
             "same_dataset":   im_dict,
-            "adjecant":       im_dict,
+            "adjacent":       im_dict,
             "time":           {"input_type": "scalar_continuous", "min": 0.0, "max": 1.0},
             "num_classes":    {"input_type": "scalar_discrete", "size": 64},
-            "class_names":    {"input_type": "vocabulary", "size": 8096},}
+            "class_names":    {"input_type": "vocabulary", "size": 8096},
+    }
     return inputs
 
 cond_vit_setup_long = {1: {"option_name": "preprocess" ,
@@ -191,11 +196,21 @@ def fancy_vit_from_args(args):
             "max_num_classes",
             "cond_img_size",
             "cond_patch_size",
-            "cond_sam_idx"]
+            "cond_sam_idx",
+            "vit_unet_cond_mode",
+            "weak_bbox_prob",
+            "weak_points_prob",
+            "weak_signals"]
+    new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
+    keys += new_prob_keys
     if not isinstance(args,dict):
-        args = args.__dict__
-    index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
+        args = copy.deepcopy(args.__dict__)
     assert all([k in args.keys() for k in keys]), "Missing keys in args: "+str([k for k in keys if k not in args.keys()])
+    if args["vit_unet_cond_mode"]=="no_vit":
+        assert not any([p>0 for p in args[new_prob_keys]]), "No ViT, so new probabilities should be 0. found: "+str({k: args[k] for k in new_prob_keys if args[k]>0})
+        return None
+    index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
+    
     diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
     del_keys = "max_seq_len,input_dict,img_size,patch_size,global_attn_indexes,block_types"
     fancy_vit_args = fancy_vit_from_idx(args["cond_sam_idx"],del_keys=del_keys.split(","))
@@ -203,12 +218,30 @@ def fancy_vit_from_args(args):
                                                         patch_size=args["cond_patch_size"],
                                                         image_channels=3,
                                                         diff_channels=diff_channels)
+    #remove keys from the input dict based on args
+    if args["weak_points_prob"]<=0 or not args["weak_signals"]:
+        if "points" in fancy_vit_args["input_dict"].keys():
+            del fancy_vit_args["input_dict"]["points"]
+    if args["weak_bbox_prob"]<=0 or not args["weak_signals"]:
+        if "bbox" in fancy_vit_args["input_dict"].keys():
+            del fancy_vit_args["input_dict"]["bbox"]
+    if 0==args["semantic_prob"] or 1==args["semantic_prob"]:
+        if "same_classes" in fancy_vit_args["input_dict"].keys():
+            del fancy_vit_args["input_dict"]["same_classes"]
+
+    
     fancy_vit_args["pre_reduction"] = {"a": "spatial", "b": "none"}[index_to_opt[1]]
     fancy_vit_args["post_reduction"] = {"a": "cls_token", "b": "mean_token", "c": "spatial", "d": "none"}[index_to_opt[3]]
+    if args["vit_unet_cond_mode"]=="no_unet":
+        assert index_to_opt[3]=="c", "Only option 3c is allowed for no_unet, found: 3"+index_to_opt[3]
+        fancy_vit_args["post_reduction"] = "diffusion_sample"
     block_types = get_appropriate_block_types(depth=fancy_vit_args["depth"],block_types=index_to_opt[2])
     fancy_vit_args["block_types"] = block_types
     return fancy_vit_args
 
+def get_opt4_from_cond_vit_setup(cond_vit_setup):
+    index_to_opt = is_valid_cond_vit_setup(cond_vit_setup)
+    return index_to_opt[4]
 
 def is_valid_cond_vit_setup(cond_vit_setup,long_names_instead=False):
     assert isinstance(cond_vit_setup,str), "expected str, found: "+str(cond_vit_setup)
@@ -236,7 +269,6 @@ def is_valid_cond_vit_setup(cond_vit_setup,long_names_instead=False):
             if val in v["requires"].keys():
                 for k_req,v_req in v["requires"][val].items():
                     assert index_to_opt2[k_req] in v_req, f"Invalid requirement. When having option {str(k)+val}, you need one of: {[str(k_req)+item for item in v_req]}, found: {str(k_req)+index_to_opt2[k_req]}"
-
     return index_to_opt2
 
 class FancyViT(nn.Module):
@@ -264,7 +296,7 @@ class FancyViT(nn.Module):
     ) -> None:
         super().__init__()
         assert pre_reduction in ["spatial","none"], "Invalid pre_reduction: "+pre_reduction
-        assert post_reduction in ["cls_token","mean_token","spatial","none"], "Invalid post_reduction: "+post_reduction
+        assert post_reduction in ["cls_token","mean_token","spatial","diffusion_sample","none"], "Invalid post_reduction: "+post_reduction
         self.pre_reduction = pre_reduction
         self.post_reduction = post_reduction
         self.embed_dim = embed_dim
@@ -310,7 +342,8 @@ class FancyViT(nn.Module):
                                             "img_size": self.img_size, 
                                             "patch_size": self.patch_size, 
                                             "in_chans": self.in_chans[0]}
-        
+
+
         if self.share_image_patch_embed:
             #assert we have same patch_size and image_size
             assert len(set(self.img_sizes))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
@@ -368,23 +401,27 @@ class FancyViT(nn.Module):
             self.blocks.append(block)
         if self.post_reduction=="spatial":
             self.neck = nn.Sequential(
-                nn.Conv2d(
-                    self.embed_dim,
-                    out_chans,
-                    kernel_size=1,
-                    bias=False,
-                ),
+                nn.Conv2d(self.embed_dim,out_chans,kernel_size=1,bias=False,),
                 LayerNorm2d(out_chans),
-                nn.Conv2d(
-                    out_chans,
-                    out_chans,
-                    kernel_size=3,
-                    padding=1,
-                    bias=False,
-                ),
+                nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
                 LayerNorm2d(out_chans),
             )
-
+        
+        if self.post_reduction=="diffusion_sample":
+            #upscale features, then add conv block
+            self.neck = nn.Sequential(
+                nn.Conv2d(self.embed_dim,out_chans,kernel_size=1,bias=False,),
+                LayerNorm2d(out_chans),
+                nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
+                LayerNorm2d(out_chans),
+                nn.Upsample(scale_factor=self.patch_size, mode='bilinear', align_corners=False),
+                nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
+                act_layer(),
+                nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
+                act_layer(),
+                nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
+            )
+                                      
     def reset_idx(self,bs):
         self.idx_now = [0 for _ in range(bs)]
 
@@ -885,20 +922,6 @@ class Attention(nn.Module):
     def forward_wrapped(self, x: torch.Tensor, token_info = None):
         assert token_info is None, "token_info not supported for basic attention, use a subclass"
         return self.forward(x)
-    
-"""class GlobalAttention2(Attention):
-    def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs)
-
-    def forward_wrapped(self, x, token_info = None):
-        if len(x.shape)==3:
-            s1 = x.shape
-            s2 = (x.shape[0],self.input_size[0],self.input_size[1],x.shape[-1])
-            print("s1,s2",s1,s2)
-            out = self.forward(x.reshape(s2)).reshape(s1)
-        else:    
-            out = self.forward(x)
-        return out"""
     
 def get_all_image_idx(token_info,H=None,W=None):
     token_idx = []
@@ -1545,7 +1568,7 @@ def main():
                       "same_vol": 0.5,
                     "same_classes": 0.5,
                     "same_dataset": 0.5,
-                    "adjecant": 0.5,
+                    "adjacent": 0.5,
                     "time": 0.5,
                     "num_classes": 0.5,
                     "class_names": 0.5}
@@ -1553,7 +1576,7 @@ def main():
                       "same_vol": torch.randn(bs,3+6,img_size,img_size),
                     "same_classes": torch.randn(bs,3+6,img_size,img_size),
                     "same_dataset": torch.randn(bs,3+6,img_size,img_size),
-                    "adjecant": torch.randn(bs,3+6,img_size,img_size),
+                    "adjacent": torch.randn(bs,3+6,img_size,img_size),
                     "time": torch.rand(bs,1),
                     "num_classes": torch.randint(0,64,(bs,1)),
                     "class_names": class_names}
@@ -1592,7 +1615,7 @@ def main():
                             "same_vol": 0.5,
                             "same_classes": 0.5,
                             "same_dataset": 0.5,
-                            "adjecant": 0.5,
+                            "adjacent": 0.5,
                             "time": 0.5,
                             "num_classes": 0.5,
                             "class_names": 0.5}
@@ -1601,7 +1624,7 @@ def main():
                             "same_vol": torch.randn(bs,3+6,img_size,img_size),
                             "same_classes": torch.randn(bs,3+6,img_size,img_size),
                             "same_dataset": torch.randn(bs,3+6,img_size,img_size),
-                            "adjecant": torch.randn(bs,3+6,img_size,img_size),
+                            "adjacent": torch.randn(bs,3+6,img_size,img_size),
                             "time": torch.rand(bs,1),
                             "num_classes": torch.randint(0,64,(bs,1)),
                             "class_names": class_names}

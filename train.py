@@ -28,8 +28,6 @@ from source.training import DiffusionModelTrainer
 # [5] check multiple workers works
 # [4] make i.e. 2x,4x imsize compared to diff sample 
 # [5] resume training by model_id
-# [5] implement conditioning
-# [6] find the best conditioning strategy
 
 #training TODO
 # loop over lr

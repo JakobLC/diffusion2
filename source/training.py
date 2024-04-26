@@ -24,18 +24,19 @@ import datetime
 from source.utils.argparse_utils import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
 from sampling import DiffusionSampler
-from plot_utils import plot_forward_pass,make_loss_plot
+from source.utils.plot_utils import plot_forward_pass,make_loss_plot
 from datasets import (CatBallDataset, custom_collate_with_info, 
                       SegmentationDataset, points_image_from_label)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from cont_gaussian_diffusion import create_diffusion_from_args
-from utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
+from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    fancy_print_kvs,bracket_glob_fix,format_relative_path,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose)
 from torchvision.transforms.functional import resize
+from source.models.cond_vit import fancy_vit_from_args, get_opt4_from_cond_vit_setup
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -120,6 +121,12 @@ class DiffusionModelTrainer:
             self.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
 
         #init models, optimizers etc
+        assert self.args.vit_unet_cond_mode in ['no_vit','both_cond_only','both_cond_image','no_unet'], "vit_unet_cond_mode must be one of ['no_vit','both_cond_only','both_cond_image','no_unet']"
+        
+        if self.args.vit_unet_cond_mode=="no_unet":
+            opt4 = get_opt4_from_cond_vit_setup(self.args.cond_vit_setup)
+            assert opt4 in ["c","d"], "opt4 must be one of ['c','d'] when using no_unet. found: "+opt4
+            
         if self.args.mode != "data":
             self.model = self.model.to(self.device)
             self.model_params = list(self.model.parameters())

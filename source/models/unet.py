@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
 from segment_anything.modeling import ImageEncoderViT
-
+from source.models.cond_vit import FancyViT, fancy_vit_from_args
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
 from source.models.nn import (
     SiLU,
@@ -352,173 +352,140 @@ class UNetModel(nn.Module):
         final_act="none",
         image_encoder_shape=(256,64,64),
         image_encoder_depth=-1,
+        vit_args=None,
+        no_unet=False,
     ):
         super().__init__()
         self.debug_flag = debug_flag
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         self.image_size = image_size
-        self.model_channels = model_channels
-        self.num_res_blocks = num_res_blocks
-        
-        self.attention_resolutions = []
-        if attention_resolutions not in ["", ","]:
-            for ar in attention_resolutions.split(","):
-                ar = int(ar)
-                if ar < 0:
-                    ar = len(channel_mult) + ar - 1
-                self.attention_resolutions.append(ar)
-        self.dropout = dropout
-        self.channel_mult = channel_mult
-        self.conv_resample = conv_resample
-        self.num_classes = None if num_classes==0 else num_classes
-        self.use_checkpoint = use_checkpoint
-        self.num_heads = num_heads
-        self.num_heads_upsample = num_heads_upsample
-        self.no_diffusion = no_diffusion
-        self.image_encoder_depth = image_encoder_depth
-        self.use_image_features = image_encoder_depth >= 0
-        self.fp16_attrs = ["input_blocks","middle_block","output_blocks"]
-
-        if self.use_image_features:
-            self.fp16_attrs.append("preprocess_img_enc")
-
-            s_in = image_encoder_shape
-            d = self.image_size//(2**image_encoder_depth)
-            s_out = (channel_mult[image_encoder_depth]*model_channels,d,d)
-            self.preprocess_img_enc = [conv_nd(2,in_channels=s_in[0],out_channels=s_out[0],kernel_size=3,padding=1)]
+        if no_unet:
+            assert vit_args is not None, "vit_args must be provided if no_unet is True"
+        else:
+                
+            self.model_channels = model_channels
+            self.num_res_blocks = num_res_blocks
             
-            if s_in[1] == s_out[1]:
-                pass
-            elif s_in[1] > s_out[1]:
-                if np.isclose(s_in[1]/s_out[1],int(s_in[1]/s_out[1])):
-                    self.preprocess_img_enc.append(avg_pool_nd(2,s_in[1]//s_out[1]))
+            self.attention_resolutions = []
+            if attention_resolutions not in ["", ","]:
+                for ar in attention_resolutions.split(","):
+                    ar = int(ar)
+                    if ar < 0:
+                        ar = len(channel_mult) + ar - 1
+                    self.attention_resolutions.append(ar)
+            self.dropout = dropout
+            self.channel_mult = channel_mult
+            self.conv_resample = conv_resample
+            self.num_classes = None if num_classes==0 else num_classes
+            self.use_checkpoint = use_checkpoint
+            self.num_heads = num_heads
+            self.num_heads_upsample = num_heads_upsample
+            self.no_diffusion = no_diffusion
+            self.image_encoder_depth = image_encoder_depth
+            self.use_image_features = image_encoder_depth >= 0
+            self.fp16_attrs = ["input_blocks","middle_block","output_blocks"]
+
+            if self.use_image_features:
+                self.fp16_attrs.append("preprocess_img_enc")
+
+                s_in = image_encoder_shape
+                d = self.image_size//(2**image_encoder_depth)
+                s_out = (channel_mult[image_encoder_depth]*model_channels,d,d)
+                self.preprocess_img_enc = [conv_nd(2,in_channels=s_in[0],out_channels=s_out[0],kernel_size=3,padding=1)]
+                
+                if s_in[1] == s_out[1]:
+                    pass
+                elif s_in[1] > s_out[1]:
+                    if np.isclose(s_in[1]/s_out[1],int(s_in[1]/s_out[1])):
+                        self.preprocess_img_enc.append(avg_pool_nd(2,s_in[1]//s_out[1]))
+                    else:
+                        #ugly downsampling due to non-integer ratio
+                        self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
                 else:
-                    #ugly downsampling due to non-integer ratio
+                    #Bilinear upsampling is as good as it gets
                     self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
-            else:
-                #Bilinear upsampling is as good as it gets
-                self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
-            self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
+                self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
-        self.input_dict = {"sample": out_channels if not self.no_diffusion else 0,
-                           "image": image_channels,
-                           "bbox": int(weak_signals),
-                           "points": out_channels*int(weak_signals),
-                           "self_cond": out_channels if self_cond else 0,
-                           "cond": out_channels+image_channels if cond else 0,
-                           }
-        self.in_channels = 0
-        for k,v in self.input_dict.items():
-            self.input_dict[k] = [i+self.in_channels for i in range(v)]
-            self.in_channels += v
+            self.input_dict = {"sample": out_channels if not self.no_diffusion else 0,
+                            "image": image_channels,
+                            "bbox": int(weak_signals),
+                            "points": out_channels*int(weak_signals),
+                            "self_cond": out_channels if self_cond else 0,
+                            "cond": out_channels+image_channels if cond else 0,
+                            }
+            self.in_channels = 0
+            for k,v in self.input_dict.items():
+                self.input_dict[k] = [i+self.in_channels for i in range(v)]
+                self.in_channels += v
+                
+            time_embed_dim = model_channels * 4
+            self.time_embed = nn.Sequential(
+                linear(model_channels, time_embed_dim),
+                SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
             
-        time_embed_dim = model_channels * 4
-        self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim),
-            SiLU(),
-            linear(time_embed_dim, time_embed_dim),
-        )
-        
-        if self.num_classes is not None:
-            self.class_emb = nn.Embedding(num_classes, time_embed_dim)
-        
-        self.input_blocks = nn.ModuleList(
-            [
-                TimestepEmbedSequential(
-                    conv_nd(dims, self.in_channels, model_channels, 3, padding=1)
-                )
-            ]
-        )
-        input_block_chans = [model_channels]
-        ch = model_channels
-        resolution = 0
-        for level, mult in enumerate(channel_mult):
-            for _ in range(num_res_blocks):
-                layers = [
-                    ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        out_channels=mult * model_channels,
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                ]
-                ch = mult * model_channels
-                if resolution in self.attention_resolutions:
-                    layers.append(
-                        AttentionBlock(
-                            ch, use_checkpoint=use_checkpoint, num_heads=num_heads
-                        )
-                    )
-                self.input_blocks.append(TimestepEmbedSequential(*layers))
-                input_block_chans.append(ch)
-            if level != len(channel_mult) - 1:
-                self.input_blocks.append(
-                    TimestepEmbedSequential(Downsample(ch, conv_resample, dims=dims))
-                )
-                input_block_chans.append(ch)
-                resolution += 1
-        middle_layers = [ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                        )]
-        if len(self.attention_resolutions)>0:
-            middle_layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads))
-        middle_layers.append(ResBlock(
+            if self.num_classes is not None:
+                self.class_emb = nn.Embedding(num_classes, time_embed_dim)
+            
+            self.input_blocks = nn.ModuleList([TimestepEmbedSequential(conv_nd(dims, self.in_channels, model_channels, 3, padding=1))])
+            input_block_chans = [model_channels]
+            ch = model_channels
+            resolution = 0
+            for level, mult in enumerate(channel_mult):
+                for _ in range(num_res_blocks):
+                    layers = [
+                        ResBlock(
                             ch,
                             time_embed_dim,
                             dropout,
+                            out_channels=mult * model_channels,
                             dims=dims,
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
-                        ))
-        
-        self.middle_block = TimestepEmbedSequential(*middle_layers)
-
-        self.output_blocks = nn.ModuleList([])
-        for level, mult in list(enumerate(channel_mult))[::-1]:
-            for i in range(num_res_blocks + 1):
-                layers = [
-                    ResBlock(
-                        ch + input_block_chans.pop(),
-                        time_embed_dim,
-                        dropout,
-                        out_channels=model_channels * mult,
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                ]
-                ch = model_channels * mult
-                if resolution in self.attention_resolutions:
-                    layers.append(
-                        AttentionBlock(
-                            ch,
-                            use_checkpoint=use_checkpoint,
-                            num_heads=num_heads_upsample,
                         )
+                    ]
+                    ch = mult * model_channels
+                    if resolution in self.attention_resolutions:
+                        layers.append(AttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads))
+                    self.input_blocks.append(TimestepEmbedSequential(*layers))
+                    input_block_chans.append(ch)
+                if level != len(channel_mult) - 1:
+                    self.input_blocks.append(
+                        TimestepEmbedSequential(Downsample(ch, conv_resample, dims=dims))
                     )
-                if level and i == num_res_blocks:
-                    layers.append(Upsample(ch, conv_resample, dims=dims))
-                    resolution -= 1
-                self.output_blocks.append(TimestepEmbedSequential(*layers))
-        both_mult = 2 if is_pred_both else 1
-        final_act_dict = {"none": nn.Identity(),
-                        "softmax": nn.Softmax(dim=1),
-                        "tanh": nn.Tanh()}
-        self.out = nn.Sequential(
-            normalization(ch),
-            SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
-            final_act_dict[final_act.lower()]
-        )
+                    input_block_chans.append(ch)
+                    resolution += 1
+            middle_layers = [ResBlock(ch,time_embed_dim,dropout,dims=dims,use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm)]
+            if len(self.attention_resolutions)>0:
+                middle_layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads))
+            middle_layers.append(ResBlock(ch,time_embed_dim,dropout,dims=dims,use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm))
+            
+            self.middle_block = TimestepEmbedSequential(*middle_layers)
+
+            self.output_blocks = nn.ModuleList([])
+            for level, mult in list(enumerate(channel_mult))[::-1]:
+                for i in range(num_res_blocks + 1):
+                    layers = [ResBlock(ch + input_block_chans.pop(),time_embed_dim,dropout,out_channels=model_channels * mult,dims=dims,
+                            use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm)]
+                    ch = model_channels * mult
+                    if resolution in self.attention_resolutions:
+                        layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads_upsample))
+                    if level and i == num_res_blocks:
+                        layers.append(Upsample(ch, conv_resample, dims=dims))
+                        resolution -= 1
+                    self.output_blocks.append(TimestepEmbedSequential(*layers))
+            both_mult = 2 if is_pred_both else 1
+            final_act_dict = {"none": nn.Identity(),
+                            "softmax": nn.Softmax(dim=1),
+                            "tanh": nn.Tanh()}
+            self.out = nn.Sequential(
+                normalization(ch),
+                SiLU(),
+                zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
+                final_act_dict[final_act.lower()]
+            )
 
     def convert_to_fp16(self):
         """
@@ -631,7 +598,7 @@ class UNetModel(nn.Module):
 def create_unet_from_args(args):
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
-
+    
     if args["channel_multiplier"]=="auto":
         image_size = args["image_size"]
         if image_size == 256:
@@ -667,8 +634,9 @@ def create_unet_from_args(args):
     if args["debug_run"]=="dummymodel":
         unet = DummyModel(out_channels)
     else:
+        vit_args = fancy_vit_from_args(args)
         unet = UNetModel(image_size=args["image_size"],
-                     is_pred_both=args["predict"]=="both",
+                    is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
                     image_channels=1 if args["cat_ball_data"] else 3,
                     num_res_blocks=args["num_res_blocks"],
@@ -684,7 +652,8 @@ def create_unet_from_args(args):
                     cond=args["cond_type"]!="none",
                     debug_flag=args["debug_run"],
                     final_act=args["final_activation"],
-                    image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1)
+                    image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
+                    vit_args=vit_args)
     return unet
 
 def get_sam_image_encoder(model_type="vit_b",device="cuda"):
@@ -710,104 +679,6 @@ def get_sam_image_encoder(model_type="vit_b",device="cuda"):
     for p in sam_image_encoder.parameters():
         p.requires_grad = False
     return sam_image_encoder
-
-image_encoder_vit_defaults = {'out_chans': 256,
-                            'img_size': 1024,
-                            'patch_size': 16,
-                            'qkv_bias': True,
-                            'use_rel_pos': True,
-                            'window_size': 14,
-                            'mlp_ratio': 4}
-meta_vit_keys = ["num_params","model_name","idx"]
-image_encoder_vit_idx_args = {  'num_params': [5113088, 28510720, 89670912, 308278272, 637026048],
-                                'model_name': ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
-                                'idx': [-2, -1, 0, 1, 2],
-                                'embed_dim': [256, 512, 768, 1024, 1280],
-                                'depth': [4, 8, 12, 24, 32],
-                                'num_heads': [4, 8, 12, 16, 16],
-                                'global_attn_indexes': [[1, 2, 3],[1, 3, 5, 7],[2, 5, 8, 11],[5, 11, 17, 23],[7, 15, 23, 31]]}
-
-def get_dynamic_vit(model_type="vit_b",device="cuda"):
-    if isinstance(model_type,int):
-        assert model_type in image_encoder_vit_idx_args["idx"]
-        model_idx = image_encoder_vit_idx_args["idx"].index(model_type)
-    elif isinstance(model_type,str):
-        assert model_type in image_encoder_vit_idx_args["model_name"]
-        model_idx = image_encoder_vit_idx_args["model_name"].index(model_type)
-    else:
-        raise ValueError("model_type must be int or str")
-    args_from_idx = {k:image_encoder_vit_idx_args[k][model_idx] for k in image_encoder_vit_idx_args.keys() if k not in meta_vit_keys}
-    model_args =  {**image_encoder_vit_defaults, **args_from_idx}
-    dyn_vit = DynamicViT(**model_args)
-    dyn_vit.to(device=device)
-    dyn_vit.train()
-    return dyn_vit
-
-class DynamicViT(ImageEncoderViT):
-    def __init__(self, token_dict={"same_vol": 3+6, 
-                                   "adjecent": 3+6,
-                                   "same_dataset": 3+6,
-                                   "same_classes": 3+6,
-                                   }, 
-                                   *args, **kwargs):
-        """token dict has either
-
-            1.[key]: image_[channels] to specify image with [channels] channels, i.e. "same_vol": image_9
-                Requires an input during training/inference as a tensor of shape [batch_size, channels, image_size, image_size]
-
-            2.[key]: discrete_[n] to specify a discrete variable with [n] categories, i.e. "num_classes": discrete_64
-                Requires an input during training/inference as a tensor of shape [batch_size] with values in range [0,n)
-
-            3.[key]: continuous_[min]_[max] to specify a continuous variable with [n] dimensions, i.e. "timestep": continuous_0_1
-                Requires an input during training/inference as a tensor of shape [batch_size] with values in range [min,max]
-
-            4.[key]: vocab_[n] to specify a vocabulary of embedding vectors, i.e. "class_names": vocab_1024
-                Requires an input during training/inference as a tensor of shape [batch_size, m] with values in range [0,n), representing a sequence of tokens/words
-            """
-        
-        super().__init__(*args, **kwargs)
-        defaults_if_not_in_kwargs = {"patch_size":16, "image_size": 1024, "embed_dim": 768}
-        self.special_tokens = token_dict
-        self.embed_dim = kwargs.get("embed_dim",defaults_if_not_in_kwargs["embed_dim"])
-        self.patch_size = kwargs.get("patch_size",defaults_if_not_in_kwargs["patch_size"])
-        self.image_size = kwargs.get("image_size",defaults_if_not_in_kwargs["image_size"])
-        self.special_token_embeddings = nn.Embedding(len(token_dict), self.embed_dim)
-        self.tokens_per_image = (self.image_size//self.patch_size)**2
-
-    def construct_input_from_dict(self, input_dict):
-        assert all([k in self.special_tokens for k in input_dict.keys()]), "input_dict keys must all be special_tokens"
-        #change all values to list if they are not
-        input_dict = {k: ([v] if not isinstance(v,list) else v) for (k,v) in input_dict.items()}
-        num_images = sum([len(v) for v in input_dict.values()])
-        num_special_tokens = len(input_dict)
-        total_seq_len = num_images*self.tokens_per_image+num_special_tokens
-        bs = [v for v in input_dict.values() if len(v)>0][0].shape[0]
-        x = torch.zeros((bs,total_seq_len, self.embed_dim), device=input_dict[list(input_dict.keys())[0]].device)
-        seq_idx = 0
-        for k,v in input_dict.items():
-            token_idx = torch.tensor([self.special_tokens.index(k)]).to(x.device)
-            token_emb = self.special_token_embeddings(token_idx)
-            x[:,seq_idx] = token_emb
-            seq_idx += 1
-            for image in v:
-                image_tokenized = self.patch_embed(image)
-                if self.pos_embed is not None:
-                    image_tokenized = image_tokenized + self.pos_embed
-                x[:,seq_idx:seq_idx+self.tokens_per_image] = image_tokenized
-                seq_idx += self.tokens_per_image
-        
-    def forward(self, input_dict, reduction="none"):
-        x = self.construct_input_from_dict(input_dict)
-        for blk in self.blocks:
-            x = blk(x)
-        x = self.neck(x.permute(0, 3, 1, 2))
-        if reduction=="mean":
-            x = x.mean(dim=(2,3))
-        elif reduction=="sum":
-            x = x.sum(dim=(2,3))
-        else:
-            assert reduction=="none", "reduction must be 'mean', 'sum', or 'none'"
-        return x
 
 class DummyModel(nn.Module):
     def __init__(self, num_bits):

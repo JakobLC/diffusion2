@@ -1047,10 +1047,10 @@ def add_same_class_reference(datasets=get_all_valid_datasets(),
     return info_list, info_add
 
 
-def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neighbours=32,save=True):
+def add_conditioning_adjacent_slices_and_same_vol(dataset_name="totseg",max_neighbours=32,save=True):
     info_jsonl_path = f"./data/{dataset_name}/info.jsonl"
     info_list = load_json_to_dict_list(info_jsonl_path)
-    info_add = [{"adjecent": [], "same_vol": []} for _ in info_list]
+    info_add = [{"adjacent": [], "same_vol": []} for _ in info_list]
     if dataset_name=="totseg":
         samples_dict = {}
         for i,info in enumerate(info_list):
@@ -1062,7 +1062,7 @@ def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neig
         for k,v in tqdm.tqdm(samples_dict.items()):
             df = pd.DataFrame(columns=col_names)
             for idx in v:
-                sample = {"info_idx": idx, "adjecent": []}
+                sample = {"info_idx": idx, "adjacent": []}
                 sample["name"] = Path(info_list[idx]["fn"]).name
                 sample["volname"] = k
                 sample["dim"] = int(sample["name"].split('_')[0][3:])
@@ -1077,14 +1077,14 @@ def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neig
                 if i>0:
                     dim_prev = df.iloc[i-1]["dim"]
                     if dim_now == dim_prev:
-                        df.iloc[i]["adjecent"].append(df.iloc[i-1]["info_idx"])
+                        df.iloc[i]["adjacent"].append(df.iloc[i-1]["info_idx"])
                 if i<len(df)-1:
                     dim_next = df.iloc[i+1]["dim"]
                     if dim_now == dim_next:
-                        df.iloc[i]["adjecent"].append(df.iloc[i+1]["info_idx"])
+                        df.iloc[i]["adjacent"].append(df.iloc[i+1]["info_idx"])
             for row in df.iterrows():
                 idx = row[1]["info_idx"]
-                info_add[idx]["adjecent"] = row[1]["adjecent"]
+                info_add[idx]["adjacent"] = row[1]["adjacent"]
                 n = min(max_neighbours,len(df))
                 info_add[idx]["same_vol"] = np.random.choice(df["info_idx"].tolist(),n,replace=False).tolist()
     
@@ -1099,7 +1099,7 @@ def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neig
         for k,v in tqdm.tqdm(samples_dict.items()):
             df = pd.DataFrame(columns=col_names)
             for idx in v:
-                sample = {"info_idx": idx, "adjecent": []}
+                sample = {"info_idx": idx, "adjacent": []}
                 sample["name"] = Path(info_list[idx]["fn"]).name
                 sample["volname"] = k
                 sample["framenum"] = int(sample["name"].split('_')[3][:-4])
@@ -1113,14 +1113,14 @@ def add_conditioning_adjecent_slices_and_same_vol(dataset_name="totseg",max_neig
                 if i>0:
                     volname_prev = df.iloc[i-1]["volname"]
                     if volname_now == volname_prev:
-                        df.iloc[i]["adjecent"].append(df.iloc[i-1]["info_idx"])
+                        df.iloc[i]["adjacent"].append(df.iloc[i-1]["info_idx"])
                 if i<len(df)-1:
                     volname_next = df.iloc[i+1]["volname"]
                     if volname_now == volname_next:
-                        df.iloc[i]["adjecent"].append(df.iloc[i+1]["info_idx"])
+                        df.iloc[i]["adjacent"].append(df.iloc[i+1]["info_idx"])
             for row in df.iterrows():
                 idx = row[1]["info_idx"]
-                info_add[idx]["adjecent"] = row[1]["adjecent"]
+                info_add[idx]["adjacent"] = row[1]["adjacent"]
                 n = min(max_neighbours,len(df))
                 info_add[idx]["same_vol"] = np.random.choice(df["info_idx"].tolist(),n,replace=False).tolist()
     else:

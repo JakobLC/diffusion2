@@ -9,7 +9,9 @@ import glob
 from pathlib import Path
 from PIL import Image
 from source.utils.argparse_utils import TieredParser
-from utils import bracket_glob_fix, save_dict_list_to_json, imagenet_preprocess, get_likelihood, load_json_to_dict_list
+from source.utils.utils import (bracket_glob_fix, save_dict_list_to_json, 
+                                imagenet_preprocess, get_likelihood, 
+                                load_json_to_dict_list, wildcard_match)
 import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
@@ -17,7 +19,6 @@ import cv2
 import pandas as pd
 import scipy.ndimage as nd
 import copy
-from utils import wildcard_match
 from matplotlib.patheffects import withStroke
 from skimage.measure import find_contours
 from datasets import load_raw_image_label

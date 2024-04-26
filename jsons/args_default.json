@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.1.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.1.0."],
+    "model_version": ["1.2.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.0."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -42,6 +42,25 @@
         "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_b','sam_vit_l','sam_vit_h']. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"]
     },
+    "conditioning": {
+        "vit_unet_cond_mode": ["both_cond_image",   "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_cond_only','both_cond_image','no_unet']. DEFAULT: 'both_cond_image'. "],
+        "image_prob": [0.95,                        "Probability of image being given as input. TYPE: float. DEFAULT: 0.9. "],
+        "weak_bbox_prob": [0.0,                     "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
+        "weak_points_prob": [0.5,                   "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
+        "self_cond_prob": [0.5,                     "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
+        "classes_prob": [0.5,                       "Probability of the number of classes being given as input. TYPE: float. DEFAULT: 0.95. "],
+        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
+        "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
+        "cond_img_size": [-1,                       "Size of the image to condition on. TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
+        "cond_patch_size": [16,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 16. "],
+        "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "],
+        "semantic_prob": [0.0,                      "Probability of semantic augmentation being used, otherwise instance. TYPE: float. DEFAULT: 0.0. "],
+        "adjacent_prob": [0.0,                      "Probability of adjacent images being given as input. TYPE: float. DEFAULT: 0.0. "],
+        "same_vol_prob": [0.0,                      "Probability of images from the same vol being given as input. TYPE: float. DEFAULT: 0.0. "],
+        "same_classes_prob": [0.0,                  "Probability of images from the same dataset with large class overlap being given as input. TYPE: float. DEFAULT: 0.0. "],
+        "same_dataset_prob": [0.0,                  "Probability of images from the same dataset being given as input. TYPE: float. DEFAULT: 0.0. "],
+        "class_names_prob": [0.0,                   "Probability of class name clip vectors being given as input. TYPE: float. DEFAULT: 0.0. "]
+    },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],
         "gen_setups": ["vali-ts10,train-ts10",      "Which sampler setups to use for evaluation? TYPE: comma separated list of strings. DEFAULT: 'vali-ts10,train-ts10'. "],
@@ -50,9 +69,9 @@
         "resume_from_step": [false,                 "Resume training as if it was started at the checkpoint step. TYPE: boolean. DEFAULT: false. "],
         "save_interval": [5000,                     "Save checkpoint every n steps. TYPE: positive integer. DEFAULT: 5000. "],
         "log_vali_interval": [200,                  "Log validation and mean train metrics every n steps. TYPE: positive integer. DEFAULT: 200. "],
-        "log_train_metrics": ["loss,grad_norm",     "Which metrics to log during all steps? TYPE: comma separated list of strings. DEFAULT: 'loss,'. "],
+        "log_train_metrics": ["loss,grad_norm",     "Which metrics to log during all steps? TYPE: comma separated list of strings. DEFAULT: 'loss,grad_norm'. "],
         "update_loss_plot_interval": [200,          "Update loss plot every n steps. TYPE: positive integer. DEFAULT: 200. "],
-        "update_forward_pass_plot_interval": [200,   "Update forward pass plot every n steps. TYPE: positive integer. DEFAULT: 200. "], 
+        "update_forward_pass_plot_interval": [200,  "Update forward pass plot every n steps. TYPE: positive integer. DEFAULT: 200. "], 
         "num_vali_batches": [8,                     "Number of batches to use for validation each vali_interval. TYPE: positive integer or 0 (no validation). DEFAULT: 8. "],
         "run_without_test": [false,                 "Should all evaluation be skipped? TYPE: boolean. DEFAULT: false. "],
         "mode": ["new",                             "Which mode to run in? new: new training, cont: continue from ckpt, load: load ckpt and make new TYPE: One of ['new','cont','load']. DEFAULT: 'new'. "],
@@ -72,13 +91,6 @@
         "betas": ["0.9,0.999",                      "Adam betas. TYPE: comma separated list of floats. DEFAULT: '0.9,0.999'. "],
         "bce_loss": [false,                         "Should BCE loss be used? TYPE: boolean. DEFAULT: false. "],
         "min_label_size": [0.0,                     "Minimum relative label mask size in relation to the image. TYPE: float. DEFAULT: 0.01. "],
-        "image_prob": [0.95,                        "Probability of image being given as input. TYPE: float. DEFAULT: 0.9. "],
-        "weak_bbox_prob": [0.0,                     "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
-        "weak_points_prob": [0.5,                   "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
-        "self_cond_prob": [0.5,                     "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
-        "classes_prob": [0.5,                       "Probability of classes being given as input. TYPE: float. DEFAULT: 0.95. "],
-        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
-        "cond_prob": [0.25,                         "Probability of conditioning being used. TYPE: float. DEFAULT: 0.25. "],
         "max_iter": [100000,                        "Maximum number of training iterations. TYPE: positive integer. DEFAULT: 100000. "],
         "datasets": ["non-medical,",                "Which datasets to use? TYPE: comma separated list of strings. DEFAULT: 'non-medical,'. "],
         "split_ratio" : ["0.8,0.1,0.1",             "Ratio of train, vali, test split. TYPE: comma separated list of 3 floats. DEFAULT: '0.8,0.1,0.1'. "],
@@ -98,8 +110,7 @@
         "crop_method": ["sam_small",                "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big']. DEFAULT: 'sam_small'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
-        "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
-        "semantic_prob": [0.0,                      "Probability of semantic augmentation being used, otherwise instance. TYPE: float. DEFAULT: 0.0. "]
+        "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "]
     },
     "version_backwards_compatability": {
         "classes_prob" : {"<1.0.0": 0.9},
@@ -113,7 +124,8 @@
         "semantic_prob": {"<1.1.0": 0.5},
         "crop_method": {"<1.1.0": "multicrop_most_border"},
         "gen_setups": {"<1.1.0": "vali,train"},
-        "weak_signals": {"<1.1.0": false}
+        "weak_signals": {"<1.1.0": false},
+        "vit_unet_cond_mode": {"<1.2.0": "no_vit"}
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'. "],
@@ -146,6 +158,7 @@
         "gen_train_samples": [true,                 "Should training samples be generated? TYPE: boolean. DEFAULT: true. "],
         "gen_batch_size": [0,                       "Batch size for evaluation. positive integer or 0 (same as train_batch_size). DEFAULT: 0. "],
         "gen_ema_step": [50000,                     "Step after which to also use EMA models for evaluation. TYPE: integer. DEFAULT: 50000"],
-        "step_and_time": ["",                       "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "]
+        "step_and_time": ["",                       "Variable for storing the time of runs and continuations of runs as comma seperated list of . TYPE: str. DEFAULT: ''. "],
+        "cond_prob": [0.25,                         "Probability of conditioning being used. TYPE: float. DEFAULT: 0.25. "]
     }
 }
