@@ -26,7 +26,7 @@ from source.utils.argparse_utils import (save_args, TieredParser,load_existing_a
 from sampling import DiffusionSampler
 from source.utils.plot_utils import plot_forward_pass,make_loss_plot
 from datasets import (CatBallDataset, custom_collate_with_info, 
-                      SegmentationDataset, points_image_from_label)
+                      SegmentationDataset, points_image_from_label,cond_image_keys)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from cont_gaussian_diffusion import create_diffusion_from_args
@@ -36,7 +36,8 @@ from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose)
 from torchvision.transforms.functional import resize
-from source.models.cond_vit import fancy_vit_from_args, get_opt4_from_cond_vit_setup
+from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
+                                    cond_image_keys, load_cond_image_probs_from_args)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -121,12 +122,12 @@ class DiffusionModelTrainer:
             self.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
 
         #init models, optimizers etc
-        assert self.args.vit_unet_cond_mode in ['no_vit','both_cond_only','both_cond_image','no_unet'], "vit_unet_cond_mode must be one of ['no_vit','both_cond_only','both_cond_image','no_unet']"
+        assert self.args.vit_unet_cond_mode in ['no_vit','both_spatial_unet','both_spatial_vit','no_unet'], "vit_unet_cond_mode must be one of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']"
         
         if self.args.vit_unet_cond_mode=="no_unet":
             opt4 = get_opt4_from_cond_vit_setup(self.args.cond_vit_setup)
             assert opt4 in ["c","d"], "opt4 must be one of ['c','d'] when using no_unet. found: "+opt4
-            
+
         if self.args.mode != "data":
             self.model = self.model.to(self.device)
             self.model_params = list(self.model.parameters())
@@ -230,6 +231,9 @@ class DiffusionModelTrainer:
             pure_gen_dataset_mode = False
         split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
         sam_features_idx = ['none','sam_vit_b','sam_vit_l','sam_vit_h'].index(self.args.image_encoder)-1
+        load_cond_probs = {k: self.args.__dict__[k+"_prob"] for k in cond_image_keys}
+        if sum(list(load_cond_probs.values()))==0:
+            load_cond_probs = None
         for split in split_list:
             dataset = SegmentationDataset(split=split,
                                         split_ratio=split_ratio,
@@ -243,7 +247,10 @@ class DiffusionModelTrainer:
                                         label_padding_val=255 if self.args.ignore_padded else 0,
                                         split_method=self.args.split_method,
                                         sam_features_idx=sam_features_idx,
-                                        semantic_prob=self.args.semantic_prob)
+                                        semantic_prob=self.args.semantic_prob,
+                                        conditioning=self.args.vit_unet_cond_mode!="no_vit",
+                                        load_cond_probs=load_cond_probs
+                                        )
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
                   "test": self.args.train_batch_size,
@@ -332,11 +339,9 @@ class DiffusionModelTrainer:
             x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
         else:
             x = x.to(self.device)
-        model_kwargs = {"image": [],
-                        "bbox": [],
-                        "points": [],
-                        "cond": [],
-                        "classes": []}
+        model_kwargs = "image,bbox,points,classes,class_names,semantic".split(",")
+        model_kwargs += cond_image_keys
+        model_kwargs = {k: [] for k in model_kwargs}
         to_dev = lambda x: x.to(self.device) if x is not None else None
         bs = x.shape[0]
         for i in range(bs):
@@ -355,12 +360,6 @@ class DiffusionModelTrainer:
                         model_kwargs["points"].append(points_image_from_label(x[i]))
                     else:
                         model_kwargs["points"].append(None)
-            if self.args.cond_type!="none":
-                if np.random.rand()<self.args.cond_prob:
-                    raise NotImplementedError("cond not implemented")
-                    #model_kwargs["cond"] = info["get_cond"]()
-                else:
-                    model_kwargs["cond"].append(None)
             if self.args.class_type!="none":
                 if self.args.class_type=="num_classes" and self.args.classes_prob>0:
                     if np.random.rand()<self.args.classes_prob or gen:
@@ -369,6 +368,16 @@ class DiffusionModelTrainer:
                         model_kwargs["classes"].append(None)
                 else:
                     raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
+            if self.args.class_names_prob>0:
+                raise NotImplementedError("class_names not implemented")
+                if np.random.rand()<self.args.class_names_prob or gen:
+                    model_kwargs["class_names"].append(info[i]["class_names"])
+                else:
+                    model_kwargs["class_names"].append(None)
+            for k in cond_image_keys:
+                model_kwargs[k].append(info[i].get(k,None))
+            if 0.0<self.args.semantic_prob and self.args.semantic_prob<1.0:
+                model_kwargs["semantic"].append(torch.tensor([info[i]["is_semantic"]],dtype=torch.long))
         if self.args.image_encoder!="none":
             assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
             
@@ -385,6 +394,9 @@ class DiffusionModelTrainer:
                     model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
                 
         model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
+        for k in list(model_kwargs.keys()):
+            if model_kwargs[k] is None:
+                del model_kwargs[k]
         return x,model_kwargs,info
     
     def get_self_cond(self,info):

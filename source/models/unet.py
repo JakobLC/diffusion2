@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
 from segment_anything.modeling import ImageEncoderViT
-from source.models.cond_vit import FancyViT, fancy_vit_from_args
+from source.models.cond_vit import FancyViT, fancy_vit_from_args, unet_vit_input_dicts_from_args
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
 from source.models.nn import (
     SiLU,
@@ -41,9 +41,14 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, x_attn=None):
         for layer in self:
-            if isinstance(layer, TimestepBlock):
+            if isinstance(layer, AttentionBlock):
+                if x_attn is None:
+                    x = layer(x)
+                else:
+                    x = layer(x,y=x_attn)
+            elif isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             else:
                 x = layer(x)
@@ -208,12 +213,18 @@ class AttentionBlock(nn.Module):
     https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/models/unet.py#L66.
     """
 
-    def __init__(self, channels, num_heads=1, use_checkpoint=False):
+    def __init__(self, channels, num_heads=1, use_checkpoint=False, with_xattn=False, xattn_channels=None):
         super().__init__()
         self.channels = channels
         self.num_heads = num_heads
         self.use_checkpoint = use_checkpoint
-
+        self.with_xattn = with_xattn
+        if self.with_xattn:
+            if xattn_channels is None:
+                xattn_channels = channels
+            self.xattn_channels = xattn_channels
+            self.qk_x = conv_nd(1, xattn_channels, 2*channels, 1) 
+            self.v_x = conv_nd(1, channels, channels, 1)
         self.norm = normalization(channels)
         self.qkv = conv_nd(1, channels, channels * 3, 1)
         self.attention = QKVAttention()
@@ -222,12 +233,22 @@ class AttentionBlock(nn.Module):
     def forward(self, x):
         return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
 
-    def _forward(self, x):
+    def _forward(self, x, y=None):
         b, c, *spatial = x.shape
+        #assert c==self.channels, f"expected {self.channels} channels, got {c} channels"
         x = x.reshape(b, c, -1)
         qkv = self.qkv(self.norm(x))
         qkv = qkv.reshape(b * self.num_heads, -1, qkv.shape[2])
         h = self.attention(qkv)
+        if y is not None:
+            assert self.with_xattn, "y is is only supported as an input for AttentionBlocks with cross attention"
+            b, cx, *spatial2 = y.shape
+            assert cx==self.xattn_channels, f"expected {self.xattn_channels} channels, got {cx} channels"
+            y = y.reshape(b, cx, -1)
+            qk = self.qk_x(self.norm(y))
+            v = self.v_x(self.norm(h))
+            qkv_x = torch.cat([qk,v],dim=-1).reshape(b * self.num_heads, -1, qk.shape[2])
+            h = self.attention(qkv_x)+h
         h = h.reshape(b, -1, h.shape[-1])
         h = self.proj_out(h)
         return (x + h).reshape(b, c, *spatial)
@@ -354,16 +375,36 @@ class UNetModel(nn.Module):
         image_encoder_depth=-1,
         vit_args=None,
         no_unet=False,
+        unet_input_dict=None,
+        vit_feature_depth=1,
     ):
         super().__init__()
         self.debug_flag = debug_flag
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
+        self.vit_args = vit_args
         self.image_size = image_size
-        if no_unet:
-            assert vit_args is not None, "vit_args must be provided if no_unet is True"
+
+        self.legal_keys = list(unet_input_dict.keys())
+        self.vit_feature_depth = vit_feature_depth
+        if vit_args is not None:
+            self.vit = FancyViT(**self.vit_args)
+            self.vit_it = self.vit_args["injection_type"]
+            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all"}[self.vit_it]
+            self.legal_keys += list(self.vit_args["input_dict"].keys())
         else:
-                
+            assert unet_input_dict is not None, "unet_input_dict must be provided if vit_args is None"
+            unet_input_dict = unet_input_dict
+            self.vit = None
+            self.vit_it = "none"
+            self.vit_injection_type="none"
+        
+        
+        if no_unet:
+            assert self.vit_args is not None, "vit_args must be provided if no_unet is True"
+            self.has_unet = False
+        else:
+            self.has_unet = True
             self.model_channels = model_channels
             self.num_res_blocks = num_res_blocks
             
@@ -407,16 +448,10 @@ class UNetModel(nn.Module):
                     self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
                 self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
-            self.input_dict = {"sample": out_channels if not self.no_diffusion else 0,
-                            "image": image_channels,
-                            "bbox": int(weak_signals),
-                            "points": out_channels*int(weak_signals),
-                            "self_cond": out_channels if self_cond else 0,
-                            "cond": out_channels+image_channels if cond else 0,
-                            }
+            self.unet_input_dict = unet_input_dict
             self.in_channels = 0
-            for k,v in self.input_dict.items():
-                self.input_dict[k] = [i+self.in_channels for i in range(v)]
+            for k,v in self.unet_input_dict.items():
+                self.unet_input_dict[k] = [i+self.in_channels for i in range(v)]
                 self.in_channels += v
                 
             time_embed_dim = model_channels * 4
@@ -476,16 +511,16 @@ class UNetModel(nn.Module):
                         layers.append(Upsample(ch, conv_resample, dims=dims))
                         resolution -= 1
                     self.output_blocks.append(TimestepEmbedSequential(*layers))
-            both_mult = 2 if is_pred_both else 1
-            final_act_dict = {"none": nn.Identity(),
-                            "softmax": nn.Softmax(dim=1),
-                            "tanh": nn.Tanh()}
-            self.out = nn.Sequential(
-                normalization(ch),
-                SiLU(),
-                zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
-                final_act_dict[final_act.lower()]
-            )
+        both_mult = 2 if is_pred_both else 1
+        final_act_dict = {"none": nn.Identity(),
+                        "softmax": nn.Softmax(dim=1),
+                        "tanh": nn.Tanh()}
+        self.out = nn.Sequential(
+            normalization(ch),
+            SiLU(),
+            zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
+            final_act_dict[final_act.lower()]
+        )
 
     def convert_to_fp16(self):
         """
@@ -508,34 +543,57 @@ class UNetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
+    def to_xattn(self, vit_output, depth):
+        return self.vit_to_unet_map[depth](vit_output) if self.vit_injection_type=="xattn" else None
+
     def forward(self, sample, timesteps, **kwargs):
         """
         Apply the model to an input batch.
 
         :param sample: an [N x C x ...] Diffusion sample tensor.
         :param timesteps: a 1-D batch of timesteps.
-        :param kwargs: additional kwargs for the model. see self.input_dict for available kwargs.
+        :param kwargs: additional kwargs for the model. see self.unet_input_dict for available kwargs.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        h,timesteps,classes,image_features = self.prepare_inputs(sample, timesteps, **kwargs)
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        if self.no_diffusion:
-            emb *= 0
-            
-        if self.num_classes is not None:
-            emb = emb + self.class_emb(classes)
         
-        hs = []
-        for depth,module in enumerate(self.input_blocks):
-            h = module(h, emb)
-            hs.append(h)
-            if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
-                h = h + self.preprocess_img_enc(image_features.type(h.dtype))
-        h = self.middle_block(h, emb)
-        for module in self.output_blocks:
-            cat_in = torch.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
-        h = h.type(sample.dtype)
+        if self.vit is not None:
+            vit_output = self.vit(self.vit.filter_inputs({**kwargs, "sample": sample, "time": timesteps}))
+        else:
+            vit_output = None
+
+        if self.has_unet:
+            h,timesteps,classes,image_features = self.prepare_inputs(sample, timesteps, **kwargs)
+            emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+            if self.no_diffusion:
+                emb *= 0
+            
+            if self.num_classes is not None:
+                emb = emb + self.class_emb(classes)
+            hs = []
+            depth = 0
+            for module in self.input_blocks:
+                h = module(h, emb, x_attn = self.to_xattn(vit_output,depth))
+                hs.append(h)
+                if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
+                    h = h + self.preprocess_img_enc(image_features.type(h.dtype))
+                if self.vit_injection_type=="spatial_all":
+                    h = h + self.vit_to_unet_map[depth](vit_output)
+                if (depth == self.vit_feature_depth) and self.vit_injection_type=="spatial_once":
+                    h = h + self.vit_to_unet_map(vit_output)
+                depth += 1
+            h = self.middle_block(h, emb, x_attn = self.to_xattn(vit_output,depth))
+            if self.vit_injection_type=="spatial_all":
+                h = h + self.vit_to_unet_map[depth](vit_output)
+            depth += 1
+            for module in self.output_blocks:
+                cat_in = torch.cat([h, hs.pop()], dim=1)
+                h = module(cat_in, emb, x_attn = self.to_xattn(vit_output,depth))
+                if self.vit_injection_type=="spatial_all":
+                    h = h + self.vit_to_unet_map[depth](vit_output)
+                depth += 1
+            h = h.type(sample.dtype)
+        else:
+            h = vit_output
         h = self.out(h)
         return h
     
@@ -559,15 +617,16 @@ class UNetModel(nn.Module):
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
         for k,v in kwargs.items():
             if k not in ["classes","image_features"]:
-                assert k in self.input_dict.keys(), k+" is not a legal input for the model: "+str(self.input_dict.keys())
-                if torch.is_tensor(v):
-                    assert len(self.input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.input_dict.keys() if len(self.input_dict[k])>0])
-                    assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
-                    assert v.shape[1] == len(self.input_dict[k]), "Expected "+str(len(self.input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
-                    assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
-                    h[:,self.input_dict[k],:,:] = v.type(self.inner_dtype)
-                else:
-                    assert v is None, "input "+k+" must be a tensor or None"
+                assert k in self.legal_keys, k+" is not a legal input for the model: "+str(self.legal_keys)
+                if k in self.unet_input_dict.keys():
+                    if torch.is_tensor(v):
+                        assert len(self.unet_input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.unet_input_dict.keys() if len(self.unet_input_dict[k])>0])
+                        assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
+                        assert v.shape[1] == len(self.unet_input_dict[k]), "Expected "+str(len(self.unet_input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
+                        assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
+                        h[:,self.unet_input_dict[k],:,:] = v.type(self.inner_dtype)
+                    else:
+                        assert v is None, "input "+k+" must be a tensor or None"
         has_nontrivial_classes = kwargs["classes"] is not None if "classes" in kwargs.keys() else False
         if has_nontrivial_classes:
             assert self.num_classes is not None, "num_classes must be specified if classes are provided"
@@ -634,7 +693,10 @@ def create_unet_from_args(args):
     if args["debug_run"]=="dummymodel":
         unet = DummyModel(out_channels)
     else:
+        unet_input_dict,_ = unet_vit_input_dicts_from_args(args)
         vit_args = fancy_vit_from_args(args)
+        if len(vit_args)==0:
+            vit_args = None
         unet = UNetModel(image_size=args["image_size"],
                     is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
@@ -653,7 +715,8 @@ def create_unet_from_args(args):
                     debug_flag=args["debug_run"],
                     final_act=args["final_activation"],
                     image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
-                    vit_args=vit_args)
+                    vit_args=vit_args,
+                    unet_input_dict=unet_input_dict)
     return unet
 
 def get_sam_image_encoder(model_type="vit_b",device="cuda"):

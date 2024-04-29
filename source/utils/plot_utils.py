@@ -11,7 +11,8 @@ from PIL import Image
 from source.utils.argparse_utils import TieredParser
 from source.utils.utils import (bracket_glob_fix, save_dict_list_to_json, 
                                 imagenet_preprocess, get_likelihood, 
-                                load_json_to_dict_list, wildcard_match)
+                                load_json_to_dict_list, wildcard_match,
+                                sam_resize_index)
 import matplotlib
 from tempfile import NamedTemporaryFile
 import warnings
@@ -1256,6 +1257,24 @@ def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,lon
     jlc.zoom()
     return image_overlays
 
+def visualize_batch(batch,with_text=True,imagenet_inv=True,crop=True,alpha_mask=0.9,**kwargs):
+    bs = len(batch[-1])
+    
+    images = [b["image"].permute(1,2,0).numpy() for b in batch[-1]]
+    if imagenet_inv:
+        images = [imagenet_preprocess(im,inv=True,dim=2) for im in images]
+    labels = [b.permute(1,2,0).numpy() for b in batch[0]]
+    if crop:
+        for i in range(bs):
+            b = batch[-1][i]
+            h,w = sam_resize_index(*b["imshape"][:2],b["image"].shape[-1])
+            images[i] = images[i][:h,:w]
+            labels[i] = labels[i][:h,:w]
+
+    didx = [f"{b['dataset_name']}/{b['i']}" for b in batch[-1]]
+    if with_text:
+        kwargs["text"] = didx
+    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask) for im,lab in zip(images,labels)],**kwargs)
 
 def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
             "border_color": "black",

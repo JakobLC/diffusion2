@@ -14,6 +14,10 @@ import math
 import warnings
 import pandas as pd
 
+
+cond_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
+new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
+
 vit_seperate_params = { 'num_params':          [5113088, 28510720, 89670912, 308278272, 637026048],
                         'model_name':          ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
                         'idx':                 [-2, -1, 0, 1, 2],
@@ -140,24 +144,55 @@ class ContinuousVariable(nn.Module):
 
 def default_input_dict(img_size=1024,patch_size=16,image_channels=3,diff_channels=6):
     #input types: ["image","scalar_continuous","scalar_discrete","vocabulary"]
-    im_dict = {"input_type": "image", 
+    im_dict = {"input_type": "image",
                "img_size": img_size, 
                "patch_size": patch_size, 
                "in_chans": image_channels+diff_channels}
-    inputs = {"sample":       {**im_dict, "in_chans": diff_channels},
-            "image":          {**im_dict, "in_chans": 3},
-            "points":         {**im_dict, "in_chans": diff_channels},
-            "bbox":           {**im_dict, "in_chans": diff_channels},
-            "self_cond":      {**im_dict, "in_chans": diff_channels},
-            "same_vol":       im_dict,
-            "same_classes":   im_dict,
-            "same_dataset":   im_dict,
-            "adjacent":       im_dict,
-            "time":           {"input_type": "scalar_continuous", "min": 0.0, "max": 1.0},
-            "num_classes":    {"input_type": "scalar_discrete", "size": 64},
-            "class_names":    {"input_type": "vocabulary", "size": 8096},
+    inputs = {"sample":       {**im_dict, "in_chans": diff_channels},#X
+            "image":          {**im_dict, "in_chans": 3},#X
+            "points":         {**im_dict, "in_chans": diff_channels},#X
+            "bbox":           {**im_dict, "in_chans": diff_channels},#X
+            "self_cond":      {**im_dict, "in_chans": diff_channels},#(X)
+            "same_vol":       im_dict,#X
+            "same_classes":   im_dict,#X
+            "same_dataset":   im_dict,#X
+            "adjacent":       im_dict,#X
+            "time":           {"input_type": "scalar_continuous", "min": 0.0, "max": 1.0},#X
+            "num_classes":    {"input_type": "scalar_discrete", "size": 64},#(X)
+            "class_names":    {"input_type": "vocabulary", "size": 8096},#X
+            "semantic":       {"input_type": "scalar_discrete", "size": 2},#X
     }
     return inputs
+
+def unet_vit_input_dicts_from_args(args):
+    diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
+    out_channels = diff_channels
+    no_diffusion = False
+    image_channels = 3
+    weak_signals = args["weak_signals"]
+    self_cond = args["self_cond"]
+    
+    full_unet_input_dict = {"sample": out_channels if not no_diffusion else 0,
+                        "image": image_channels,
+                        "bbox": int(weak_signals),
+                        "points": out_channels*int(weak_signals),
+                        "self_cond": out_channels if self_cond else 0
+                        }
+    task_name = args["vit_unet_cond_mode"]
+    if task_name=="no_vit": #T0: no ViT
+        unet_input_keys = list(full_unet_input_dict.keys())
+    elif task_name=="both_spatial_unet": #T1: The unet gets the image
+        unet_input_keys = ["sample","image","bbox","points","self_cond"]
+    elif task_name=="both_spatial_vit": #T2: The unet does not get the image and other spatial-directly conditionable inputs (bbox,points)
+        unet_input_keys = ["sample"]
+    elif task_name=="no_unet": #T3: full ViT, no unet
+        unet_input_keys = []
+    unet_input_dict = {k: full_unet_input_dict[k] for k in unet_input_keys}
+
+    vit_input_dict = fancy_vit_from_args(args,return_input_dict_instead=True)
+    
+    return unet_input_dict,vit_input_dict
+
 
 cond_vit_setup_long = {1: {"option_name": "preprocess" ,
                            "a": "Stack channels spatially",
@@ -191,7 +226,9 @@ def get_appropriate_block_types(depth=12,block_types="ae",transform_to_names=Tru
         block_types = [cond_vit_setup_long[2][b] for b in block_types]
     return block_types
 
-def fancy_vit_from_args(args):
+spatial_input_keys = ["image","bbox","points","self_cond"]
+
+def fancy_vit_from_args(args,return_input_dict_instead=False):
     keys = ["cond_vit_setup",
             "max_num_classes",
             "cond_img_size",
@@ -201,35 +238,46 @@ def fancy_vit_from_args(args):
             "weak_bbox_prob",
             "weak_points_prob",
             "weak_signals"]
-    new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
     keys += new_prob_keys
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
     assert all([k in args.keys() for k in keys]), "Missing keys in args: "+str([k for k in keys if k not in args.keys()])
     if args["vit_unet_cond_mode"]=="no_vit":
-        assert not any([p>0 for p in args[new_prob_keys]]), "No ViT, so new probabilities should be 0. found: "+str({k: args[k] for k in new_prob_keys if args[k]>0})
-        return None
+        assert not any([args[k]>0 for k in new_prob_keys]), "No ViT, so new probabilities should be 0. found: "+str({k: args[k] for k in new_prob_keys if args[k]>0})
+        return {}
     index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
+
+
+
+    img_size = args["cond_img_size"] if args["cond_img_size"]>0 else args["image_size"]
     
     diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
     del_keys = "max_seq_len,input_dict,img_size,patch_size,global_attn_indexes,block_types"
     fancy_vit_args = fancy_vit_from_idx(args["cond_sam_idx"],del_keys=del_keys.split(","))
-    fancy_vit_args["input_dict"] = default_input_dict(img_size=args["cond_img_size"],
+    fancy_vit_args["input_dict"] = default_input_dict(img_size=img_size, 
                                                         patch_size=args["cond_patch_size"],
                                                         image_channels=3,
                                                         diff_channels=diff_channels)
+    
+    del_keys2 = []
+    for k in new_prob_keys:
+        if args[k]<=0 or (k=="semantic_prob" and args[k]==1):
+            del_keys2.append(k.replace("_prob",""))
+    
     #remove keys from the input dict based on args
     if args["weak_points_prob"]<=0 or not args["weak_signals"]:
-        if "points" in fancy_vit_args["input_dict"].keys():
-            del fancy_vit_args["input_dict"]["points"]
+        del_keys2.append("points")
     if args["weak_bbox_prob"]<=0 or not args["weak_signals"]:
-        if "bbox" in fancy_vit_args["input_dict"].keys():
-            del fancy_vit_args["input_dict"]["bbox"]
-    if 0==args["semantic_prob"] or 1==args["semantic_prob"]:
-        if "same_classes" in fancy_vit_args["input_dict"].keys():
-            del fancy_vit_args["input_dict"]["same_classes"]
+        del_keys2.append("bbox")
+    if args["vit_unet_cond_mode"]=="both_spatial_unet":
+        del_keys2.extend(spatial_input_keys)
+    if not args["vit_unet_cond_mode"]=="no_unet":
+        del_keys2.append("sample")
+    for k in del_keys2:
+        if k in fancy_vit_args["input_dict"].keys():
+            del fancy_vit_args["input_dict"][k]
 
-    
+    fancy_vit_args["injection_type"] = index_to_opt[4]
     fancy_vit_args["pre_reduction"] = {"a": "spatial", "b": "none"}[index_to_opt[1]]
     fancy_vit_args["post_reduction"] = {"a": "cls_token", "b": "mean_token", "c": "spatial", "d": "none"}[index_to_opt[3]]
     if args["vit_unet_cond_mode"]=="no_unet":
@@ -237,7 +285,10 @@ def fancy_vit_from_args(args):
         fancy_vit_args["post_reduction"] = "diffusion_sample"
     block_types = get_appropriate_block_types(depth=fancy_vit_args["depth"],block_types=index_to_opt[2])
     fancy_vit_args["block_types"] = block_types
-    return fancy_vit_args
+    if return_input_dict_instead:
+        return fancy_vit_args["input_dict"]
+    else:
+        return fancy_vit_args
 
 def get_opt4_from_cond_vit_setup(cond_vit_setup):
     index_to_opt = is_valid_cond_vit_setup(cond_vit_setup)
@@ -293,6 +344,7 @@ class FancyViT(nn.Module):
         max_seq_len: int = None,
         pre_reduction: str = "none",
         post_reduction: str = "spatial",
+        injection_type: str = "a"
     ) -> None:
         super().__init__()
         assert pre_reduction in ["spatial","none"], "Invalid pre_reduction: "+pre_reduction
@@ -310,7 +362,7 @@ class FancyViT(nn.Module):
         self.in_chans = []
         
         input_dict["cls"] = {"input_type": "scalar_discrete", "size": 1}
-        
+        has_image_input = False
         for input_name, input_info in input_dict.items():
             t = input_info["input_type"]
             assert t in valid_input_types, f"Invalid input type specified. Found {t}"
@@ -320,6 +372,7 @@ class FancyViT(nn.Module):
                 self.img_sizes.append(input_info["img_size"])
                 self.patch_sizes.append(input_info["patch_size"])
                 self.in_chans.append(input_info["in_chans"])
+                has_image_input = True
             elif t=="scalar_continuous":
                 setattr(self, input_name+"_embed", ContinuousVariable(dim=embed_dim, min_val=input_info["min"], max_val=input_info["max"]))
             elif t=="scalar_discrete":
@@ -327,8 +380,8 @@ class FancyViT(nn.Module):
             elif t=="vocabulary":
                 setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
         self.input_dict = input_dict
-        self.img_size = self.img_sizes[0]
-        self.patch_size = self.patch_sizes[0]
+        self.img_size = self.img_sizes[0] if len(set(self.img_sizes))==1 else None
+        self.patch_size = self.patch_sizes[0] if len(set(self.patch_sizes))==1 else None
         if self.pre_reduction=="spatial":
             assert self.share_image_patch_embed, "Must share image patch embed for spatial reduction"
             irsum = lambda x: int(round(sum(x)))
@@ -343,24 +396,25 @@ class FancyViT(nn.Module):
                                             "patch_size": self.patch_size, 
                                             "in_chans": self.in_chans[0]}
 
-
+        self.token_img_size = None
         if self.share_image_patch_embed:
-            #assert we have same patch_size and image_size
-            assert len(set(self.img_sizes))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
-            assert len(set(self.patch_sizes))==1, "Patch sizes must be the same for shared patch embed. found: "+str(self.patch_size)
-            self.shared_patch_embed = PatchEmbed(
-                kernel_size=(self.patch_size, self.patch_size),
-                stride=(self.patch_size, self.patch_size),
-                in_chans=max(self.in_chans),
-                embed_dim=self.embed_dim,
-            )
-            self.token_img_size = self.img_size // self.patch_size
-            if use_abs_pos:
-                self.pos_embed = nn.Parameter(
-                    torch.zeros(1, self.token_img_size, self.token_img_size, self.embed_dim)
+            if len(self.img_sizes)>0:
+                #assert we have same patch_size and image_size
+                assert len(set(self.img_sizes))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
+                assert len(set(self.patch_sizes))==1, "Patch sizes must be the same for shared patch embed. found: "+str(self.patch_size)
+                self.shared_patch_embed = PatchEmbed(
+                    kernel_size=(self.patch_size, self.patch_size),
+                    stride=(self.patch_size, self.patch_size),
+                    in_chans=max(self.in_chans),
+                    embed_dim=self.embed_dim,
                 )
-            else:
-                self.pos_embed: Optional[nn.Parameter] = None
+                self.token_img_size = self.img_size // self.patch_size
+                if use_abs_pos:
+                    self.pos_embed = nn.Parameter(
+                        torch.zeros(1, self.token_img_size, self.token_img_size, self.embed_dim)
+                    )
+                else:
+                    self.pos_embed: Optional[nn.Parameter] = None
         else:
             raise NotImplementedError
             for input_name, input_info in input_dict.items():
@@ -374,7 +428,9 @@ class FancyViT(nn.Module):
                     setattr(self, input_name+"_embed", patch_embed)
 
 
-
+        if not has_image_input:
+            for bt in ["grouped","window","window_shifted","image"]:
+                assert bt not in block_types, "No image input, so cannot have "+bt+" attention. Found: "+str(block_types)
         attn_size_dict = {"global": None,
                         "image": self.token_img_size,
                         "window": window_size,
@@ -444,23 +500,30 @@ class FancyViT(nn.Module):
         for k,v in inputs.items():
             for i in range(bs):
                 if v is not None:
-                    if ae: assert len(v)==bs, f"Expected length of bs={bs}, got length={len(v[i])} for input_name={k}"
-                    v_i = v[i]
+                    if ae: assert len(v)==bs, f"Expected length of bs={bs}, got length={len(v[i])} for k={k}"
+                    v_i = torch.atleast_1d(v[i])
                     if v_i is not None:
+                        assert torch.is_tensor(v_i), "Expected tensor for input. Found :" +str(type(v_i))+" for k="+k
+                        assert len(v_i.shape)>0, "Expected tensor with at least one dimension. Found :" +str(v_i.shape)+" for k="+k
                         if self.input_dict[k]["input_type"]=="image":
                             if ae: assert v_i.shape[1]==v_i.shape[2]==self.input_dict[k]["img_size"], f"Expected image size {self.input_dict[k]['img_size']}, got {v.shape[2]}x{v.shape[3]} for k={k}"
                             seq_len[i] += self.token_img_size**2
                         elif self.input_dict[k]["input_type"]=="scalar_continuous":
-                            if ae: assert v_i.shape[0]==1, f"Expected scalar_continuous to have shape (bs,1), got {v.shape}"
+                            if ae: assert v_i.shape[0]==1, f"Expected scalar_continuous to have shape (bs,1), got {v.shape} for k={k}"
                             seq_len[i] += 1
                         elif self.input_dict[k]["input_type"]=="scalar_discrete":
-                            if ae: assert v_i.shape[0]==1, f"Expected scalar_discrete to have shape (bs,1), got {v.shape}"
+                            if ae: assert v_i.shape[0]==1, f"Expected scalar_discrete to have shape (bs,1), got {v.shape} for k={k}"
                             seq_len[i] += 1
                         elif self.input_dict[k]["input_type"]=="vocabulary":
-                            if ae: assert v_i.shape[0]>=1, f"Expected vocabulary to have shape (bs,n>=1), got {v.shape}"
+                            if ae: assert v_i.shape[0]>=1, f"Expected vocabulary to have shape (bs,n>=1), got {v.shape} for k={k}"
                             seq_len[i] += len(v_i)
+                        
         return max(seq_len)
     
+    def filter_inputs(self,inputs):
+        """returns a new dict with only expected keys for the ViT based on self.input_dict"""
+        return {k: v for k,v in inputs.items() if k in self.input_dict.keys()}
+
     def tokenize_inputs(self, inputs, 
                         crop_unused_tokens=True, 
                         raise_error_on_zero_tokens=False):
@@ -481,6 +544,7 @@ class FancyViT(nn.Module):
         token_info = [[] for _ in range(bs)]
         input_names = list(inputs.keys())
         if self.pre_reduction=="spatial":
+            assert self.img_size is not None, "Image size must be specified for spatial reduction. add an image input to the model"
             inputs["cls_image"] = torch.zeros(self.cls_image_size(bs),device=device)
             #make sure "cls_image" is at the end so it contains all the information
             input_names.append("cls_image")
@@ -521,7 +585,7 @@ class FancyViT(nn.Module):
                     tokenized_item = tokenized_item.reshape(1,-1,self.embed_dim)
                 elif t=="scalar_continuous":
                     if item_i>=0:
-                        tokenized_item = getattr(self, input_name+"_embed")(item_i)
+                        tokenized_item = getattr(self, input_name+"_embed")(item_i).unsqueeze(1)
                 elif t=="scalar_discrete":
                     if item_i>=0:
                         tokenized_item = getattr(self, input_name+"_embed")(item_i)
@@ -534,6 +598,9 @@ class FancyViT(nn.Module):
                     raise ValueError(f"Invalid input_name, must be one of {self.input_dict.keys()}")
                 if tokenized_item is None:
                     continue
+                assert len(tokenized_item.shape)==3, "Expected 3D tensor for tokenized item, found: "+str(tokenized_item.shape)+" for input_name="+input_name
+                assert tokenized_item.shape[0]==1, "Expected batch size 1 for tokenized item, found: "+str(tokenized_item.shape[0])
+                assert tokenized_item.shape[2]==self.embed_dim, "Expected embed_dim to be "+str(self.embed_dim)+", found: "+str(tokenized_item.shape[2])
                 seq_len = tokenized_item.shape[1]
                 space_enough,seq_idx = self.iterate_idx(i,seq_len,self.max_seq_len)
                 if not space_enough:
@@ -556,6 +623,9 @@ class FancyViT(nn.Module):
                 max_actual_len = max([len(item) for item in token_info])
             else:
                 max_actual_len = self.max_seq_len
+        print("max_len; ",max_actual_len)
+        print(token_info_overview(token_info,as_df=1))
+        assert 0
         for i in range(bs):
             if len(token_info[i])<max_actual_len:
                 add = max_actual_len-len(token_info[i])
@@ -1510,6 +1580,8 @@ class PatchEmbed(nn.Module):
         x = x.permute(0, 2, 3, 1)
         return x
 
+def load_cond_image_probs_from_args(args):
+    return {k: args.__dict__[k+"_prob"] for k in cond_image_keys}
 
 def main():
     import argparse

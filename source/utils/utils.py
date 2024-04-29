@@ -238,7 +238,7 @@ def load_raw_label(x):
         assert len(x.split("/"))==2, "x must be a string formatted as '{dataset_name}/{i}'"
         dataset_name = x.split("/")[0]
         i = int(x.split("/")[1])
-    label_filename = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name,"f"+str(i//1000),f"{i}_la.png")
+    label_filename = os.path.join(str(Path(__file__).parent.parent.parent / "data"),dataset_name,"f"+str(i//1000),f"{i}_la.png")
     return np.array(Image.open(label_filename))
 
 def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ab=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):

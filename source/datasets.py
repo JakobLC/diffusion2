@@ -14,6 +14,7 @@ from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
 from source.models.unet import get_sam_image_encoder
 import tqdm
+from source.models.cond_vit import cond_image_keys
 
 turbo_jpeg = TurboJPEG()
 
@@ -315,9 +316,15 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       split_method="random",
                       sam_features_idx=-1,
                       ignore_sam_idx=-1,
+                      delete_info_keys=[],
                       conditioning=False,
-                      delete_info_keys=[]):
+                      load_cond_probs=None):
         self.conditioning = conditioning
+        self.load_cond_auto = load_cond_probs is not None
+        self.load_cond_probs = load_cond_probs
+        if self.load_cond_probs is not None:
+            assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
+            assert all([k in cond_image_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())
         self.ignore_sam_idx = ignore_sam_idx
         self.sam_features_idx = sam_features_idx
         self.geo_aug_p = geo_aug_p
@@ -393,6 +400,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.length = 0
         self.idx_to_class = {}
         self.augment_per_dataset = {}
+        self.didx_to_item_idx = []
         self.datasets_info = {d["dataset_name"]: d for d in self.datasets_info if d["dataset_name"] in self.dataset_list}
 
         assert split_method in ["random","native","native_train"]
@@ -451,10 +459,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
                                                                                       str(len(class_dict))+" and "+str(self.datasets_info[dataset_name]["num_classes"])+
                                                                                       " for dataset "+dataset_name)
             self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],s=self.image_size,train=split==0,geo_aug_p=self.geo_aug_p)
-
+            self.didx_to_item_idx.extend([f"{dataset_name}/{i}" for i in use_idx])
             self.length += len(items)
             self.items.extend(items)
-        
+
+        self.didx_to_item_idx = {k: i for i,k in enumerate(self.didx_to_item_idx)}
         self.len_per_dataset = {dataset_name: len([item for item in self.items if item["dataset_name"]==dataset_name]) for dataset_name in self.dataset_list}
         #assert all([self.len_per_dataset[dataset_name]>0 for dataset_name in self.dataset_list]), "no data in one of the datasets satisfying the criteria"
             
@@ -469,7 +478,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
     
     def process_conditioning(self,item,use_idx,keep_atmost=8):
         item["conditioning"]["same_dataset"] = np.random.choice(use_idx,min(keep_atmost,len(use_idx)),replace=False).tolist()
-        filter_keys = ["same_vol","adjecent","same_classes"]
+        filter_keys = [k for k in cond_image_keys if k!="same_dataset"]
         for key in filter_keys:
             if key in item["conditioning"]:
                 good_idx = np.flatnonzero(np.isin(item["conditioning"][key],use_idx))
@@ -542,6 +551,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         assert all([isinstance(item,int) for item in list_of_things2]), "all items in list_of_things must be integers"
         assert all([0<=item<len(self) for item in list_of_things2]), "all items in list_of_things must be valid indices"
         return list_of_things2
+
 
     def get_prioritized_sampler(self,pri_didx,seed=None,use_p=True,shuffle=False):
         """
@@ -644,7 +654,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 crop_y_best = crop_y
         return crop_x_best,crop_y_best
     
-    def map_label_to_valid_bits(self,label,info):
+    def map_label_to_valid_bits(self,label,info,inhereted_idx_to_class_name=None):
         """takes a uint8 label map and depending on the method, maps
         each label to a number between 0 and max_num_classes-1. also
         keeps track of which classes correspond to idx and adds this 
@@ -698,12 +708,33 @@ class SegmentationDataset(torch.utils.data.Dataset):
         idx_to_class_name = {old_to_new[i]: idx_to_class_name[i] for i in range(nnz+1)}
         
         idx_to_class_name[self.label_padding_val] = "padding"
-
+        info["idx_to_class_counts"] = {old_to_new[i]: c for i,c in enumerate(counts)}
         info["idx_to_class_name"] = idx_to_class_name
-
+        info["old_to_new"] = old_to_new
         label[self.label_padding_val!=label] = old_to_new[label[self.label_padding_val!=label]]
         
         return label,info
+
+    def load_cond_image_label(self,info,probs):
+        if "conditioning" not in info:
+            return info
+        dataset_name = info["dataset_name"]
+        type_of_load = []
+        didx_to_load = []
+        illegal_idx = [info["i"]]
+        for key in cond_image_keys:
+            if np.random.rand()<probs.get(key,0):
+                idx = sample_from_list_in_dict(dict_=info, key="same_classes", num_samples=1, illegal_idx=illegal_idx)
+                type_of_load.extend([key for _ in range(len(idx))])
+                didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
+        if len(didx_to_load)==0:
+            return info
+        info["cond"] = {}
+        for t,didx in zip(type_of_load,didx_to_load):
+            item = self.__getitem__({"didx": didx, "inhereted_idx_to_class_name": info["idx_to_class_name"], "load_cond": False})
+            label,image = item[0],item[1]["image"]
+            info["cond"][t] = torch.cat([image,label],dim=0)
+        return info
 
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
@@ -761,6 +792,25 @@ class SegmentationDataset(torch.utils.data.Dataset):
         return image,label
     
     def __getitem__(self, idx):
+        load_cond = self.load_cond_auto
+        load_cond_probs = self.load_cond_probs
+        inhereted_idx_to_class_name = None
+        if not isinstance(idx,int):
+            assert isinstance(idx,(dict,str)), "idx must be an integer or a dictionary, got: "+str(type(idx))
+            if isinstance(idx,str):
+                idx = {"didx": idx}
+            if "didx" not in idx:
+                assert "i" in idx and "dataset_name" in idx, "idx must contain 'i' and 'dataset_name' keys, or be a didx str or have the 'didx' field"
+                idx["didx"] = f"{idx['dataset_name']}/{idx['i']}"
+            if "load_cond" in idx.keys():
+                load_cond = idx["load_cond"]
+            if "load_cond_probs" in idx.keys():
+                load_cond_probs = idx["load_cond_probs"]
+            inhereted_idx_to_class_name = idx.get("idx_to_class_name",None)
+            idx = self.didx_to_item_idx[idx["didx"]]
+            print("I WAS HERE")
+            assert 0
+        #print(f"idx={idx}, load_cond={load_cond}, inhereted_idx_to_class_name={inhereted_idx_to_class_name is None}")
         info = copy.deepcopy(self.items[idx])
         dataset_name = info["dataset_name"]
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
@@ -770,7 +820,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             image = np.repeat(image,3,axis=-1)
         label = open_image_fast(label_path)
         image,label = self.preprocess(image,label,info)
-        label,info = self.map_label_to_valid_bits(label,info)
+        label,info = self.map_label_to_valid_bits(label,info,inhereted_idx_to_class_name=inhereted_idx_to_class_name)
         if not self.crop_method.startswith("sam"): #TODO
             image,label = self.augment(image,label,info)
             image = image.astype(np.float32)*(2/255)-1
@@ -785,7 +835,24 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{j}.pt"))
             else:
                 info["image_features"] = None
+        print("LOAD_COND:",load_cond,load_cond_probs)
+        if load_cond:
+            print("I WAS HERE1")
+
+            info = self.load_cond_image_label(info,load_cond_probs)
         return label,info
+
+def sample_from_list_in_dict(dict_,key,illegal_idx=[],num_samples=1):
+    out = []
+    if key in dict_.keys():
+        v = dict_[key]
+        lenv = len(v)
+        n = num_samples
+        if lenv>0 and n>0:
+            out = np.random.choice(v,size=min(n,lenv),replace=False)
+            if len(illegal_idx)>0:
+                out = [o for o in out if o not in illegal_idx]
+    return out
 
 def longest_side_resize_func(image,is_label=True,max_size=256):
     return A.LongestMaxSize(max_size=max_size, 
