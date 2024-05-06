@@ -704,8 +704,7 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
             show_keys.append("self_cond")
 
     for k in show_keys:
-        assert k in output.keys(), f"key {k} not in output.keys()"
-        if output[k] is None:
+        if output.get(k,None) is None:
             show_keys.remove(k)
             continue
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"

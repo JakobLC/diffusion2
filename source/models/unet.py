@@ -11,6 +11,7 @@ import os
 from segment_anything.modeling import ImageEncoderViT
 from source.models.cond_vit import FancyViT, fancy_vit_from_args, unet_vit_input_dicts_from_args
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
+from source.utils.utils import model_arg_is_trivial
 from source.models.nn import (
     SiLU,
     conv_nd,
@@ -21,7 +22,7 @@ from source.models.nn import (
     timestep_embedding,
     checkpoint,
 )
-
+import pandas as pd
 
 class TimestepBlock(nn.Module):
     """
@@ -364,7 +365,7 @@ class UNetModel(nn.Module):
         num_heads=1,
         num_heads_upsample=-1,
         use_scale_shift_norm=False,
-        weak_signals=False,
+        weak_signals=False,#TODO, remove unused inputs
         no_diffusion=False,
         self_cond=False,
         cond=False,
@@ -384,25 +385,25 @@ class UNetModel(nn.Module):
             num_heads_upsample = num_heads
         self.vit_args = vit_args
         self.image_size = image_size
-
+        time_embed_dim = model_channels * 4
         self.legal_keys = list(unet_input_dict.keys())
         self.vit_feature_depth = vit_feature_depth
         if vit_args is not None:
             self.vit = FancyViT(**self.vit_args)
-            self.vit_it = self.vit_args["injection_type"]
-            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all"}[self.vit_it]
+            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all"}[self.vit_args["injection_type"]]
             self.legal_keys += list(self.vit_args["input_dict"].keys())
         else:
             assert unet_input_dict is not None, "unet_input_dict must be provided if vit_args is None"
             unet_input_dict = unet_input_dict
             self.vit = None
-            self.vit_it = "none"
             self.vit_injection_type="none"
         
         
         if no_unet:
             assert self.vit_args is not None, "vit_args must be provided if no_unet is True"
             self.has_unet = False
+            ch = self.vit_args["out_chans"]
+            self.fp16_attrs = []
         else:
             self.has_unet = True
             self.model_channels = model_channels
@@ -453,8 +454,8 @@ class UNetModel(nn.Module):
             for k,v in self.unet_input_dict.items():
                 self.unet_input_dict[k] = [i+self.in_channels for i in range(v)]
                 self.in_channels += v
-                
-            time_embed_dim = model_channels * 4
+            
+            self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
                 linear(model_channels, time_embed_dim),
                 SiLU(),
@@ -462,29 +463,36 @@ class UNetModel(nn.Module):
             )
             
             if self.num_classes is not None:
+                self.fp16_attrs.append("class_emb")
                 self.class_emb = nn.Embedding(num_classes, time_embed_dim)
             
             self.input_blocks = nn.ModuleList([TimestepEmbedSequential(conv_nd(dims, self.in_channels, model_channels, 3, padding=1))])
             input_block_chans = [model_channels]
             ch = model_channels
-            resolution = 0
+            res_block_kwargs = {"emb_channels": time_embed_dim,
+                                "dropout": dropout,
+                                "dims": dims,
+                                "use_checkpoint": use_checkpoint,
+                                "use_scale_shift_norm": use_scale_shift_norm}
+            attn_kwargs = {"use_checkpoint": use_checkpoint,
+                           "num_heads": num_heads,
+                           "with_xattn": self.vit_injection_type=="xattn",
+                           "xattn_channels": vit_args.get("out_chans",None) if vit_args is not None else None}
+            
+            block_info_now = {"resolution":0,"ch_in":model_channels,"ch_out":model_channels,"has_attention":False,"has_upsample":False,"has_downsample":False}
+            self.block_info = pd.DataFrame(columns=list(block_info_now.keys()))
+            self.block_info = self.block_info.append({"ch_in": self.in_channels, **block_info_now},ignore_index=True)
+            assert channel_mult[0]==1, "channel_mult[0] must be 1"
             for level, mult in enumerate(channel_mult):
                 for _ in range(num_res_blocks):
                     layers = [
-                        ResBlock(
-                            ch,
-                            time_embed_dim,
-                            dropout,
-                            out_channels=mult * model_channels,
-                            dims=dims,
-                            use_checkpoint=use_checkpoint,
-                            use_scale_shift_norm=use_scale_shift_norm,
-                        )
+                        ResBlock(ch,out_channels=mult*model_channels,**res_block_kwargs)
                     ]
-                    ch = mult * model_channels
+                    ch = mult*model_channels
                     if resolution in self.attention_resolutions:
-                        layers.append(AttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads))
+                        layers.append(AttentionBlock(ch))
                     self.input_blocks.append(TimestepEmbedSequential(*layers))
+                    self.block_info = self.block_info.append({"resolution":level+1,"ch_in": ch, **block_info_now},ignore_index=True)
                     input_block_chans.append(ch)
                 if level != len(channel_mult) - 1:
                     self.input_blocks.append(
@@ -492,25 +500,65 @@ class UNetModel(nn.Module):
                     )
                     input_block_chans.append(ch)
                     resolution += 1
-            middle_layers = [ResBlock(ch,time_embed_dim,dropout,dims=dims,use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm)]
-            if len(self.attention_resolutions)>0:
-                middle_layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads))
-            middle_layers.append(ResBlock(ch,time_embed_dim,dropout,dims=dims,use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm))
+                depth += 1
+                depth_to_ch[depth] = ch
+                depth_to_res[depth] = resolution
+            middle_layers = ([ResBlock(ch,**res_block_kwargs)] +
+                             ([AttentionBlock(ch)] if len(self.attention_resolutions)>0 else []) +
+                             [ResBlock(ch,**res_block_kwargs)])
             
+            depth += 1
+            depth_to_ch[depth] = ch
+            depth_to_res[depth] = resolution
+                         
             self.middle_block = TimestepEmbedSequential(*middle_layers)
 
+            attn_kwargs["num_heads"] = num_heads_upsample
             self.output_blocks = nn.ModuleList([])
             for level, mult in list(enumerate(channel_mult))[::-1]:
                 for i in range(num_res_blocks + 1):
-                    layers = [ResBlock(ch + input_block_chans.pop(),time_embed_dim,dropout,out_channels=model_channels * mult,dims=dims,
-                            use_checkpoint=use_checkpoint,use_scale_shift_norm=use_scale_shift_norm)]
+                    layers = [ResBlock(ch + input_block_chans.pop(),out_channels=model_channels*mult,**res_block_kwargs)] 
                     ch = model_channels * mult
                     if resolution in self.attention_resolutions:
-                        layers.append(AttentionBlock(ch,use_checkpoint=use_checkpoint,num_heads=num_heads_upsample))
+                        layers.append(AttentionBlock(ch))
                     if level and i == num_res_blocks:
                         layers.append(Upsample(ch, conv_resample, dims=dims))
                         resolution -= 1
                     self.output_blocks.append(TimestepEmbedSequential(*layers))
+                depth += 1
+                depth_to_ch[depth] = ch
+                depth_to_res[depth] = resolution
+            
+            if self.vit_injection_type=="spatial_all":
+                self.vit_to_unet_map = nn.ModuleList([nn.Identity(),nn.Identity()]) #dummy layers to start
+                for d in range(2,depth+1):
+                    
+                    vit_ch = vit_args["out_chans"]
+                    unet_ch = depth_to_ch[d]
+
+                    resolution = depth_to_res[d]
+                    size = (self.image_size//(2**resolution),
+                            self.image_size//(2**resolution))
+
+                    self.vit_to_unet_map.append(nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear")))
+            elif self.vit_injection_type=="spatial_once":
+                d = self.vit_feature_depth
+                vit_ch = vit_args["out_chans"]
+                unet_ch = depth_to_ch[d]
+
+                resolution = depth_to_res[d]
+                size = (self.image_size//(2**resolution),
+                        self.image_size//(2**resolution))
+                self.vit_to_unet_map = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
+            elif self.vit_injection_type=="xattn":
+                self.is_x_attn_by_depth = []
+                for d in range(depth+1):
+                    resolution = depth_to_res[d]
+                    self.is_x_attn_by_depth.append(resolution in self.attention_resolutions)
+                self.vit_to_unet_map = None
+            elif self.vit_injection_type=="emb":
+                self.vit_to_unet_map = nn.Linear(self.vit_args["out_chans"],time_embed_dim)
+                
         both_mult = 2 if is_pred_both else 1
         final_act_dict = {"none": nn.Identity(),
                         "softmax": nn.Softmax(dim=1),
@@ -518,7 +566,7 @@ class UNetModel(nn.Module):
         self.out = nn.Sequential(
             normalization(ch),
             SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels*both_mult, 3, padding=1)),
+            zero_module(conv_nd(dims, ch, out_channels*both_mult, 3, padding=1)),
             final_act_dict[final_act.lower()]
         )
 
@@ -544,7 +592,14 @@ class UNetModel(nn.Module):
         return next(self.input_blocks.parameters()).dtype
 
     def to_xattn(self, vit_output, depth):
-        return self.vit_to_unet_map[depth](vit_output) if self.vit_injection_type=="xattn" else None
+        if self.vit_injection_type!="xattn":
+            out = None
+        else:
+            if self.is_x_attn_by_depth[depth]:
+                out = vit_output
+            else:
+                out = None
+        return out
 
     def forward(self, sample, timesteps, **kwargs):
         """
@@ -557,7 +612,11 @@ class UNetModel(nn.Module):
         """
         
         if self.vit is not None:
-            vit_output = self.vit(self.vit.filter_inputs({**kwargs, "sample": sample, "time": timesteps}))
+            vit_output,token_info = self.vit(self.vit.filter_inputs({**kwargs, 
+                                                          "sample": sample, 
+                                                          "time": timesteps.repeat(len(sample)//timesteps.numel())}),
+                                                          return_token_info=True)
+            self.last_token_info = token_info
         else:
             vit_output = None
 
@@ -566,7 +625,8 @@ class UNetModel(nn.Module):
             emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
             if self.no_diffusion:
                 emb *= 0
-            
+            if self.vit_injection_type=="emb":
+                emb = emb + self.vit_to_unet_map(vit_output)
             if self.num_classes is not None:
                 emb = emb + self.class_emb(classes)
             hs = []
@@ -576,10 +636,12 @@ class UNetModel(nn.Module):
                 hs.append(h)
                 if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
                     h = h + self.preprocess_img_enc(image_features.type(h.dtype))
-                if self.vit_injection_type=="spatial_all":
-                    h = h + self.vit_to_unet_map[depth](vit_output)
+                if self.vit_injection_type=="spatial_all" and depth>=2:
+                    print("SHAPERS:",h.shape,vit_output.shape,self.vit_to_unet_map[depth](vit_output).shape)
+                    h = h + self.vit_to_unet_map[depth](vit_output).type(h.dtype)
                 if (depth == self.vit_feature_depth) and self.vit_injection_type=="spatial_once":
-                    h = h + self.vit_to_unet_map(vit_output)
+                    #print("shapes:",h.shape,vit_output.shape,self.vit_to_unet_map(vit_output).shape)
+                    h = h + self.vit_to_unet_map(vit_output).type(h.dtype)
                 depth += 1
             h = self.middle_block(h, emb, x_attn = self.to_xattn(vit_output,depth))
             if self.vit_injection_type=="spatial_all":
@@ -617,7 +679,7 @@ class UNetModel(nn.Module):
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
         for k,v in kwargs.items():
             if k not in ["classes","image_features"]:
-                assert k in self.legal_keys, k+" is not a legal input for the model: "+str(self.legal_keys)
+                assert (k in self.legal_keys) or (v is None), f"k={k} with type {type(v)} is not a legal input for the model: {str(self.legal_keys)}"
                 if k in self.unet_input_dict.keys():
                     if torch.is_tensor(v):
                         assert len(self.unet_input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.unet_input_dict.keys() if len(self.unet_input_dict[k])>0])
@@ -716,7 +778,8 @@ def create_unet_from_args(args):
                     final_act=args["final_activation"],
                     image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
                     vit_args=vit_args,
-                    unet_input_dict=unet_input_dict)
+                    unet_input_dict=unet_input_dict,
+                    no_unet=args["vit_unet_cond_mode"]=="no_unet")
     return unet
 
 def get_sam_image_encoder(model_type="vit_b",device="cuda"):

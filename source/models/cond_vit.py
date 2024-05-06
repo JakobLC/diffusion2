@@ -259,6 +259,7 @@ def fancy_vit_from_args(args,return_input_dict_instead=False):
                                                         image_channels=3,
                                                         diff_channels=diff_channels)
     
+    fancy_vit_args["diff_channels"] = diff_channels
     del_keys2 = []
     for k in new_prob_keys:
         if args[k]<=0 or (k=="semantic_prob" and args[k]==1):
@@ -271,8 +272,10 @@ def fancy_vit_from_args(args,return_input_dict_instead=False):
         del_keys2.append("bbox")
     if args["vit_unet_cond_mode"]=="both_spatial_unet":
         del_keys2.extend(spatial_input_keys)
-    if not args["vit_unet_cond_mode"]=="no_unet":
+    elif not args["vit_unet_cond_mode"]=="no_unet":
         del_keys2.append("sample")
+    else:
+        assert args["vit_unet_cond_mode"] in ["both_spatial_vit","no_unet"], "Invalid vit_unet_cond_mode: "+args["vit_unet_cond_mode"]
     for k in del_keys2:
         if k in fancy_vit_args["input_dict"].keys():
             del fancy_vit_args["input_dict"][k]
@@ -344,7 +347,8 @@ class FancyViT(nn.Module):
         max_seq_len: int = None,
         pre_reduction: str = "none",
         post_reduction: str = "spatial",
-        injection_type: str = "a"
+        injection_type: str = "a",
+        diff_channels: int = 6,
     ) -> None:
         super().__init__()
         assert pre_reduction in ["spatial","none"], "Invalid pre_reduction: "+pre_reduction
@@ -462,8 +466,12 @@ class FancyViT(nn.Module):
                 nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
                 LayerNorm2d(out_chans),
             )
-        
-        if self.post_reduction=="diffusion_sample":
+        elif self.post_reduction=="diffusion_sample":
+            #self.inverse_patch_embed = PatchEmbed(kernel_size=(self.patch_size, self.patch_size),
+            #                                    stride=(self.patch_size, self.patch_size),
+            #                                    in_chans=max(self.in_chans),
+            #                                    embed_dim=self.embed_dim,
+            #                                    is_inverse=True)
             #upscale features, then add conv block
             self.neck = nn.Sequential(
                 nn.Conv2d(self.embed_dim,out_chans,kernel_size=1,bias=False,),
@@ -477,7 +485,12 @@ class FancyViT(nn.Module):
                 act_layer(),
                 nn.Conv2d(out_chans,out_chans,kernel_size=3,padding=1,bias=False),
             )
-                                      
+        elif self.post_reduction in ["cls_token","mean_token"]:
+            self.neck = nn.Sequential(
+                nn.Linear(self.embed_dim,out_chans,bias=False,),
+                nn.LayerNorm(out_chans),
+                nn.Linear(out_chans,out_chans,bias=False)
+            )
     def reset_idx(self,bs):
         self.idx_now = [0 for _ in range(bs)]
 
@@ -501,7 +514,7 @@ class FancyViT(nn.Module):
             for i in range(bs):
                 if v is not None:
                     if ae: assert len(v)==bs, f"Expected length of bs={bs}, got length={len(v[i])} for k={k}"
-                    v_i = torch.atleast_1d(v[i])
+                    v_i = torch.atleast_1d(v[i]) if v[i] is not None else None
                     if v_i is not None:
                         assert torch.is_tensor(v_i), "Expected tensor for input. Found :" +str(type(v_i))+" for k="+k
                         assert len(v_i.shape)>0, "Expected tensor with at least one dimension. Found :" +str(v_i.shape)+" for k="+k
@@ -527,6 +540,7 @@ class FancyViT(nn.Module):
     def tokenize_inputs(self, inputs, 
                         crop_unused_tokens=True, 
                         raise_error_on_zero_tokens=False):
+        #inputs = copy.deepcopy(inputs)
         if "bs_device_for_empty_input" in inputs:
             bs,device = inputs["bs_device_for_empty_input"]
             del inputs["bs_device_for_empty_input"]
@@ -581,14 +595,14 @@ class FancyViT(nn.Module):
                                         "w": j} for j in range(self.token_img_size)] 
                                                 for k in range(self.token_img_size)],[])
                     if self.pos_embed is not None:
-                        tokenized_item += self.pos_embed
+                        tokenized_item = tokenized_item + self.pos_embed
                     tokenized_item = tokenized_item.reshape(1,-1,self.embed_dim)
                 elif t=="scalar_continuous":
                     if item_i>=0:
-                        tokenized_item = getattr(self, input_name+"_embed")(item_i).unsqueeze(1)
+                        tokenized_item = getattr(self, input_name+"_embed")(item_i.reshape(1,1))
                 elif t=="scalar_discrete":
                     if item_i>=0:
-                        tokenized_item = getattr(self, input_name+"_embed")(item_i)
+                        tokenized_item = getattr(self, input_name+"_embed")(item_i.reshape(1,1))
                 elif t=="vocabulary":
                     vocab_indices = item_i
                     if (vocab_indices>=0).any():
@@ -623,9 +637,6 @@ class FancyViT(nn.Module):
                 max_actual_len = max([len(item) for item in token_info])
             else:
                 max_actual_len = self.max_seq_len
-        print("max_len; ",max_actual_len)
-        print(token_info_overview(token_info,as_df=1))
-        assert 0
         for i in range(bs):
             if len(token_info[i])<max_actual_len:
                 add = max_actual_len-len(token_info[i])
@@ -639,18 +650,20 @@ class FancyViT(nn.Module):
 
     def post_reduction_func(self,x,token_info):
         if self.post_reduction=="cls_token":
-            #assert all bs has 1 cls token
+            #assert all items in batch have exactly 1 cls token
             cls_idx = [[j for j in range(len(ti)) if ti[j]["input_name"]=="cls"] for ti in token_info]
             assert all([len(idx)==1 for idx in cls_idx]), "Expected 1 cls token per batch, got: "+str(cls_idx)
             cls_idx = torch.tensor([idx[0] for idx in cls_idx])
             x = x[range(len(cls_idx)),cls_idx]
+            x = self.neck(x)
         elif self.post_reduction=="mean_token":
             x_mean = []
             for i in range(len(x)):
                 nonpad_mask = [j for j in range(len(token_info[i])) if token_info[i][j]["input_name"]!="padding"]
                 x_mean.append(x[i,nonpad_mask].mean(dim=0))
             x = torch.stack(x_mean)
-        elif self.post_reduction=="spatial":
+            x = self.neck(x)
+        elif self.post_reduction in ["spatial","diffusion_sample"]:
             x, _ = group_window_multi(x,
                                     token_info=token_info,
                                     window_size=self.token_img_size,
@@ -662,14 +675,19 @@ class FancyViT(nn.Module):
             x = self.neck(x.permute(0, 3, 1, 2))
         elif self.post_reduction=="none":
             pass
+        else:
+            raise ValueError("Invalid post_reduction: "+self.post_reduction)
         return x
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, return_token_info=False) -> torch.Tensor:
         x, token_info = self.tokenize_inputs(inputs)
         for blk in self.blocks:
             x = blk(x,token_info)
-        x = self.post_reduction_func(x,token_info)            
-        return x
+        x = self.post_reduction_func(x,token_info)
+        if return_token_info:
+            return x, token_info
+        else:
+            return x
 
 def vuft(x):
     return very_unique_from_tensor(x)
@@ -787,20 +805,24 @@ class ImageEncoderViT(nn.Module):
 def get_device_and_bs_from_input_dict(inputs,assert_consistency=True):
     bs = []
     device = []
-    for v in inputs.values():
+    assert_info = {}
+    for k,v in inputs.items():
         if v is None:
             continue
         if torch.is_tensor(v):
-            bs.append(v.shape[0])
+            bs.append(len(v))
             device.append(v.device)
+            assert_info[str(k)+" shape"] = v.shape
         elif isinstance(v,list):
             torch_tensors_in_list = list([item for item in v if torch.is_tensor(item)])
+            assert_info[str(k)+" len"] = len(v)
             if len(torch_tensors_in_list)>0:
                 bs.append(len(v))
                 device.append(torch_tensors_in_list[0].device)
     if assert_consistency:
         if len(set(bs))>1:
-            raise ValueError("Batch sizes must be consistent across inputs, got: "+str(bs))
+            assert_info = "\n".join([str(k)+": "+str(v) for k,v in assert_info.items()])
+            raise ValueError("Batch sizes must be consistent across inputs, got: "+str(bs)+" \n assert_info: \n"+assert_info)
         if len(set(device))>1:
             raise ValueError("Devices must be consistent across inputs, got: "+str(device))
     if len(bs)==0:
@@ -1266,7 +1288,8 @@ def convert_to_slice_if_possible(idx):
         return idx
 
 class CrossAttention(Attention):
-    """Multi-head Attention block which computes the full attention matrix for a specified subset of tokens."""
+    """Multi-head Attention block which computes the full attention matrix for a specified subset of tokens.
+    essentially cross attention but where the cross tokens originate from the decoder."""
     def __init__(self, *args, nametype_to_query = lambda n,t: t!="image", **kwargs):
         super().__init__(*args, **kwargs)
         self.nametype_to_query = nametype_to_query
@@ -1310,20 +1333,26 @@ class CrossAttention(Attention):
         C_heads = C // self.num_heads
         attn_idx, padding, Lx, x_mask, y_mask = self.get_attn_idx(token_info)
         # qkv with shape (3, B, nHead, H * W, C)
-        qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, C_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x)
+        qkv = qkv.reshape(B, L, 3, self.num_heads, C_heads)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
         # q, k, v with shape (B * nHead, H * W, C)
-        q, k, v = qkv.reshape(3, B * self.num_heads, L, C_heads).unbind(0)
-        sub_q = torch.zeros((B*self.num_heads,Lx,C_heads),dtype=q.dtype,device=q.device)
+        q, k, v = qkv.clone().reshape(3, B * self.num_heads, L, C_heads).unbind(0)
+        #sub_q = torch.zeros((B*self.num_heads,Lx,C_heads),dtype=q.dtype,device=q.device)
+        sub_q = []
         for idx in range(len(attn_idx)):
             bs_slice = slice(idx*self.nh,(idx+1)*self.nh)
-            sub_q[bs_slice,:len(attn_idx[idx]),:] = q[bs_slice,attn_idx[idx],:]
+            #sub_q[bs_slice,:len(attn_idx[idx]),:] = q[bs_slice,attn_idx[idx],:]
+            sub_q.append(torch.nn.functional.pad(q[bs_slice,attn_idx[idx],:],(0,0,0,Lx-len(attn_idx[idx]))))
+        sub_q = torch.cat(sub_q,dim=0)
         attn = (sub_q * self.scale) @ k.transpose(-2, -1)
         attn[padding] = self.largest_neg_value
         attn = attn.softmax(dim=-1)
         y = (attn @ v).view(B, self.num_heads, Lx, C_heads).permute(0, 2, 1, 3).reshape(B, Lx, C)
         #change only the subset of tokens that were in the query group
-        x[x_mask] = y[y_mask]
-        return x
+        new_x = x.clone()
+        new_x[x_mask] = y[y_mask]
+        return new_x
 
 def token_info_to_group_default(d,W):
     if ("h" in d) and ("w" in d):
@@ -1560,6 +1589,7 @@ class PatchEmbed(nn.Module):
         padding: Tuple[int, int] = (0, 0),
         in_chans: int = 3,
         embed_dim: int = 768,
+        is_inverse: bool = False,
     ) -> None:
         """
         Args:
@@ -1570,11 +1600,20 @@ class PatchEmbed(nn.Module):
             embed_dim (int): Patch embedding dimension.
         """
         super().__init__()
-        self.proj = nn.Conv2d(
-            in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding
-        )
+
+        self.is_inverse = is_inverse
+        self.in_chans = in_chans
+        if self.is_inverse:
+            self.proj = nn.ConvTranspose2d(
+                embed_dim, in_chans, kernel_size=kernel_size, stride=stride, padding=padding
+            )
+        else:
+            self.proj = nn.Conv2d(
+                in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        assert x.shape[1] == self.in_chans, f"Expected tensor of shape (B,{self.in_chans},H,W). Found: {x.shape}"
         x = self.proj(x)
         # B C H W -> B H W C
         x = x.permute(0, 2, 3, 1)
@@ -1582,6 +1621,21 @@ class PatchEmbed(nn.Module):
 
 def load_cond_image_probs_from_args(args):
     return {k: args.__dict__[k+"_prob"] for k in cond_image_keys}
+
+def num_tokens_from_token_info(token_info,count_padding=False,sum_batch=True):
+    toi = token_info_overview(token_info)
+    num_tokens = []
+    for i in range(len(token_info)):
+        nt = 0
+        for k,v in toi[i].items():
+            if k=="padding" and count_padding:
+                nt += v
+            else:
+                nt += v
+        num_tokens.append(nt)
+    if sum_batch:
+        num_tokens = sum(num_tokens)
+    return num_tokens
 
 def main():
     import argparse
@@ -1656,10 +1710,13 @@ def main():
         pred = model(input_dict)
         print("input sizes: ",{k: v.shape if torch.is_tensor(v) else len(v) for k,v in input_dict.items() if v is not None})
         print(f"output shape: {pred.shape}")
-        if False:
+        if True:
             token_info = model.tokenize_inputs(input_dict)[1]
             print("token_info_overview:")
             print(token_info_overview(token_info))
+            print(num_tokens_from_token_info(token_info))
+            print(num_tokens_from_token_info(token_info,1,0))
+            
     elif args.unit_test==3:
         with torch.no_grad():
             for _ in range(10):

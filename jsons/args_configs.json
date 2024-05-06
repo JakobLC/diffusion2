@@ -365,16 +365,30 @@
         "class_names_prob": 0.0,
         "classes_prob": 0.3
     },
+    "+ALLCOND": {
+        "semantic_prob": 0.5,
+        "adjacent_prob": 0.9,
+        "same_vol_prob": 0.9,
+        "same_classes_prob": 0.5,
+        "same_dataset_prob": 0.5,
+        "class_names_prob": 0.0,
+        "classes_prob": 0.3
+    },
     "vit128": {
         "versions": {
             "64": {"image_size": 64},
             "128": {"image_size": 128,"input_scale": 0.006},
             "T0": {"vit_unet_cond_mode": "no_vit"},
-            "T1": {"vit_unet_cond_mode": "both_spatial_unet","cond_vit_setup": "1a2ac3a4a"},
+            "T1": {"vit_unet_cond_mode": "both_spatial_unet"},
             "T2": {"vit_unet_cond_mode": "both_spatial_vit"},
-            "T3": {"vit_unet_cond_mode": "no_unet"}
+            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"},
+            "T2debug": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1b2a3a4a"},
+            "T2_spatial_all": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4d"},
+            "T2_spatial_once": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4c"}
         },
-        "datasets": "visor",
-        "class_type": "num_classes"
+        "cond_vit_setup": "1b2ac3a4a",
+        "datasets": "coift",
+        "class_type": "num_classes",
+        "log_train_metrics": "num_tokens"
     }
 }

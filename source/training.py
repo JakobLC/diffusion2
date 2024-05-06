@@ -34,10 +34,12 @@ from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    fancy_print_kvs,bracket_glob_fix,format_relative_path,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
-                   load_state_dict_loose)
+                   load_state_dict_loose,shaprint,to_dev,model_arg_is_trivial,
+                   nice_split)
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
-                                    cond_image_keys, load_cond_image_probs_from_args)
+                                    cond_image_keys, load_cond_image_probs_from_args,
+                                    num_tokens_from_token_info)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -271,7 +273,9 @@ class DiffusionModelTrainer:
                                         num_workers=self.args.dl_num_workers))
             if self.args.debug_run=="no_dl":
                 dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
-            if self.args.debug_run=="only_dl":
+            elif self.args.debug_run=="anomaly":
+                torch.autograd.set_detect_anomaly(True)
+            elif self.args.debug_run=="only_dl":
                 for _ in tqdm(dataloader):
                     pass
             if pure_gen_dataset_mode:
@@ -333,7 +337,7 @@ class DiffusionModelTrainer:
 
         return self.model, swap_pointers_func
 
-    def get_kwargs(self, batch, gen=False):
+    def get_kwargs(self, batch, gen=False, del_none=False):
         x,info = batch
         if self.args.image_encoder!="none":
             x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
@@ -342,7 +346,6 @@ class DiffusionModelTrainer:
         model_kwargs = "image,bbox,points,classes,class_names,semantic".split(",")
         model_kwargs += cond_image_keys
         model_kwargs = {k: [] for k in model_kwargs}
-        to_dev = lambda x: x.to(self.device) if x is not None else None
         bs = x.shape[0]
         for i in range(bs):
             if np.random.rand()<self.args.image_prob or gen:
@@ -374,8 +377,12 @@ class DiffusionModelTrainer:
                     model_kwargs["class_names"].append(info[i]["class_names"])
                 else:
                     model_kwargs["class_names"].append(None)
+            
             for k in cond_image_keys:
-                model_kwargs[k].append(info[i].get(k,None))
+                if "cond" in info[i].keys():
+                    model_kwargs[k].append(info[i]["cond"].get(k,None))
+                else:
+                    model_kwargs[k].append(None)
             if 0.0<self.args.semantic_prob and self.args.semantic_prob<1.0:
                 model_kwargs["semantic"].append(torch.tensor([info[i]["is_semantic"]],dtype=torch.long))
         if self.args.image_encoder!="none":
@@ -392,11 +399,16 @@ class DiffusionModelTrainer:
                 model_kwargs["image_features"][image_idx] = image_features
                 if self.args.crop_method=="sam_big":
                     model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
-                
-        model_kwargs = {k: to_dev(unet_kwarg_to_tensor(v)) for k,v in model_kwargs.items()}
         for k in list(model_kwargs.keys()):
-            if model_kwargs[k] is None:
-                del model_kwargs[k]
+            if k in cond_image_keys:
+                model_kwargs[k] = to_dev(model_kwargs[k])
+            else:
+                model_kwargs[k] = to_dev(unet_kwarg_to_tensor(model_kwargs[k]))
+            if model_arg_is_trivial(model_kwargs[k]):
+                if del_none:
+                    del model_kwargs[k]
+                else:
+                    model_kwargs[k] = None
         return x,model_kwargs,info
     
     def get_self_cond(self,info):
@@ -476,8 +488,15 @@ class DiffusionModelTrainer:
             mem_usage = psutil.virtual_memory().percent
             kvs_step["mem_usage"] = mem_usage
             self.log_kv({"mem_usage": mem_usage})
+        if "num_tokens" in nice_split(self.args.log_train_metrics):
+            if hasattr(self.model,"last_token_info"):
+                last_token_info = self.model.last_token_info
+                num_tokens = num_tokens_from_token_info(last_token_info)
+            else:
+                num_tokens = 0
+            kvs_step["num_tokens"] = num_tokens
         #reorder to match the order in args.log_train_metrics
-        kvs_step = [kvs_step[k] for k in self.args.log_train_metrics.split(",")]
+        kvs_step = [kvs_step[k] for k in nice_split(self.args.log_train_metrics)]
         self.log_kv_step(kvs_step)
         self.log_kv(metrics)
     
@@ -505,7 +524,8 @@ class DiffusionModelTrainer:
             return
         model_grads_to_master_grads(self.model_params, self.master_params)
         self.master_params[0].grad.mul_(1.0 / (2 ** self.log_loss_scale))
-        self._log_grad_norm()
+        if "grad_norm" in nice_split(self.args.log_train_metrics):
+            self._log_grad_norm()
         if self.args.clip_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(self.master_params, self.args.clip_grad_norm)
         self._update_lr()
@@ -516,7 +536,8 @@ class DiffusionModelTrainer:
         self.log_loss_scale += self.args.fp16_scale_growth
 
     def optimize_normal(self):
-        self._log_grad_norm()
+        if "grad_norm" in nice_split(self.args.log_train_metrics):
+            self._log_grad_norm()
         if self.args.clip_grad_norm > 0:
             torch.nn.utils.clip_grad_norm_(self.master_params, self.args.clip_grad_norm)
         self._update_lr()
@@ -529,9 +550,10 @@ class DiffusionModelTrainer:
         ratio_count = 0
         num_total_params = 0
         for p in self.master_params:
-            sqsum += (p.grad ** 2).sum().item()
-            ratio_count += (p.grad.abs() > self.args.clip_grad_norm).sum().item()
-            num_total_params += p.numel()
+            if p.grad is not None:
+                sqsum += (p.grad ** 2).sum().item()
+                ratio_count += (p.grad.abs() > self.args.clip_grad_norm).sum().item()
+                num_total_params += p.numel()
         
         self.last_clip_ratio = ratio_count / num_total_params
         self.last_grad_norm = np.sqrt(sqsum)
@@ -547,6 +569,8 @@ class DiffusionModelTrainer:
             exit()
         except Exception as e:
             self.log("Exception in training loop:\n" + traceback.format_exc())
+            self.log("Dumping last step kvs")
+            self.dump_kvs(only_steps=True) if self.kvs_step_buffer else None
             self.log("Exiting training loop.")
             
 
@@ -686,29 +710,27 @@ class DiffusionModelTrainer:
         dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_gen_buffer)
         self.kvs_gen_buffer = {}
 
-    def dump_kvs(self, filename="logging.csv"):
+    def dump_kvs(self, filename="logging.csv", only_steps=False):
         """
         Saves the kvs buffer and prints it, aswell as the kvs 
         step buffer to a file and then clears the buffers.
         """
-        self.log_kv({"step": self.step})
-        self.log_kv({"loss_scale": self.log_loss_scale})
-        for k,v in self.kvs_buffer.items():
-            if isinstance(v,list):
-                self.kvs_buffer[k] = np.mean(v)
-        fancy_print_str = fancy_print_kvs(self.kvs_buffer)
-        self.log(fancy_print_str)
-        dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_buffer)
-        self.kvs_buffer = {}
+        if not only_steps:
+            self.log_kv({"step": self.step})
+            self.log_kv({"loss_scale": self.log_loss_scale})
+            for k,v in self.kvs_buffer.items():
+                if isinstance(v,list):
+                    self.kvs_buffer[k] = np.mean(v)
+            fancy_print_str = fancy_print_kvs(self.kvs_buffer)
+            self.log(fancy_print_str)
+            dump_kvs(str(Path(self.args.save_path)/filename),self.kvs_buffer)
+            self.kvs_buffer = {}
         
         with open(str(Path(self.args.save_path)/"logging_step.csv"), "a") as f:
             for row in self.kvs_step_buffer:
                 f.write(",".join([str(v) for v in list(row)]) + "\n")
         self.kvs_step_buffer = []
     
-    
-        ###self.log(print_str)
-
     def _master_params_to_state_dict(self, master_params):
         """converts a list of params (flattened list if fp16) 
         to a state dict based on the model's state dict"""

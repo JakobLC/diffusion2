@@ -1203,6 +1203,35 @@ def max_nonzero_per_dim(x,add_one=True):
     nnz = [max([0]+v)+int(add_one) for v in nnz]
     return nnz
     
+def to_dev(item,device="cuda"):
+    if torch.is_tensor(item):
+        return item.to(device)
+    elif isinstance(item,list):
+        return [to_dev(i,device) for i in item]
+    elif item is None:
+        return None
+    else:
+        raise ValueError(f"Unknown type: {type(item)}. Expected list of torch.tensor or None")
+
+def model_arg_is_trivial(model_arg_k):
+    out = False
+    if model_arg_k is None:
+        out = True
+    elif isinstance(model_arg_k,list):
+        if len(model_arg_k)==0:
+            out = True
+        elif all([item is None for item in model_arg_k]):
+            out = True
+    return out
+    
+def nice_split(s,split_s=","):
+    assert isinstance(s,str), "expected s to be a string"
+    assert isinstance(split_s,str), "expected split_s to be a string"
+    if len(s)==0:
+        out = []
+    else:
+        out = s.split(split_s)
+    return out
 
 def main():
     import argparse

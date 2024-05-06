@@ -477,10 +477,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         return self.length
     
     def process_conditioning(self,item,use_idx,keep_atmost=8):
+        if "conditioning" not in item.keys():
+            item["conditioning"] = {}
         item["conditioning"]["same_dataset"] = np.random.choice(use_idx,min(keep_atmost,len(use_idx)),replace=False).tolist()
-        filter_keys = [k for k in cond_image_keys if k!="same_dataset"]
-        for key in filter_keys:
-            if key in item["conditioning"]:
+        for key in cond_image_keys:
+            if key in item["conditioning"] and key!="same_dataset":
                 good_idx = np.flatnonzero(np.isin(item["conditioning"][key],use_idx))
                 if len(good_idx)>keep_atmost:
                     good_idx = good_idx[:keep_atmost]
@@ -724,7 +725,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         illegal_idx = [info["i"]]
         for key in cond_image_keys:
             if np.random.rand()<probs.get(key,0):
-                idx = sample_from_list_in_dict(dict_=info, key="same_classes", num_samples=1, illegal_idx=illegal_idx)
+                idx = sample_from_list_in_dict(dict_=info["conditioning"], key="same_classes", num_samples=1, illegal_idx=illegal_idx)
                 type_of_load.extend([key for _ in range(len(idx))])
                 didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
         if len(didx_to_load)==0:
@@ -734,7 +735,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
             item = self.__getitem__({"didx": didx, "inhereted_idx_to_class_name": info["idx_to_class_name"], "load_cond": False})
             label,image = item[0],item[1]["image"]
             info["cond"][t] = torch.cat([image,label],dim=0)
-        return info
 
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
@@ -808,8 +808,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 load_cond_probs = idx["load_cond_probs"]
             inhereted_idx_to_class_name = idx.get("idx_to_class_name",None)
             idx = self.didx_to_item_idx[idx["didx"]]
-            print("I WAS HERE")
-            assert 0
         #print(f"idx={idx}, load_cond={load_cond}, inhereted_idx_to_class_name={inhereted_idx_to_class_name is None}")
         info = copy.deepcopy(self.items[idx])
         dataset_name = info["dataset_name"]
@@ -835,11 +833,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{j}.pt"))
             else:
                 info["image_features"] = None
-        print("LOAD_COND:",load_cond,load_cond_probs)
         if load_cond:
-            print("I WAS HERE1")
-
-            info = self.load_cond_image_label(info,load_cond_probs)
+            self.load_cond_image_label(info,load_cond_probs)
         return label,info
 
 def sample_from_list_in_dict(dict_,key,illegal_idx=[],num_samples=1):
