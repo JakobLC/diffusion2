@@ -12,9 +12,16 @@ import cv2
 import copy
 from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
+#add source folder if it is not already in PATH
+import sys
+if not str(Path(__file__).parent.parent) in sys.path:
+    sys.path.append(str(Path(__file__).parent.parent))
 from source.models.unet import get_sam_image_encoder
 import tqdm
 from source.models.cond_vit import cond_image_keys
+from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json
+from source.utils.argparse_utils import get_current_default_version
+import shutil
 
 turbo_jpeg = TurboJPEG()
 
@@ -278,22 +285,6 @@ def mode_resize(label,size):
         max_intensity = np.maximum(max_intensity,new_label_i)
     return new_label
 
-def load_json_to_dict_list(file_path):
-    assert len(file_path)>=5, "File path must end with .json"
-    assert file_path[-5:] in ["jsonl",".json"], "File path must end with .json or .jsonl"
-    if file_path[-5:] == "jsonl":
-        assert len(file_path)>=6, "File path must end with .json or .jsonl"
-        assert file_path[-6:]==".jsonl","File path must end with .json or .jsonl"
-    if file_path[-5:] == ".json":
-        with open(file_path, 'r') as json_file:
-            data_list = json.load(json_file)
-    elif file_path[-6:] == ".jsonl":
-        data_list = []
-        with jsonlines.open(file_path) as reader:
-            for line in reader:
-                data_list.append(line)
-    return data_list
-
 class SegmentationDataset(torch.utils.data.Dataset):
     def __init__(self,split="train",
                       image_size=128,
@@ -318,7 +309,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       ignore_sam_idx=-1,
                       delete_info_keys=[],
                       conditioning=False,
-                      load_cond_probs=None):
+                      load_cond_probs=None,
+                      load_matched_items=True,
+                      save_matched_items=False):
+        self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
         self.load_cond_auto = load_cond_probs is not None
         self.load_cond_probs = load_cond_probs
@@ -340,6 +334,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.datasets = datasets
         self.semantic_prob = semantic_prob
         self.label_padding_val = label_padding_val
+        self.save_matched_items = save_matched_items
+        self.load_matched_items = load_matched_items
         assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
         if crop_method.startswith("sam"):
             self.sam_aug_small = get_sam_aug(image_size,padval=label_padding_val)
@@ -405,7 +401,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
 
         assert split_method in ["random","native","native_train"]
         self.split_method = split_method
-
         for dataset_name in self.dataset_list:
             print("processing dataset: ",dataset_name)
             info_json = load_json_to_dict_list(os.path.join(self.data_root,dataset_name,"info.jsonl"))
@@ -414,13 +409,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
             N = len(info_json)
             previous_seed = np.random.get_state()[1][0]
             if self.shuffle_datasets:
-                dataset_specific_seed = sum([ord(l) for l in dataset_name])           
+                dataset_specific_seed = sum([ord(l) for l in dataset_name])
+                self.datasets_info[dataset_name]["dataset_specific_seed"] = dataset_specific_seed           
                 np.random.seed(seed=dataset_specific_seed)
                 randperm = np.random.permutation(N)
                 np.random.seed(previous_seed)
             else:
                 randperm = np.arange(N)
-            
             if split_method=="native_train":
                 use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
             elif split_method=="native":
@@ -431,28 +426,36 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
                 stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
                 use_idx = randperm[start:stop]
-            items = []
+            
             if len(use_idx)==0:
                 warnings.warn("no data in dataset "+dataset_name+" satisfying the criteria")
                 continue
-            file_format = self.datasets_info[dataset_name]["file_format"]
-            for idx in use_idx:
-                item = info_json[idx]
-                item["image_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_im."+file_format)
-                item["label_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_la.png")
-                if self.use_pretty_data and item.get("pretty",False):
-                    item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
-                    item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
-                if self.conditioning:
-                    item = self.process_conditioning(item,use_idx)                 
-                else:
-                    if "conditioning" in item:
-                        del item["conditioning"]
-                for k in delete_info_keys:
-                    del item[k]
-                item["dataset_name"] = dataset_name
-                items.append(item)
-        
+            
+            items = []
+            if self.load_matched_items:
+                items,match_dict = self.get_matched_items(dataset_name,use_idx)
+            if len(items)==0:
+                file_format = self.datasets_info[dataset_name]["file_format"]
+                for idx in use_idx:
+                    item = info_json[idx]
+                    item["image_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_im."+file_format)
+                    item["label_path"] = os.path.join("f"+str(idx//1000),str(idx)+"_la.png")
+                    if self.use_pretty_data and item.get("pretty",False):
+                        item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
+                        item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
+                    if self.conditioning:
+                        item = self.process_conditioning(item,use_idx)                 
+                    else:
+                        if "conditioning" in item:
+                            del item["conditioning"]
+                    for k in delete_info_keys:
+                        del item[k]
+                    item["dataset_name"] = dataset_name
+                    items.append(item)
+                if self.save_matched_items and len(items)>0:
+                    self.save_matched_items_new(items,match_dict,dataset_name)
+                    print("Saved new items for dataset: ",dataset_name)
+
             class_dict = load_json_to_dict_list(os.path.join(self.data_root,dataset_name,"idx_to_class.json"))[0]
             self.idx_to_class[dataset_name] = class_dict
             assert len(class_dict)==self.datasets_info[dataset_name]["num_classes"], ("num_classes in idx_to_class.json does not match num_classes in info.json. found "+
@@ -473,6 +476,66 @@ class SegmentationDataset(torch.utils.data.Dataset):
             self.dataset_weights[dataset_name] = w
         self.dataset_to_label = {dataset: i for i, dataset in enumerate(["none"]+self.dataset_list)}
 
+    def get_matched_items(self,dataset_name,use_idx,
+                          match_other=["len_use_idx","current_args_version","dataset_specific_seed"],
+                          match_keys=["split_method",
+                                      "split",
+                                      "delete_info_keys",
+                                      "conditioning",
+                                      "use_pretty_data",
+                                      "shuffle_datasets",
+                                      "ignore_sam_idx"]):
+        """
+        loads a saved file of processed items to save time. The items are
+        only loaded if a dict that fully matches the previous saved setup
+        """
+        match_dict = {key: getattr(self,key) for key in match_keys}
+        if "len_use_idx" in match_other:
+            match_dict["len_use_idx"] = len(use_idx)
+        if "current_args_version" in match_other:
+            match_dict["current_args_version"] = get_current_default_version()
+        if "dataset_specific_seed" in match_other:
+            match_dict["dataset_specific_seed"] = self.datasets_info[dataset_name].get("dataset_specific_seed",-1)
+        match_dict_filepath = f"./data/{dataset_name}/match_items/match_dict.json" 
+        if Path(match_dict_filepath).exists():
+            loaded_match_dicts = load_json_to_dict_list(match_dict_filepath)
+        else:
+            loaded_match_dicts = []
+        matched = False
+        for k,match_dict_compare in enumerate(loaded_match_dicts):
+            if match_dict_compare==match_dict:
+                matched = True
+                break
+        if matched:
+            items = load_json_to_dict_list(f"./data/{dataset_name}/match_items/items_{k:05d}.json")
+        else:
+            items = []
+        return items,match_dict
+
+    def save_matched_items_new(self,items,match_dict,dataset_name):
+        filepath = f"./data/{dataset_name}/match_items"
+        match_dict_filepath = f"./data/{dataset_name}/match_items/match_dict.json" 
+        if not Path(filepath).exists():
+            os.makedirs(filepath)
+        if Path(match_dict_filepath).exists():
+            loaded_match_dicts = load_json_to_dict_list(match_dict_filepath)
+        else:
+            loaded_match_dicts = []
+        matched = False
+        for match_dict_compare in loaded_match_dicts:
+            if match_dict_compare==match_dict:
+                matched = True
+                break
+        if not matched:
+            #The items are new, and we therefore save
+            if not Path(match_dict_filepath).exists():
+                save_dict_list_to_json(match_dict,match_dict_filepath,append=False)
+            else:
+                save_dict_list_to_json(match_dict,match_dict_filepath,append=True)
+            savename = os.path.join(filepath,f"items_{len(loaded_match_dicts):05d}.json")
+            save_dict_list_to_json(items,savename)
+        return
+        
     def __len__(self):
         return self.length
     
@@ -655,7 +718,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 crop_y_best = crop_y
         return crop_x_best,crop_y_best
     
-    def map_label_to_valid_bits(self,label,info,inhereted_idx_to_class_name=None):
+    def map_label_to_valid_bits(self,label,info,inh_classes=None):
         """takes a uint8 label map and depending on the method, maps
         each label to a number between 0 and max_num_classes-1. also
         keeps track of which classes correspond to idx and adds this 
@@ -690,12 +753,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             #modify old_to_new so the same labels are always mapped to the same class (First instance chooses the class)
             label_names = np.unique(list(idx_to_class_name.values()))
             for name in label_names:
-                try:
-                    label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
-                except KeyError:
-                    print("info: ",info)
-                    print(idx_to_class_name)
-                    raise KeyError
+                label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
                 if len(label_name_idx)>1:
                     for i in label_name_idx[1:]:
                         old_to_new[i] = old_to_new[label_name_idx[0]]
@@ -711,6 +769,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         idx_to_class_name[self.label_padding_val] = "padding"
         info["idx_to_class_counts"] = {old_to_new[i]: c for i,c in enumerate(counts)}
         info["idx_to_class_name"] = idx_to_class_name
+                               
         info["old_to_new"] = old_to_new
         label[self.label_padding_val!=label] = old_to_new[label[self.label_padding_val!=label]]
         
@@ -725,14 +784,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
         illegal_idx = [info["i"]]
         for key in cond_image_keys:
             if np.random.rand()<probs.get(key,0):
-                idx = sample_from_list_in_dict(dict_=info["conditioning"], key="same_classes", num_samples=1, illegal_idx=illegal_idx)
+                idx = sample_from_list_in_dict(dict_=info["conditioning"], key=key, num_samples=1, illegal_idx=illegal_idx)
                 type_of_load.extend([key for _ in range(len(idx))])
                 didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
         if len(didx_to_load)==0:
             return info
         info["cond"] = {}
         for t,didx in zip(type_of_load,didx_to_load):
-            item = self.__getitem__({"didx": didx, "inhereted_idx_to_class_name": info["idx_to_class_name"], "load_cond": False})
+            item = self.__getitem__({"didx": didx, "inh_classes": info["idx_to_class_name"], "load_cond": False})
             label,image = item[0],item[1]["image"]
             info["cond"][t] = torch.cat([image,label],dim=0)
 
@@ -794,7 +853,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         load_cond = self.load_cond_auto
         load_cond_probs = self.load_cond_probs
-        inhereted_idx_to_class_name = None
+        inh_classes = None
         if not isinstance(idx,int):
             assert isinstance(idx,(dict,str)), "idx must be an integer or a dictionary, got: "+str(type(idx))
             if isinstance(idx,str):
@@ -806,9 +865,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 load_cond = idx["load_cond"]
             if "load_cond_probs" in idx.keys():
                 load_cond_probs = idx["load_cond_probs"]
-            inhereted_idx_to_class_name = idx.get("idx_to_class_name",None)
+            inh_classes = idx.get("idx_to_class_name",None)
             idx = self.didx_to_item_idx[idx["didx"]]
-        #print(f"idx={idx}, load_cond={load_cond}, inhereted_idx_to_class_name={inhereted_idx_to_class_name is None}")
+        #print(f"idx={idx}, load_cond={load_cond}, inh_classes={inh_classes is None}")
         info = copy.deepcopy(self.items[idx])
         dataset_name = info["dataset_name"]
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
@@ -818,7 +877,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             image = np.repeat(image,3,axis=-1)
         label = open_image_fast(label_path)
         image,label = self.preprocess(image,label,info)
-        label,info = self.map_label_to_valid_bits(label,info,inhereted_idx_to_class_name=inhereted_idx_to_class_name)
+        label,info = self.map_label_to_valid_bits(label,info,inh_classes=inh_classes)
         if not self.crop_method.startswith("sam"): #TODO
             image,label = self.augment(image,label,info)
             image = image.astype(np.float32)*(2/255)-1
@@ -836,6 +895,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
         if load_cond:
             self.load_cond_image_label(info,load_cond_probs)
         return label,info
+
+def delete_all_matched_items(datasets=None,dry=False,verbose=True):
+    #if datasets is none, we delete all
+    if datasets is None:
+        datasets = get_all_valid_datasets()
+    for dataset_name in datasets:
+        match_items_dir = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name,"match_items")
+        if os.path.exists(match_items_dir):
+            if not dry:
+                shutil.rmtree(match_items_dir)
+            if verbose:
+                print(f"Deleted matched items for dataset {('(dry)' if dry else '')}: ",dataset_name)
 
 def sample_from_list_in_dict(dict_,key,illegal_idx=[],num_samples=1):
     out = []
@@ -1169,6 +1240,9 @@ def main():
         images = torch.cat((x.repeat(1,3,1,1)/maxvals_dim123,im*0.5+0.5),dim=0).clamp(0,1)
         jlc.montage(images,n_col=10,text=text,text_color="red")
         plt.show()
+    elif args.unit_test==6:
+        print("UNIT TEST 6: remove matched items")
+        delete_all_matched_items(dry=False,verbose=True)
         
 if __name__=="__main__":
     main()

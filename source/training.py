@@ -210,7 +210,7 @@ class DiffusionModelTrainer:
         self.restart_flag = False
         self.log("Init complete.")
 
-    def create_datasets(self,split_list=["train","vali"],args=None):
+    def create_datasets(self,split_list=["train","vali"],args=None,use_training_sampler=False):
         if isinstance(split_list,str):
             split_list = [split_list]
         if self is None:
@@ -251,7 +251,8 @@ class DiffusionModelTrainer:
                                         sam_features_idx=sam_features_idx,
                                         semantic_prob=self.args.semantic_prob,
                                         conditioning=self.args.vit_unet_cond_mode!="no_vit",
-                                        load_cond_probs=load_cond_probs
+                                        load_cond_probs=load_cond_probs,
+                                        save_matched_items=self.args.dataloader_save_processing,
                                         )
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
@@ -260,10 +261,10 @@ class DiffusionModelTrainer:
             if hasattr(args,"pri_didx"):
                 sampler = dataset.get_prioritized_sampler(args.pri_didx,seed=self.args.seed)
             else:
-                if pure_gen_dataset_mode:
-                    sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
-                else:
+                if use_training_sampler:
                     sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
+                else:
+                    sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
             dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
                                         batch_size=bs,
                                         sampler=sampler,

@@ -390,7 +390,7 @@ class UNetModel(nn.Module):
         self.vit_feature_depth = vit_feature_depth
         if vit_args is not None:
             self.vit = FancyViT(**self.vit_args)
-            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all"}[self.vit_args["injection_type"]]
+            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all", "e": "spatial_after_resize"}[self.vit_args["injection_type"]]
             self.legal_keys += list(self.vit_args["input_dict"].keys())
         else:
             assert unet_input_dict is not None, "unet_input_dict must be provided if vit_args is None"
@@ -414,7 +414,7 @@ class UNetModel(nn.Module):
                 for ar in attention_resolutions.split(","):
                     ar = int(ar)
                     if ar < 0:
-                        ar = len(channel_mult) + ar - 1
+                        ar = len(channel_mult) + ar
                     self.attention_resolutions.append(ar)
             self.dropout = dropout
             self.channel_mult = channel_mult
@@ -478,10 +478,8 @@ class UNetModel(nn.Module):
                            "num_heads": num_heads,
                            "with_xattn": self.vit_injection_type=="xattn",
                            "xattn_channels": vit_args.get("out_chans",None) if vit_args is not None else None}
+            resolution = 0
             
-            block_info_now = {"resolution":0,"ch_in":model_channels,"ch_out":model_channels,"has_attention":False,"has_upsample":False,"has_downsample":False}
-            self.block_info = pd.DataFrame(columns=list(block_info_now.keys()))
-            self.block_info = self.block_info.append({"ch_in": self.in_channels, **block_info_now},ignore_index=True)
             assert channel_mult[0]==1, "channel_mult[0] must be 1"
             for level, mult in enumerate(channel_mult):
                 for _ in range(num_res_blocks):
@@ -490,9 +488,8 @@ class UNetModel(nn.Module):
                     ]
                     ch = mult*model_channels
                     if resolution in self.attention_resolutions:
-                        layers.append(AttentionBlock(ch))
+                        layers.append(AttentionBlock(ch,**attn_kwargs))
                     self.input_blocks.append(TimestepEmbedSequential(*layers))
-                    self.block_info = self.block_info.append({"resolution":level+1,"ch_in": ch, **block_info_now},ignore_index=True)
                     input_block_chans.append(ch)
                 if level != len(channel_mult) - 1:
                     self.input_blocks.append(
@@ -500,17 +497,9 @@ class UNetModel(nn.Module):
                     )
                     input_block_chans.append(ch)
                     resolution += 1
-                depth += 1
-                depth_to_ch[depth] = ch
-                depth_to_res[depth] = resolution
             middle_layers = ([ResBlock(ch,**res_block_kwargs)] +
-                             ([AttentionBlock(ch)] if len(self.attention_resolutions)>0 else []) +
+                             ([AttentionBlock(ch,**attn_kwargs)] if len(self.attention_resolutions)>0 else []) +
                              [ResBlock(ch,**res_block_kwargs)])
-            
-            depth += 1
-            depth_to_ch[depth] = ch
-            depth_to_res[depth] = resolution
-                         
             self.middle_block = TimestepEmbedSequential(*middle_layers)
 
             attn_kwargs["num_heads"] = num_heads_upsample
@@ -520,45 +509,48 @@ class UNetModel(nn.Module):
                     layers = [ResBlock(ch + input_block_chans.pop(),out_channels=model_channels*mult,**res_block_kwargs)] 
                     ch = model_channels * mult
                     if resolution in self.attention_resolutions:
-                        layers.append(AttentionBlock(ch))
+                        layers.append(AttentionBlock(ch,**attn_kwargs))
                     if level and i == num_res_blocks:
                         layers.append(Upsample(ch, conv_resample, dims=dims))
                         resolution -= 1
                     self.output_blocks.append(TimestepEmbedSequential(*layers))
-                depth += 1
-                depth_to_ch[depth] = ch
-                depth_to_res[depth] = resolution
-            
+            self.make_block_info()
+
             if self.vit_injection_type=="spatial_all":
-                self.vit_to_unet_map = nn.ModuleList([nn.Identity(),nn.Identity()]) #dummy layers to start
-                for d in range(2,depth+1):
-                    
+                self.vit_to_unet_map = nn.ModuleDict()
+                self.vit_injection_depths = []
+                for row in self.block_info.iterrows():
+                    depth = row[1]["depth"]
+                    size = (int(row[1]["image_size_out"]),int(row[1]["image_size_out"]))
                     vit_ch = vit_args["out_chans"]
-                    unet_ch = depth_to_ch[d]
-
-                    resolution = depth_to_res[d]
-                    size = (self.image_size//(2**resolution),
-                            self.image_size//(2**resolution))
-
-                    self.vit_to_unet_map.append(nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear")))
+                    unet_ch = row[1]["ch_out"]
+                    self.vit_to_unet_map[str(depth)] = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
+                    self.vit_injection_depths.append(depth)
             elif self.vit_injection_type=="spatial_once":
-                d = self.vit_feature_depth
+                self.vit_to_unet_map = nn.ModuleDict()
+                assert self.vit_feature_depth in self.block_info["depth"].values, "vit_feature_depth must be in block_info['depth']="+str(self.block_info["depth"].values)
                 vit_ch = vit_args["out_chans"]
-                unet_ch = depth_to_ch[d]
-
-                resolution = depth_to_res[d]
-                size = (self.image_size//(2**resolution),
-                        self.image_size//(2**resolution))
-                self.vit_to_unet_map = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
+                unet_ch = self.block_info.iloc[self.vit_feature_depth]["ch_out"]
+                size = self.block_info.iloc[self.vit_feature_depth]["image_size_out"]
+                size = (int(size),int(size))
+                self.vit_to_unet_map[str(self.vit_feature_depth)] = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
+                self.vit_injection_depths = [self.vit_feature_depth]
             elif self.vit_injection_type=="xattn":
-                self.is_x_attn_by_depth = []
-                for d in range(depth+1):
-                    resolution = depth_to_res[d]
-                    self.is_x_attn_by_depth.append(resolution in self.attention_resolutions)
                 self.vit_to_unet_map = None
             elif self.vit_injection_type=="emb":
                 self.vit_to_unet_map = nn.Linear(self.vit_args["out_chans"],time_embed_dim)
-                
+                self.vit_injection_depths = []
+            elif self.vit_injection_type=="spatial_after_resize":
+                self.vit_to_unet_map = nn.ModuleDict()
+                self.vit_injection_depths = []
+                for row in self.block_info.iterrows():
+                    if ("Upsample" in row[1]["subclasses"]) or ("Downsample" in row[1]["subclasses"]):
+                        depth = row[1]["depth"]
+                        size = (int(row[1]["image_size_out"]),int(row[1]["image_size_out"]))
+                        vit_ch = vit_args["out_chans"]
+                        unet_ch = row[1]["ch_out"]
+                        self.vit_to_unet_map[str(depth)] = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
+                        self.vit_injection_depths.append(depth)
         both_mult = 2 if is_pred_both else 1
         final_act_dict = {"none": nn.Identity(),
                         "softmax": nn.Softmax(dim=1),
@@ -569,6 +561,65 @@ class UNetModel(nn.Module):
             zero_module(conv_nd(dims, ch, out_channels*both_mult, 3, padding=1)),
             final_act_dict[final_act.lower()]
         )
+
+    def make_block_info(self,as_df=True):
+        block_info_keys = ["depth","resolution",
+                           "subclasses","image_size_in","image_size_out",
+                           "ch_in","ch_out","backbone_part","has_attention"]
+        self.block_info = {k: [] for k in block_info_keys}
+
+        depth = 0
+        resolution = 0
+
+        subclasses = []
+        image_size_in = self.image_size
+        image_size_out = self.image_size
+
+        ch_in = self.model_channels
+        ch_out = self.model_channels
+        backbone_part = "input"
+        has_attention = False
+        
+        for i in range(len(self.input_blocks)): 
+            subclasses = [type(m).__name__ for m in self.input_blocks[i]]
+            has_attention = "AttentionBlock" in subclasses
+            has_downsample = "Downsample" in subclasses
+            if has_downsample:
+                resolution += 1
+                image_size_out //= 2
+            ch_in, ch_out = get_ch_in_out(self.input_blocks[i])
+            values = [depth,resolution,subclasses,image_size_in,image_size_out,ch_in,ch_out,backbone_part,has_attention]
+            self.block_info = {k: v+[val] for k,v,val in zip(block_info_keys,self.block_info.values(),values)}
+            depth += 1
+            if has_downsample:
+                image_size_in //= 2
+        backbone_part = "middle"
+        has_downsample = False
+        subclasses = [type(m).__name__ for m in self.middle_block]
+        has_attention = "AttentionBlock" in subclasses
+        ch_in, ch_out = get_ch_in_out(self.middle_block)
+        values = [depth,resolution,subclasses,image_size_in,image_size_out,ch_in,ch_out,backbone_part,has_attention]
+        self.block_info = {k: v+[val] for k,v,val in zip(block_info_keys,self.block_info.values(),values)}
+        depth += 1
+        backbone_part = "output"
+        for i in range(len(self.output_blocks)):
+            subclasses = [type(m).__name__ for m in self.output_blocks[i]]
+            has_attention = "AttentionBlock" in subclasses
+            has_upsample = "Upsample" in [type(m).__name__ for m in self.output_blocks[i]]
+            if has_upsample:
+                resolution -= 1
+                image_size_out *= 2
+            ch_in, ch_out = get_ch_in_out(self.output_blocks[i])
+            values = [depth,resolution,subclasses,image_size_in,image_size_out,ch_in,ch_out,backbone_part,has_attention]
+            self.block_info = {k: v+[val] for k,v,val in zip(block_info_keys,self.block_info.values(),values)}
+            depth += 1
+            if has_upsample:
+                image_size_in *= 2
+        
+        if as_df:
+            self.block_info = pd.DataFrame(self.block_info)
+        #print as df
+        #print(self.block_info)
 
     def convert_to_fp16(self):
         """
@@ -595,7 +646,7 @@ class UNetModel(nn.Module):
         if self.vit_injection_type!="xattn":
             out = None
         else:
-            if self.is_x_attn_by_depth[depth]:
+            if self.block_info.iloc[depth]["has_attention"]:
                 out = vit_output
             else:
                 out = None
@@ -636,22 +687,18 @@ class UNetModel(nn.Module):
                 hs.append(h)
                 if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
                     h = h + self.preprocess_img_enc(image_features.type(h.dtype))
-                if self.vit_injection_type=="spatial_all" and depth>=2:
-                    print("SHAPERS:",h.shape,vit_output.shape,self.vit_to_unet_map[depth](vit_output).shape)
-                    h = h + self.vit_to_unet_map[depth](vit_output).type(h.dtype)
-                if (depth == self.vit_feature_depth) and self.vit_injection_type=="spatial_once":
-                    #print("shapes:",h.shape,vit_output.shape,self.vit_to_unet_map(vit_output).shape)
-                    h = h + self.vit_to_unet_map(vit_output).type(h.dtype)
+                if depth in self.vit_injection_depths:
+                    h = h + self.vit_to_unet_map[str(depth)](vit_output).type(h.dtype)
                 depth += 1
             h = self.middle_block(h, emb, x_attn = self.to_xattn(vit_output,depth))
-            if self.vit_injection_type=="spatial_all":
-                h = h + self.vit_to_unet_map[depth](vit_output)
+            if depth in self.vit_injection_depths:
+                h = h + self.vit_to_unet_map[str(depth)](vit_output).type(h.dtype)
             depth += 1
             for module in self.output_blocks:
                 cat_in = torch.cat([h, hs.pop()], dim=1)
                 h = module(cat_in, emb, x_attn = self.to_xattn(vit_output,depth))
-                if self.vit_injection_type=="spatial_all":
-                    h = h + self.vit_to_unet_map[depth](vit_output)
+                if depth in self.vit_injection_depths:
+                    h = h + self.vit_to_unet_map[str(depth)](vit_output).type(h.dtype)
                 depth += 1
             h = h.type(sample.dtype)
         else:
@@ -824,6 +871,32 @@ class DummyModel(nn.Module):
     def forward(self,x,timesteps,**kwargs):
         y = self.conv_layer(x.type(self.inner_dtype))
         return y.type(x.dtype)
+
+def get_ch_in_out(module):
+    first_block_type = type(module[0]).__name__
+    last_block_type = type(module[-1]).__name__
+    if first_block_type=="ResBlock":
+        ch_in = module[0].channels
+    elif first_block_type in ["Downsample","Upsample"]:
+        ch_in = module[0].channels
+    elif first_block_type=="AttentionBlock":
+        ch_in = module[0].channels
+    elif first_block_type=="Conv2d":
+        ch_in = module[0].in_channels
+    else:
+        raise ValueError("first block type not recognized: "+first_block_type)
+
+    if last_block_type=="ResBlock":
+        ch_out = module[-1].out_channels
+    elif last_block_type in ["Downsample","Upsample"]:
+        ch_out = module[-1].channels
+    elif last_block_type=="AttentionBlock":
+        ch_out = module[-1].channels
+    elif last_block_type=="Conv2d":
+        ch_out = module[-1].out_channels
+    else:
+        raise ValueError("last block type not recognized: "+last_block_type)
+    return ch_in, ch_out
 
 def main():
     import argparse

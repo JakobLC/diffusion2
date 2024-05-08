@@ -88,32 +88,25 @@ def is_infinite_and_not_none(x):
 
 def save_dict_list_to_json(data_list, file_path, append=False):
     assert isinstance(file_path,str), "file_path must be a string"
-    assert len(file_path)>=5, "File path must end with .json or .jsonl"
-    assert file_path[-5:] in ["jsonl",".json"], "File path must end with .json or .jsonl"
-    if file_path[-5:] == "jsonl":
-        assert len(file_path)>=6, "File path must end with .json or .jsonl"
-        assert file_path[-6:]==".jsonl","File path must end with .json or .jsonl"
     if not isinstance(data_list,list):
         data_list = [data_list]
-    if file_path[-5:] == ".json":
+    
+    if file_path.endswith(".json"):
+        loaded_data = []
         if append:
-            try:
-                existing_data = load_json_to_dict_list(file_path)
-                combined_data = existing_data + data_list
-            except FileNotFoundError:
-                combined_data = data_list
-        else:
-            combined_data = data_list
-        
-        with open(file_path, 'w') as json_file:
-            json.dump(combined_data, json_file, indent=4)
-    elif file_path[-6:] == ".jsonl":
+            if Path(file_path).exists():
+                loaded_data = load_json_to_dict_list(file_path)
+                if not isinstance(loaded_data,list):
+                    loaded_data = [loaded_data]
+        data_list = loaded_data + data_list
+        with open(file_path, "w") as json_file:
+            json.dump(data_list, json_file, indent=4)
+    else:
+        assert file_path.endswith(".jsonl"), "File path must end with .json or .jsonl"
         mode = "a" if append else "w"
         with jsonlines.open(file_path, mode=mode) as writer:
             for line in data_list:
                 writer.write(line)
-    else:
-        raise ValueError("File path must end with .json or .jsonl")
 
 def load_json_to_dict_list(file_path):
     assert len(file_path)>=5, "File path must end with .json"

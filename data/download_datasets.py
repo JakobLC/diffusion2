@@ -1,7 +1,6 @@
 import os,sys
 
-sys.path.append(os.path.abspath('./source/'))
-sys.path.append(os.path.abspath('./data/'))
+sys.path.append(os.path.abspath('./'))
 
 from urllib.parse import urlparse
 from scipy.io import loadmat
@@ -10,21 +9,23 @@ import re
 import shutil
 from PIL import Image
 import tqdm
-from data_utils import (unpack_files, save_dict_list_to_json, load_json_to_dict_list, rle_to_mask)
-from unet import get_sam_image_encoder
+from data.data_utils import (unpack_files, save_dict_list_to_json, load_json_to_dict_list, rle_to_mask)
+from source.models.unet import get_sam_image_encoder
 import glob
 import json
 import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
-from utils import quantile_normalize
+from source.utils.utils import quantile_normalize
 import cv2
-from datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
+from source.datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
 import zipfile
 import skimage
 import nibabel as nib
+import clip
+import torch
 
 def default_do_step():
     return {"unpack": 0,
@@ -1265,6 +1266,50 @@ def axis_bbox_to_idx(volshape,bbox_seg,delta_abs=0,delta_rel=0.05,
         idx_sample.append(np.round(np.linspace(bbox[d*2],bbox[d*2+1],n)).astype(int).tolist())
     return idx_sample
 
+def dataset_classname_map(classname,dataset_name):
+    foreground_with_number = ["sa1b","hrsod","dram"]
+    no_map_required = ["visor","pascal","msra","fss","ecssd","duts","dis","coift","cityscapes","ade20k"]
+    has_underscores = ["totseg","to5k","monu4","monu"]
+    coco_like = ["coco"]
+    if dataset_name in foreground_with_number:
+        assert classname.find("foreground")>=0 or classname.find("background")>=0, "classname must contain foreground or background"
+        return "foreground" if classname.find("foreground")>=0 else "background"
+    elif dataset_name in no_map_required:
+        return classname
+    elif dataset_name in has_underscores:
+        return classname.replace("_"," ")
+    elif dataset_name in coco_like:
+        return classname.split("/")[-1].replace("-other","").replace("-"," ")
+    else:
+        raise NotImplementedError(f"dataset_name {dataset_name} not implemented")
+    
+def save_clip_vectors(dataset_name=None,batch_size=16,save_path = f"./data/CLIP_emb.pth"):
+    idx_to_class = load_json_to_dict_list(f"./data/{dataset_name}/idx_to_class.json")[0]
+    idx_to_class_pretty = {k: dataset_classname_map(v,dataset_name) for k,v in idx_to_class.items()}
+    crit = [int(i) for i in list(idx_to_class_pretty.keys())]
+    sort_order = np.argsort(crit)
+    sorted_crit = [str(crit[i]) for i in sort_order] 
+    list_of_classnames_pretty = [idx_to_class_pretty[i] for i in sorted_crit]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, preprocess = clip.load("ViT-B/32", device=device)
+    n_batches = len(idx_to_class_pretty)//batch_size
+    clip_emb_matrix = np.zeros((len(idx_to_class_pretty),512))
+    with torch.no_grad():
+        for i in tqdm.tqdm(range(n_batches)):
+            batch_idx = range(i*batch_size,min((i+1)*batch_size,len(idx_to_class_pretty)))
+            list_of_classnames_batch = [list_of_classnames_pretty[i] for i in batch_idx]
+            text = clip.tokenize(list_of_classnames_batch).to(device)
+            text_features = model.encode_text(text)
+            clip_emb_matrix[batch_idx] = text_features.cpu().numpy()
+    if Path(save_path).exists():
+        loaded = torch.load(save_path)
+    else:
+        loaded = {}
+    loaded[dataset_name] = {"classnames": list_of_classnames_pretty, 
+                            "embeddings": clip_emb_matrix,
+                            "class_keys": sorted_crit}
+    torch.save(loaded,save_path)
+
 def main():
     import argparse
     
@@ -1342,6 +1387,13 @@ def main():
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
         #add existence of prettify to info jsonl
         add_existence_of_prettify_to_info_jsonl()
+    elif args.process==14:
+        print("PROCESS 14: embedding CLIP vectors")
+        live_info = load_json_to_dict_list("./data/datasets_info_live.json")
+        all_dataset_names = [d["dataset_name"] for d in live_info if d["live"]]
+        for dataset_name in all_dataset_names:
+            print(f"Processing {dataset_name}")
+            save_clip_vectors(dataset_name)
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

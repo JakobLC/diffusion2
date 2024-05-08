@@ -232,7 +232,7 @@ def evaluate_sam(datasets="ade20k",
         split = ["train","vali","test","all"][split]
     assert num_return_segments<=64, "num_return_segments must be less than or equal to 64, due to memory constraints"
     assert isinstance(longest_side_resize,int), "longest_side_resize must be an integer"
-
+    
     args = TieredParser().get_args(alt_parse_args=["--model_name", model_name_for_dataloader,
                                                     "--model_version","1.0.0",
                                                     "--ckpt_name", "*"+model_name_for_dataloader+"*",

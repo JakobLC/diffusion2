@@ -28,9 +28,8 @@ from source.training import DiffusionModelTrainer
 # [5] check multiple workers works
 # [4] make i.e. 2x,4x imsize compared to diff sample 
 # [5] resume training by model_id
-# [6] make sure T0,T1,T2,T3 all work
 # [6] implement CLIP matrix for datasets
-# [6] implement all injection types in UNET class
+# [6] make class inheritance work
 # [7] add half precision to vit
 
 #training TODO

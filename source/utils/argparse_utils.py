@@ -639,6 +639,10 @@ def kill_by_id(id, name_key="sample_opts", dry=False):
                     rmtree(id_dict[id][k])
             delete_existing_args(id,name_key=name_key)
 
+def get_current_default_version():
+    tp = TieredParser("args")
+    return load_defaults(idx=0)[tp.version_key]
+
 def main():
     import argparse
     
@@ -660,6 +664,9 @@ def main():
         print("UNIT TEST 2: kill_missing_ids")
         kill_missing_ids(name_key="args",dry=False)
         kill_missing_ids(name_key="sample_opts",dry=False)
+    elif args.unit_test==3:
+        print("UNIT TEST 3: get_current_default_version")
+        print(get_current_default_version())
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
         

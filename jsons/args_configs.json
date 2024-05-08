@@ -381,14 +381,16 @@
             "T0": {"vit_unet_cond_mode": "no_vit"},
             "T1": {"vit_unet_cond_mode": "both_spatial_unet"},
             "T2": {"vit_unet_cond_mode": "both_spatial_vit"},
-            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"},
+            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c","lr": 0.001,"cond_patch_size": 8},
             "T2debug": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1b2a3a4a"},
             "T2_spatial_all": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4d"},
-            "T2_spatial_once": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4c"}
+            "T2_spatial_once": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4c"},
+            "T2_spatial_resize": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4e"},
+            "T3_tiny": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 2, "image_size": 32,"input_scale": 1.0}
         },
         "cond_vit_setup": "1b2ac3a4a",
-        "datasets": "coift",
+        "datasets": "all",
         "class_type": "num_classes",
-        "log_train_metrics": "num_tokens"
+        "log_train_metrics": "loss,grad_norm,num_tokens"
     }
 }

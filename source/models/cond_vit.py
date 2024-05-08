@@ -213,7 +213,9 @@ cond_vit_setup_long = {1: {"option_name": "preprocess" ,
                            "a": "Embed vec (single token)",
                            "b": "UNet cross-attention",
                            "c": "Spatial Embed (once)",
-                           "d": "Spatial Embed (many times)"}}
+                           "d": "Spatial Embed (many times)",
+                           "e": "Spatial Embed (after Downsample/Upsample)"}
+                           }
 
 def get_appropriate_block_types(depth=12,block_types="ae",transform_to_names=True):
     for letter in block_types:
