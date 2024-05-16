@@ -241,7 +241,7 @@ class DiffusionModelTrainer:
                                         split_ratio=split_ratio,
                                         image_size=self.args.image_size,
                                         datasets=self.args.datasets,
-                                        min_label_size=self.args.min_label_size,
+                                        min_rel_class_area=self.args.min_label_size,
                                         max_num_classes=self.args.max_num_classes,
                                         shuffle_zero=self.args.shuffle_zero,
                                         geo_aug_p=self.args.geo_aug_prob,
@@ -252,7 +252,7 @@ class DiffusionModelTrainer:
                                         semantic_prob=self.args.semantic_prob,
                                         conditioning=self.args.vit_unet_cond_mode!="no_vit",
                                         load_cond_probs=load_cond_probs,
-                                        save_matched_items=self.args.dataloader_save_processing,
+                                        save_matched_items=self.args.dataloader_save_processing
                                         )
             bs = {"train": self.args.train_batch_size,
                   "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
@@ -261,7 +261,7 @@ class DiffusionModelTrainer:
             if hasattr(args,"pri_didx"):
                 sampler = dataset.get_prioritized_sampler(args.pri_didx,seed=self.args.seed)
             else:
-                if use_training_sampler:
+                if use_training_sampler or not pure_gen_dataset_mode:
                     sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
                 else:
                     sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)

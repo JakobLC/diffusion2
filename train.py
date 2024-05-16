@@ -31,6 +31,7 @@ from source.training import DiffusionModelTrainer
 # [6] implement CLIP matrix for datasets
 # [6] make class inheritance work
 # [7] add half precision to vit
+# [7] make class names from dataloader denote the largest class (or possibly merged string), instead of a random class as now
 
 #training TODO
 # loop over lr

@@ -583,6 +583,9 @@ class FancyViT(nn.Module):
                 tokenized_item = None
                 if t=="image":
                     if self.pre_reduction=="spatial" and input_name!="cls_image":
+                        #assert len of slice corresponds to channels in the item:
+                        slice_channels = self.cls_image_channel_slice[input_name].stop-self.cls_image_channel_slice[input_name].start
+                        assert item_i.shape[1]==slice_channels, f"Expected {slice_channels} channels, found {item_i.shape[1]} for input_name={input_name}"
                         inputs["cls_image"][i,self.cls_image_channel_slice[input_name]] = item_i
                         continue
                     if self.share_image_patch_embed:

@@ -386,8 +386,11 @@
             "T2_spatial_all": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4d"},
             "T2_spatial_once": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4c"},
             "T2_spatial_resize": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4e"},
-            "T3_tiny": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 2, "image_size": 32,"input_scale": 1.0}
+            "T3_tiny": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 2, "image_size": 32,"input_scale": 1.0},
+            "T3_med": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 4, "image_size": 64,"input_scale": 0.2}
         },
+        "image_size": 128,
+        "input_scale": 0.006,
         "cond_vit_setup": "1b2ac3a4a",
         "datasets": "all",
         "class_type": "num_classes",

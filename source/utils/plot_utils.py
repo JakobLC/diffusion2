@@ -13,16 +13,16 @@ from source.utils.utils import (bracket_glob_fix, save_dict_list_to_json,
                                 imagenet_preprocess, get_likelihood, 
                                 load_json_to_dict_list, wildcard_match,
                                 sam_resize_index)
-import matplotlib
-from tempfile import NamedTemporaryFile
-import warnings
 import cv2
 import pandas as pd
 import scipy.ndimage as nd
-import copy
-from matplotlib.patheffects import withStroke
-from skimage.measure import find_contours
+
 from datasets import load_raw_image_label
+from jlc import (RenderMatplotlibAxis, add_text_axis_to_image,darker_color,
+                 distance_transform_edt_border,mask_overlay_smooth,
+                 get_mask,render_axis_ticks,darker_color,get_matplotlib_color,
+                 add_text_axis_to_image,to_xy_anchor,render_text_gridlike,
+                 item_to_rect_lists)
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
@@ -334,129 +334,10 @@ def gaussian_filter_xy(x,y,sigma):
         y2[i] = (y*filtered_weight).sum()
     return y2
 
-def get_mask(mask_vol,idx,onehot=False,onehot_dim=-1):
-    if onehot:
-        slice_idx = [slice(None) for _ in range(len(mask_vol.shape))]
-        slice_idx[onehot_dim] = idx
-        return np.expand_dims(mask_vol[tuple(slice_idx)],onehot_dim)
-    else:
-        return (mask_vol==idx).astype(float)
-
 def distance_transform_edt_border(mask):
     padded = np.pad(mask,1,mode="constant",constant_values=0)
     dist = nd.distance_transform_edt(padded)
     return dist[1:-1,1:-1]
-
-def mask_overlay_smooth(image,
-                        mask,
-                        num_spatial_dims=2,
-                        pallete=None,
-                        pixel_mult=1,
-                        class_names=None,
-                        show_border=False,
-                        border_color="darker",
-                        alpha_mask=0.4,
-                        dont_show_idx=[255],
-                        fontsize=12,
-                        text_color="class",
-                        text_alpha=1.0,
-                        text_border_instead_of_background=True,
-                        set_lims=True):
-    assert isinstance(image,np.ndarray)
-    assert isinstance(mask,np.ndarray)
-    assert len(image.shape)>=num_spatial_dims, "image must have at least num_spatial_dims dimensions"
-    assert len(mask.shape)>=num_spatial_dims, "mask must have at least num_spatial_dims dimensions"
-    assert image.shape[:num_spatial_dims]==mask.shape[:num_spatial_dims], "image and mask must have the same shape"
-    if pallete is None:
-        pallete = np.concatenate([np.array([[0,0,0]]),jlc.nc.largest_colors],axis=0)
-    if image.dtype==np.uint8:
-        was_uint8 = True
-        image = image.astype(float)/255
-    else:
-        was_uint8 = False
-    if len(mask.shape)==num_spatial_dims:
-        onehot = False
-        n = mask.max()+1
-        uq = np.unique(mask).tolist()
-        mask = np.expand_dims(mask,-1)
-    else:
-        assert len(mask.shape)==num_spatial_dims+1, "mask must have num_spatial_dims (with integers as classes) or num_spatial_dims+1 dimensions (with onehot encoding)"
-        if mask.shape[num_spatial_dims]==1:
-            onehot = False
-            n = mask.max()+1
-            uq = np.unique(mask).tolist()
-        else:
-            onehot = True
-            n = mask.shape[num_spatial_dims]
-            uq = np.arange(n).tolist()
-    image_colored = image.copy()
-    if len(image_colored.shape)==num_spatial_dims:
-        image_colored = np.expand_dims(image_colored,-1)
-    #make rgb
-    if image_colored.shape[-1]==1:
-        image_colored = np.repeat(image_colored,3,axis=-1)
-    color_shape = tuple([1 for _ in range(num_spatial_dims)])+(3,)
-    show_idx = [i for i in uq if (not i in dont_show_idx)]
-    for i in show_idx:
-        reshaped_color = pallete[i].reshape(color_shape)/255
-        mask_coef = alpha_mask*get_mask(mask,i,onehot=onehot)
-        image_coef = 1-mask_coef
-        image_colored = image_colored*image_coef+reshaped_color*mask_coef
-    if class_names is not None:
-        assert isinstance(class_names,dict), "class_names must be a dictionary that maps class indices to class names"
-        for i in uq:
-            assert i in class_names.keys(), f"class_names must have a key for each class index, found i={i} not in class_names.keys()"
-    assert isinstance(pixel_mult,int), "pixel_mult must be an integer"
-    
-    if pixel_mult>1:
-        image_colored = cv2.resize(image_colored,None,fx=pixel_mult,fy=pixel_mult,interpolation=cv2.INTER_NEAREST)
-    
-    image_colored = np.clip(image_colored,0,1)
-    if show_border or (class_names is not None):
-        image_colored = (image_colored*255).astype(np.uint8)
-        h,w = image_colored.shape[:2]
-        with RenderMatplotlibAxis(h,w,set_lims=set_lims) as ax:
-            plt.imshow(image_colored)
-            for i in show_idx:
-                mask_coef = get_mask(mask,i,onehot=onehot)
-                if pixel_mult>1:
-                    mask_coef = cv2.resize(mask_coef,None,fx=pixel_mult,fy=pixel_mult,interpolation=cv2.INTER_LANCZOS4)
-                else:
-                    mask_coef = mask_coef.reshape(h,w)
-                if show_border:                    
-                    curves = find_contours(mask_coef, 0.5)
-                    if border_color=="darker":
-                        border_color_i = darker_color(pallete[i]/255)
-                    else:
-                        border_color_i = border_color
-                    k = 0
-                    for curve in curves:
-                        plt.plot(curve[:, 1], curve[:, 0], linewidth=1, color=border_color_i)
-                        k += 1
-
-                if class_names is not None:
-                    t = class_names[i]
-                    if len(t)>0:
-                        dist = distance_transform_edt_border(mask_coef)
-                        y,x = np.unravel_index(np.argmax(dist),dist.shape)
-                        if text_color=="class":
-                            text_color_i = pallete[i]/255
-                        else:
-                            text_color_i = text_color
-                        text_kwargs = {"fontsize": int(fontsize*pixel_mult),
-                                       "color": text_color_i,
-                                       "alpha": text_alpha}
-                        col_bg = "black" if np.mean(text_color_i)>0.5 else "white"             
-                        t = plt.text(x,y,t,**text_kwargs)
-                        if text_border_instead_of_background:
-                            t.set_path_effects([withStroke(linewidth=3, foreground=col_bg)])
-                        else:
-                            t.set_bbox(dict(facecolor=col_bg, alpha=text_alpha, linewidth=0))
-        image_colored = ax.image
-    else:
-        if was_uint8: 
-            image_colored = (image_colored*255).astype(np.uint8)
-    return image_colored
 
 def analog_bits_on_image(x_bits,im,ab):
     assert isinstance(x_bits,torch.Tensor), "analog_bits_on_image expects a torch.Tensor"
@@ -801,208 +682,8 @@ def clean_up(filename,verbose=False):
                 print("\nRemoving old file:",old_filename,", based on from safe file: ",safe_filename.parent)
             os.remove(old_filename)
 
-def get_matplotlib_color(color,num_channels=3):
-    return render_axis_ticks(23,bg_color=color,xtick_kwargs={"labels": [" "]}, tick_params={"bottom": False})[12,12,:num_channels]
 
-def darker_color(x,power=2,mult=0.5):
-    assert isinstance(x,np.ndarray), "darker_color expects an np.ndarray"
-    is_int_type = x.dtype in [np.uint8,np.uint16,np.int8,np.int16,np.int32,np.int64]
-    if is_int_type:
-        return np.round(255*darker_color(x/255,power=power,mult=mult)).astype(np.uint8)
-    else:
-        return np.clip(x**power*mult,0,1)
 
-def render_axis_ticks(image_width=1000,
-                      num_uniform_spaced=None,
-                      bg_color="white",
-                      xtick_kwargs={"labels": np.arange(5)},
-                      tick_params={}):
-    old_backend = matplotlib.rcParams['backend']
-    old_dpi = matplotlib.rcParams['figure.dpi']
-    dpi = 100
-    if num_uniform_spaced is None:
-        num_uniform_spaced = len(xtick_kwargs["labels"])
-    n = num_uniform_spaced
-     
-    matplotlib.rcParams['figure.dpi'] = dpi
-    matplotlib.use('Agg')
-    try:        
-        fig = plt.figure(figsize=(image_width/dpi, 1e-15), facecolor=bg_color)
-        ax = plt.Axes(fig, [0., 0., 1., 1.])
-        ax.set_facecolor(bg_color)
-        ax.set_frame_on(False)
-        ax.tick_params(**tick_params)
-        fig.add_axes(ax)
-        
-        plt.yticks([])
-        plt.xlim(0, n)
-        x_pos = np.linspace(0.5,n-0.5,n)
-        if not "ticks" in xtick_kwargs:
-            xtick_kwargs["ticks"] = x_pos[:len(xtick_kwargs["labels"])]
-        else:
-            if xtick_kwargs["ticks"] is None:
-                xtick_kwargs["ticks"] = x_pos[:len(xtick_kwargs["labels"])]
-        plt.xticks(**xtick_kwargs)
-        
-        with warnings.catch_warnings(record=True) as caught_warnings:
-            fig.show()
-
-        with NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_filename = temp_file.name
-            fig.savefig(temp_filename, format='png', bbox_inches='tight', pad_inches=0)
-        im = np.array(Image.open(temp_filename))
-        if not im.shape[1]==image_width:
-            #reshape with cv2 linear interpolation
-            #warnings.warn("Image width is not as expected, likely due to too large text labels. Reshaping with cv2 linear interpolation.")
-            im = cv2.resize(im, (image_width, im.shape[0]), interpolation=cv2.INTER_LINEAR)
-
-        matplotlib.use(old_backend)
-        matplotlib.rcParams['figure.dpi'] = old_dpi
-    except:
-        matplotlib.use(old_backend)
-        matplotlib.rcParams['figure.dpi'] = old_dpi
-        raise
-    return im
-
-def add_text_axis_to_image(filename,
-                           new_filename = None,
-                           n_horz=None,n_vert=None,
-                           top=[],bottom=[],left=[],right=[],
-                           bg_color="white",
-                           xtick_kwargs={},
-                           new_file=False,
-                           buffer_pixels=4,
-                           add_spaces=True,
-                           save=True):
-    """
-    Function to take an image filename and add text to the top, 
-    bottom, left, and right of the image. The text is rendered
-    using matplotlib and up to 4 temporary files are created to
-    render the text. The temporary files are removed after the
-    original file has been modified.
-
-    Parameters
-    ----------
-    filename : str
-        The filename of the image to modify.
-    n_horz : int, optional
-        The number of horizontal text labels to add. The default
-        is None (max(len(top),len(bottom))).
-    n_vert : int, optional
-        The number of vertical text labels to add. The default
-        is None (max(len(left),len(right))).
-    top : list, optional
-        The list of strings to add to the top of the image. The
-        default is [].
-    bottom : list, optional
-        The list of strings to add to the bottom of the image. The
-        default is [].
-    left : list, optional
-        The list of strings to add to the left of the image. The
-        default is [].
-    right : list, optional
-        The list of strings to add to the right of the image. The
-        default is [].
-    bg_color : list, optional
-        The background color of the text. The default is [1,1,1]
-        (white).
-    xtick_kwargs : dict, optional
-        The keyword arguments to pass to matplotlib.pyplot.xticks.
-        The default is {}.        
-    new_file : bool, optional
-        If True, then a new file is created with the text axis
-        added. If False, then the original file is modified. The
-        default is False.
-    buffer_pixels : int, optional
-        The number of pixels to add as a buffer between the image
-        and the text. The default is 4.
-    add_spaces : bool, optional
-        If True, then a space is added to the beginning and end of
-        each label. The default is True.
-    save : bool, optional
-        If True, then the new file is saved. The default is True.
-        
-    Returns
-    -------
-    im2 : np.ndarray
-        The modified image with the text axis added.
-    """
-    if n_horz is None:
-        n_horz = max(len(top),len(bottom))
-    if n_vert is None:
-        n_vert = max(len(left),len(right))
-    if isinstance(filename,np.ndarray):
-        im = filename
-    else:
-        assert os.path.exists(filename), f"filename {filename} does not exist"
-        im = np.array(Image.open(filename))
-    h,w,c = im.shape
-    xtick_kwargs_per_pos = {"top":    {"rotation": 0,  "labels": top},
-                            "bottom": {"rotation": 0,  "labels": bottom},
-                            "left":   {"rotation": 90, "labels": left},
-                            "right":  {"rotation": 90, "labels": right}}
-    tick_params_per_pos = {"top":    {"top":True, "labeltop":True, "bottom":False, "labelbottom":False},
-                           "bottom": {},
-                           "left":   {},
-                           "right":  {"top":True, "labeltop":True, "bottom":False, "labelbottom":False}}
-    pos_renders = {}
-    pos_sizes = {}
-    for pos in ["top","bottom","left","right"]:
-        if len(xtick_kwargs_per_pos[pos]["labels"])==0:
-            pos_renders[pos] = np.zeros((0,0,c),dtype=np.uint8)
-            pos_sizes[pos] = 0
-            continue
-        xk = dict(**xtick_kwargs_per_pos[pos],**xtick_kwargs)
-        if add_spaces:
-            xk["labels"] = [" "+l+" " for l in xk["labels"]]
-        if not "ticks" in xk.keys():
-            n = n_horz if pos in ["top","bottom"] else n_vert
-
-            if len(xk["labels"])<n:
-                xk["labels"] += [""]*(n-len(xk["labels"]))
-            elif len(xk["labels"])>n:
-                xk["labels"] = xk["labels"][:n]
-            else:
-                assert len(xk["labels"])==n
-        pos_renders[pos] = render_axis_ticks(image_width=w if pos in ["top","bottom"] else h,
-                                             num_uniform_spaced=n,
-                                             bg_color=bg_color,
-                                             xtick_kwargs=xk,
-                                             tick_params=tick_params_per_pos[pos])[:,:,:c]
-        pos_sizes[pos] = pos_renders[pos].shape[0]
-    bg_color_3d = get_matplotlib_color(bg_color,c)
-    bp = buffer_pixels
-    im2 = np.zeros((h+pos_sizes["top"]+pos_sizes["bottom"]+bp*2,
-                    w+pos_sizes["left"]+pos_sizes["right"]+bp*2,
-                    c),dtype=np.uint8)
-    im2 += bg_color_3d
-    im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,
-        bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = im
-    #make sure we have uint8
-    pos_renders = {k: np.clip(v,0,255) for k,v in pos_renders.items()}
-    for pos in ["top","bottom","left","right"]:
-        if pos_renders[pos].size==0:
-            continue
-        if pos=="top":
-            im2[bp:bp+pos_sizes["top"],bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["top"]
-        elif pos=="bottom":
-            im2[bp+pos_sizes["top"]+h:-bp,bp+pos_sizes["left"]:bp+pos_sizes["left"]+w] = pos_renders["bottom"]
-        elif pos=="left":
-            im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp:bp+pos_sizes["left"]] = np.rot90(pos_renders["left"],k=3)
-        elif pos=="right":
-            im2[bp+pos_sizes["top"]:bp+pos_sizes["top"]+h,bp+pos_sizes["left"]+w:-bp] = np.rot90(pos_renders["right"],k=3)
-    if new_file:
-        if new_filename is None:
-            suffix = filename.split(".")[-1]
-            new_filename = filename[:-len(suffix)-1]+"_w_text."+suffix
-            for i in range(1000):
-                if not os.path.exists(new_filename):
-                    break
-                new_filename = filename[:-len(suffix)-1]+"_w_text("+str(i)+")."+suffix
-        filename = new_filename
-    if save:
-        Image.fromarray(im2).save(filename)
-    return im2
 
 def index_dict_with_bool(d,bool_iterable,keys=[],num_recursions=1,
                          raise_error_on_wrong_bs=True,
@@ -1047,180 +728,6 @@ def index_w_bool(item,bool_iterable,keys,raise_error_on_wrong_bs=True,ignore_wei
         out = None
     return out
 
-class RenderMatplotlibAxis:
-    def __init__(self, height, width=None, with_axis=False, set_lims=False, with_alpha=False, dpi=100):
-        if (width is None) and isinstance(height, (tuple, list)):
-            #height is a shape
-            height,width = height[:2]
-        elif (width is None) and isinstance(height, np.ndarray):
-            #height is an image
-            height,width = height.shape[:2]
-        elif width is None:
-            width = height
-        self.with_alpha = with_alpha
-        self.width = width
-        self.height = height
-        self.dpi = dpi
-        self.old_backend = matplotlib.rcParams['backend']
-        self.old_dpi = matplotlib.rcParams['figure.dpi']
-        self.fig = None
-        self.ax = None
-        self._image = None
-        self.with_axis = with_axis
-        self.set_lims = set_lims
-
-    @property
-    def image(self):
-        return self._image[:,:,:(3+int(self.with_alpha))]
-
-    def __enter__(self):
-        matplotlib.rcParams['figure.dpi'] = self.dpi
-        matplotlib.use('Agg')
-        figsize = (self.width/self.dpi, self.height/self.dpi)
-        self.fig = plt.figure(figsize=figsize,dpi=self.dpi)
-        self.ax = plt.Axes(self.fig, [0., 0., 1., 1.])
-        if not self.with_axis:
-            self.ax.set_frame_on(False)
-            self.ax.get_xaxis().set_visible(False)
-            self.ax.get_yaxis().set_visible(False)
-        self.fig.add_axes(self.ax)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type is None:
-            # If no exception occurred, save the image to the _image property
-            if self.set_lims:
-                self.ax.set_xlim(-0.5, self.width-0.5)
-                self.ax.set_ylim(self.height-0.5, -0.5)
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', pad_inches=0, dpi=self.dpi)
-            buf.seek(0)
-            self._image = np.array(Image.open(buf))
-
-        plt.close(self.fig)
-        matplotlib.use(self.old_backend)
-        matplotlib.rcParams['figure.dpi'] = self.old_dpi
-
-def to_xy_anchor(anchor):
-    anchor_equiv = [["NW","top left","north west","upper left","upper left corner"],
-                    ["N","top","north","upper","top center","north center","upper center"],
-                    ["NE","top right","north east","upper right","upper right corner"],
-                    ["W","left","west","left center","west center","left middle","west middle","mid left"],
-                    ["C","CC","center","middle","center middle", "middle center","center center","middle middle","mid"],
-                    ["E","right","east","right center","east center","right middle","east middle","mid right"],
-                    ["SW","bottom left","south west","lower left","lower left corner"],
-                    ["S","bottom","south","lower","bottom center","south center","lower center"],
-                    ["SE","bottom right","south east","lower right","lower right corner"]]
-    anchor_to_coords = {"NW":(0,0),"N":(0.5,0),"NE":(1,0),
-                        "W":(0,0.5),"C":(0.5,0.5),"E":(1,0.5),
-                        "SW":(0,1),"S":(0.5,1),"SE":(1,1)}
-    if isinstance(anchor,str):
-        if anchor in sum(anchor_equiv,[]):
-            for i,ae in enumerate(anchor_equiv):
-                if anchor in ae:
-                    out = anchor_to_coords[anchor_equiv[i][0]]
-                    break
-        else:
-            raise ValueError(f"Unknown anchor string: {anchor}, Use on of {[x[0] for x in anchor_equiv]}")
-    else:
-        assert len(anchor)==2, f"If anchor is not a str then len(anchor) must be 2, found {len(anchor)}"
-        out = anchor
-    out = tuple([float(x) for x in out])
-    return out
-
-def item_to_rect_lists(item,n1,n2,fill_with_previous=True, fill_val=None):
-    fill_val0 = copy.copy(fill_val)
-    if fill_with_previous:
-        assert fill_val is None, "expected fill_val to be None if fill_with_previous is True" 
-    if not isinstance(item,list):
-        out = [[item]]
-    else:
-        if len(item)==0:
-            out = [[[] for _ in range(n2)] for _ in range(n1)]
-        else:
-            if not isinstance(item[0],list):
-                out = [item]
-            else:
-                out = item
-    assert len(out)<=n1, f"expected len(out) to be <= {n1}, found {len(out)}"
-    if len(out)<n1:
-        out.extend([[] for _ in range(n1-len(out))])
-    for i in range(len(out)):
-        assert len(out[i])<=n2, f"expected len(out[{i}]) to be <= {n2}, found {len(out[i])}"
-        if len(out[i])==0 and fill_with_previous:
-            all_until_i = sum(out[:i],[])
-            all = sum(out,[])
-            if len(all_until_i)>0:
-                out_i = all_until_i[-1]
-            elif len(all)>0:
-                out_i = all[-1]
-            else:
-                out_i = fill_val0
-            out[i].append(out_i)
-        if len(out[i])<n2:
-            if fill_with_previous:
-                fill_val = out[i][-1]
-            out[i].extend([fill_val for _ in range(n2-len(out[i]))])
-    return out
-
-def render_text_gridlike(image, x_sizes, y_sizes, 
-                        text_inside=[],
-                        transpose_text_inside=False,
-                        text_pos_kwargs={},
-                        pixel_mult=1, 
-                        text_kwargs={"color":"red","fontsize": 20,"verticalalignment":"bottom","horizontalalignment":"left"},
-                        anchor_image="NW",
-                        border_width_inside=0):
-    nx = len(x_sizes)
-    ny = len(y_sizes)
-    anchor_image = item_to_rect_lists(copy.deepcopy(anchor_image),nx,ny)
-    anchor_image = [[to_xy_anchor(a) for a in row] for row in anchor_image]
-
-    if pixel_mult>1:
-        h,w = image.shape[:2]
-        h,w = (np.round(w*pixel_mult).astype(int),
-               np.round(h*pixel_mult).astype(int))
-        image = cv2.resize(copy.copy(image),(w,h))
-    
-    #make sure text_inside is a list of lists, with correct lengths
-    text_inside = copy.deepcopy(text_inside)
-    assert len(text_inside)<=nx, f"expected len(text_inside) to be <= len(x_sizes), found {len(text_inside)}>{nx}"
-    for i in range(len(text_inside)):
-        assert len(text_inside[i])<=ny, f"expected len(text_inside[{i}]) to be <= len(y_sizes), found {len(text_inside[i])}>{ny}"
-    if len(text_inside)<nx:
-        text_inside.extend([[] for _ in range(nx-len(text_inside))])
-    for i in range(len(text_inside)):
-        if len(text_inside[i])<ny:
-            text_inside[i].extend(["" for _ in range(ny-len(text_inside[i]))])
-
-    if transpose_text_inside:
-        text_inside = list(zip(*text_inside))
-    h,w = image.shape[:2]
-    x_sum = sum(x_sizes)
-    y_sum = sum(y_sizes)
-    if not x_sum==1.0:
-        x_sizes = [x/x_sum*w for x in x_sizes]
-    if not y_sum==1.0:
-        y_sizes = [y/y_sum*h for y in y_sizes]
-    with RenderMatplotlibAxis(w,h,set_lims=1) as renderer: #TODO (is this an error? w,h should be switched)
-        plt.imshow(image/255)
-        for xi in range(len(x_sizes)):
-            for yi in range(len(y_sizes)):
-                anc_x,anc_y = anchor_image[xi][yi]
-                x = sum(x_sizes[:xi])+anc_x*x_sizes[xi]
-                y = sum(y_sizes[:yi])+anc_y*y_sizes[yi]
-                if len(text_inside[xi][yi])>0:
-                    txt = plt.text(x,y,text_inside[xi][yi],**text_kwargs)
-                    if border_width_inside>0:
-                        txt.set_path_effects([withStroke(linewidth=border_width_inside, foreground='black')])
-    rendered = renderer.image
-    valid_pos = ["top","bottom","left","right"]
-    if any([k in text_pos_kwargs for k in valid_pos]):
-        text_pos_kwargs2 = {"n_horz": len(x_sizes), "n_vert": len(y_sizes),"save": False, "buffer_pixels": 0, "add_spaces": 0}
-        text_pos_kwargs2.update(text_pos_kwargs)
-        rendered = add_text_axis_to_image(rendered,**text_pos_kwargs2)
-    return rendered
-
 def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,longest_side_resize=256):
     idx_to_class_filename = f"./data/{dataset_name}/idx_to_class.json"
     idx_to_class = load_json_to_dict_list(idx_to_class_filename)[0]
@@ -1256,7 +763,7 @@ def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,lon
     jlc.zoom()
     return image_overlays
 
-def visualize_batch(batch,with_text=True,imagenet_inv=True,crop=True,alpha_mask=0.9,**kwargs):
+def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,**kwargs):
     bs = len(batch[-1])
     
     images = [b["image"].permute(1,2,0).numpy() for b in batch[-1]]
@@ -1271,9 +778,13 @@ def visualize_batch(batch,with_text=True,imagenet_inv=True,crop=True,alpha_mask=
             labels[i] = labels[i][:h,:w]
 
     didx = [f"{b['dataset_name']}/{b['i']}" for b in batch[-1]]
-    if with_text:
+    if with_text_didx:
         kwargs["text"] = didx
-    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask) for im,lab in zip(images,labels)],**kwargs)
+    if with_class_names:
+        class_names = [info["idx_to_class_name"] for info in batch[-1]]
+    else:
+        class_names = [None]*bs
+    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask,class_names=class_names.pop(0)) for im,lab in zip(images,labels)],**kwargs)
 
 def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
             "border_color": "black",

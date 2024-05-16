@@ -10,6 +10,7 @@ import os
 import albumentations as A
 import cv2
 import copy
+import jlc
 from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
 #add source folder if it is not already in PATH
@@ -19,10 +20,10 @@ if not str(Path(__file__).parent.parent) in sys.path:
 from source.models.unet import get_sam_image_encoder
 import tqdm
 from source.models.cond_vit import cond_image_keys
-from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json
+from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json,sam_resize_index,is_nan_float
 from source.utils.argparse_utils import get_current_default_version
 import shutil
-
+import pandas as pd
 turbo_jpeg = TurboJPEG()
 
 def points_image_from_label(label,num_points=None,padding_idx=255):
@@ -290,13 +291,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       image_size=128,
                       datasets="non-medical",
                       split_ratio = [0.8,0.1,0.1],
-                      min_label_size=0.0,
+                      min_rel_class_area=0.0,
                       min_crop=0.5,
                       max_num_classes=8,
                       crop_method="multicrop_most_border",
                       num_crops=3,
                       semantic_prob=0.5,
-                      label_map_method="all",
+                      map_excess_classes_to="largest",
                       shuffle_labels=True,
                       shuffle_zero=True,
                       shuffle_datasets=True,
@@ -328,7 +329,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             data_root = str(Path(__file__).parent.parent / "data")
         self.data_root = data_root
         self.image_size = image_size
-        self.min_label_size = min_label_size
+        self.min_rel_class_area = min_rel_class_area
         self.min_crop = min_crop
         self.max_num_classes = max_num_classes
         self.datasets = datasets
@@ -341,8 +342,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
             self.sam_aug_small = get_sam_aug(image_size,padval=label_padding_val)
             self.sam_aug_big = get_sam_aug(1024,padval=label_padding_val)
         self.crop_method = crop_method
-        assert label_map_method in ["all","largest","random"]
-        self.label_map_method = label_map_method
+        assert map_excess_classes_to in ["all","largest","random"]
+        self.map_excess_classes_to = map_excess_classes_to
         self.shuffle_labels = shuffle_labels
         self.shuffle_zero = shuffle_zero
         self.num_crops = num_crops
@@ -717,62 +718,174 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 crop_x_best = crop_x
                 crop_y_best = crop_y
         return crop_x_best,crop_y_best
-    
-    def map_label_to_valid_bits(self,label,info,inh_classes=None):
-        """takes a uint8 label map and depending on the method, maps
-        each label to a number between 0 and max_num_classes-1. also
-        keeps track of which classes correspond to idx and adds this 
-        dict to info.""" 
-        idx_to_class_name = {k: self.idx_to_class[info["dataset_name"]][str(c)] for k,c in enumerate(info["classes"])}
-        is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
-        info["is_semantic"] = is_semantic
-        counts = np.bincount(label[label!=self.label_padding_val].flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
-        nnz = len(counts)-1
-        mnc = self.max_num_classes
 
-        if self.label_map_method=="largest":
-            old_to_new = np.array([0]+list(np.argsort(np.argsort(-counts[1:]))+1),dtype=int)
-            old_to_new[old_to_new>=mnc] = 0
-        elif self.label_map_method=="random":
-            old_to_new = np.array([0]+list(np.random.permutation(nnz)+1),dtype=int)
-            old_to_new[old_to_new>=mnc] = 0
-        elif self.label_map_method=="all":
-            old_to_new = np.array([0]+list(np.argsort(np.argsort(-counts[1:]))+1),dtype=int)
-            old_to_new[old_to_new>=mnc] = ((old_to_new[old_to_new>=mnc])%(mnc-1))+1
-        elif self.label_map_method=="raw":
-            old_to_new = list(range(nnz+1))
-            
+    def class_table_from_info(self,info,label=None,as_dict=False,origin="image"):
+        if label is not None:
+            counts = np.bincount(label[label!=self.label_padding_val].flatten()) #for 1024x1024 np.uint8 image, takes ~1ms on my machine (AMD Ryzen 7 7800X3d 8-Core Processor x 16)
+        else:
+            #we use the precomputed vals in info, and rescale to number of nonpadded pixels
+            h,w = sam_resize_index(*info["imshape"][:2],self.image_size)
+            num_pixels_unpadded = h*w
+            counts = np.array(info["class_counts"],dtype=float)
+            counts = counts/sum(counts)
+            counts = np.round(num_pixels_unpadded*counts).astype(int).tolist()
+
+        class_table = pd.DataFrame(columns=["idx_dataset","idx_old","idx_new","name","count","key_origin"],
+                                   index=range(len(counts)))
+        #set the counts
+        class_table["count"] = counts
+        class_table["idx_old"] = range(len(counts))
+        class_table["idx_dataset"] = info["classes"]
+        class_table["name"] = [self.idx_to_class[info["dataset_name"]][str(c)] for c in info["classes"]]
+        class_table["key_origin"] = [origin for _ in range(len(counts))]
+        assert origin in ["image"]+cond_image_keys, f"origin must be 'image' or in cond_image_keys={cond_image_keys}, got {origin}"
+        origin_int = len(cond_image_keys) if origin=="image" else cond_image_keys.index(origin)
+        class_table["key_int"] = [origin_int for _ in range(len(counts))]
+        class_table["rel_area"] = class_table["count"]/sum(class_table["count"])
+        class_table["rel_area_big_enough"] = (class_table["rel_area"]>=self.min_rel_class_area).astype(int)
+        class_table["is_main_image_zero"] = np.logical_and(class_table["key_origin"]=="image",class_table["idx_dataset"]==0).astype(int)
+        if as_dict:
+            class_table = class_table.to_dict()
+        return class_table
+
+    def process_class_table(self,class_table,is_semantic,delete_empty_from_class_table=True):
+        assert self.map_excess_classes_to in ["largest","random_different","random_same","zero","same","nearest_expensive"], f"expected map_excess_classes_to to be one of ['largest','random_different','random_same','zero','same','nearest_expensive'], got {self.map_excess_classes_to}"
+        mnc = self.max_num_classes
+        
+        sorted_indices = class_table.sort_values(by=["is_main_image_zero",
+                                                     "rel_area_big_enough",
+                                                     "key_int",
+                                                     "count"],
+                                                 ascending=False).index
+        class_table["priority"] = sorted_indices
+        if is_semantic:
+            #each unique class has its lowest priority index assigned to it
+            minimum_class_priority = {}
+            for i in range(len(class_table)):
+                j = class_table.iloc[i]["idx_dataset"]
+                p = class_table.iloc[i]["priority"]
+                if j not in minimum_class_priority:
+                    minimum_class_priority[j] = []
+                minimum_class_priority[j].append(p)
+            for k,v in minimum_class_priority.items():
+                minimum_class_priority[k] = min(v)
+            keys = list(minimum_class_priority.keys())
+            vals = list(minimum_class_priority.values())
+            #remove gaps in priority, i.e [0,4,3] -> [0,2,1]
+            vals = np.argsort(np.argsort(vals))
+            minimum_class_priority = {k: v for k,v in zip(keys,vals)}
+            for i in range(len(class_table)):
+                j = class_table.iloc[i]["idx_dataset"]
+                class_table.iloc[i]["idx_new"] = minimum_class_priority[j]
+        else:
+            class_table["idx_new"] = class_table["priority"]
+        
+        class_table["is_excess"] = np.logical_or(class_table["idx_new"]>=mnc, 
+                                                 class_table["rel_area_big_enough"]==False
+                                                )
+        excess_idx = class_table["is_excess"].to_numpy().nonzero()[0].tolist()
+        if len(excess_idx)>0:
+            #what should be done with the excess classes ?
+            if self.map_excess_classes_to=="largest": #smallest classes with less area in the image are mapped to the largest label
+                i_largest_class = np.argmax(class_table["count"].to_numpy()).item()
+                class_table.iloc[excess_idx]["idx_new"] = class_table.iloc[i_largest_class]["idx_new"]
+            elif self.map_excess_classes_to=="random_different": #all labels are randomly associated with 
+                class_table["idx_new"][excess_idx] = np.random.choice(mnc,size=len(class_table[excess_idx]))
+            elif self.map_excess_classes_to=="random_same": #all labels are randomly associated with 
+                class_table["idx_new"][excess_idx] = np.random.choice(mnc)
+            elif self.map_excess_classes_to=="zero":
+                class_table["idx_new"][excess_idx] = 0
+            elif self.map_excess_classes_to=="same":
+                pass
+            elif self.map_excess_classes_to=="nearest_expensive":
+                raise NotImplementedError("nearest_expensive not implemented yet")
+    
         if self.shuffle_labels:
             if self.shuffle_zero:
                 perm = np.random.permutation(mnc)
             else:
                 perm = np.array([0]+list(np.random.permutation(mnc-1)+1))
-            old_to_new = perm[old_to_new]
+            perm_f = lambda x: perm[x]
+        else:
+            perm_f = lambda x: x
+        try:
+            old_to_new = {k: perm_f(v) for k,v in zip(class_table["idx_old"],class_table["idx_new"])}
+        except IndexError as e:
+            print("perm: ",perm)
+            print("class_table: ",class_table)
+            raise e
 
-        if is_semantic:
-            #modify old_to_new so the same labels are always mapped to the same class (First instance chooses the class)
-            label_names = np.unique(list(idx_to_class_name.values()))
-            for name in label_names:
-                label_name_idx = [k for k in range(nnz+1) if idx_to_class_name[k]==name]
-                if len(label_name_idx)>1:
-                    for i in label_name_idx[1:]:
-                        old_to_new[i] = old_to_new[label_name_idx[0]]
+        #new_to_old = {}
+        #for k,v in old_to_new.items():
+        #    new_to_old[v] = [k] if v not in new_to_old else new_to_old[v]+[k]
+        old_to_new[self.label_padding_val] = self.label_padding_val
+        new_class_table_columns = ["idx_new","idx_old","idx_dataset","name","count","key_origin"]
+        new_class_table = pd.DataFrame(columns=new_class_table_columns,index=range(mnc))
+        #fill with empty lists:
+        new_class_table["idx_new"] = range(mnc)
+        #change None to empty list
+        new_class_table = new_class_table.applymap(lambda x: [] if is_nan_float(x) else x)
+        for row in class_table.iterrows():
+            i = row[1]["idx_new"]
+            for k in new_class_table_columns[1:]:
+                new_class_table.iloc[i][k].append(row[1][k])
+        #extract the following:
+        # 1. dictionary from idx_new to class_name (only image)
+        # 2. dictionary from idx_new to class_name (all cond inputs also)
+
+        idx_to_dataset_idx = {}
+        idx_to_class_name = {}
+        num_classes = 0
+        for i in range(mnc):
+            if len(new_class_table.iloc[i]["name"])>0:
+                if "image" in new_class_table.iloc[i]["key_origin"]:
+                    #j is the best (largest area) index of "image" origin classes
+                    image_origin_mask = np.array(new_class_table.iloc[i]["key_origin"])=="image"
+                    c = np.array(new_class_table.iloc[i]["count"])
+                    j = np.argmax(c*image_origin_mask)
+                    num_classes += 1
+                else:
+                    #j is the best (largest area) index of any origin classes
+                    j = np.argmax(new_class_table.iloc[i]["count"])
+                idx_to_dataset_idx[i] = new_class_table.iloc[i]["idx_dataset"][j]
+                idx_to_class_name[i] = new_class_table.iloc[i]["name"][j]
         
-        if self.min_label_size>0:
-            class_too_small = counts<self.min_label_size*label.size
-            largest_class = np.argmax(counts)
-            old_to_new[class_too_small] = old_to_new[largest_class]
-            for k in np.flatnonzero(class_too_small):
-                idx_to_class_name[k] = idx_to_class_name[largest_class]
-        idx_to_class_name = {old_to_new[i]: idx_to_class_name[i] for i in range(nnz+1)}
+        if delete_empty_from_class_table:
+            new_class_table = new_class_table[new_class_table["idx_dataset"].apply(len)>0]
         
-        idx_to_class_name[self.label_padding_val] = "padding"
-        info["idx_to_class_counts"] = {old_to_new[i]: c for i,c in enumerate(counts)}
+        return class_table, new_class_table, old_to_new, idx_to_dataset_idx, idx_to_class_name, num_classes
+
+    def map_label_to_valid_bits(self,label,info):
+        """takes a uint8 label map and depending on the method, maps
+        each label to a number between 0 and max_num_classes-1. also
+        keeps track of which classes correspond to idx and adds this 
+        dict to info.""" 
+        #idx_to_class_name = {i: self.idx_to_class[info["dataset_name"]][str(c)] for i,c in enumerate(info["classes"])}
+        has_cond = len(info.get("cond",{}))>0
+        is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
+        info["is_semantic"] = is_semantic
+        #counts = np.bincount(label[label!=self.label_padding_val].flatten()) 
+        class_table = self.class_table_from_info(info)
+        if has_cond:
+            for k in info["cond"].keys():
+                if len(info["cond"][k][-1]["classes"])+len(class_table)>=255:#to avoid uint8 issues. 255 reserved for padding
+                    del info["cond"][k]
+                else:
+                    class_table_v = self.class_table_from_info(info["cond"][k][-1],origin=k)
+                    class_table_v["old_idx"] += len(class_table)
+                    info["cond"][k][0]       += len(class_table)
+                    class_table = pd.concat([class_table,class_table_v],axis=0)
+        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,is_semantic)
+        label = np.vectorize(old_to_new.get)(label)
+        
         info["idx_to_class_name"] = idx_to_class_name
-                               
+        info["idx_to_dataset_idx"] = idx_to_dataset_idx
         info["old_to_new"] = old_to_new
+        info["num_classes"] = num_classes
         label[self.label_padding_val!=label] = old_to_new[label[self.label_padding_val!=label]]
-        
+        if has_cond:
+            for k in info["cond"].keys():
+                info["cond"][k][1][self.label_padding_val!=info["cond"][k][1]] = old_to_new[info["cond"][k][1][self.label_padding_val!=info["cond"][k][1]]]
         return label,info
 
     def load_cond_image_label(self,info,probs):
@@ -787,14 +900,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 idx = sample_from_list_in_dict(dict_=info["conditioning"], key=key, num_samples=1, illegal_idx=illegal_idx)
                 type_of_load.extend([key for _ in range(len(idx))])
                 didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
-        if len(didx_to_load)==0:
-            return info
-        info["cond"] = {}
-        for t,didx in zip(type_of_load,didx_to_load):
-            item = self.__getitem__({"didx": didx, "inh_classes": info["idx_to_class_name"], "load_cond": False})
-            label,image = item[0],item[1]["image"]
-            info["cond"][t] = torch.cat([image,label],dim=0)
-
+        if len(didx_to_load)>0:
+            info["cond"] = {}
+            for t,didx in zip(type_of_load,didx_to_load):
+                item = self.__getitem__({"didx": didx, "load_cond": False, "is_cond_call": True})
+                info["cond"][t] = (item[0],item[1]["image"],item[-1])#label,image,info
+        
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
         if self.crop_method.startswith("sam"):
@@ -825,7 +936,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         augmented = self.augment_per_dataset[item["dataset_name"]](image=image,mask=label)
         return augmented["image"],augmented["mask"]
     
-    def load_raw_image_label(self,x,longest_side_resize,data_root=None):
+    def load_raw_image_label(self,x,longest_side_resize=0,data_root=None):
         if data_root is None:
             data_root = self.data_root
         if isinstance(x,int):
@@ -843,48 +954,55 @@ class SegmentationDataset(torch.utils.data.Dataset):
             assert isinstance(x,list)
             assert len(x)==2
             image_path,label_path = x
-        image = np.atleast_3d(open_image_fast(image_path))
-        label = open_image_fast(label_path)
+        image = open_image_fast(image_path,num_channels=3)
+        label = open_image_fast(label_path,num_channels=1)
         if longest_side_resize>0:
             image = A.LongestMaxSize(max_size=longest_side_resize, interpolation=cv2.INTER_AREA, always_apply=True, p=1)(image=image)["image"]
             label = A.LongestMaxSize(max_size=longest_side_resize, interpolation=cv2.INTER_NEAREST, always_apply=True, p=1)(image=label)["image"]
         return image,label
-    
-    def __getitem__(self, idx):
-        load_cond = self.load_cond_auto
-        load_cond_probs = self.load_cond_probs
-        inh_classes = None
-        if not isinstance(idx,int):
-            assert isinstance(idx,(dict,str)), "idx must be an integer or a dictionary, got: "+str(type(idx))
-            if isinstance(idx,str):
-                idx = {"didx": idx}
-            if "didx" not in idx:
+
+    def process_input(self,idx):
+        if isinstance(idx,int):
+            idx_d = {"idx": idx}
+        elif isinstance(idx,str):
+            idx_d = {"idx": self.didx_to_item_idx[idx]}
+        else:
+            assert isinstance(idx,dict), "idx must be an integer or a dictionary or a str, got: "+str(type(idx))
+            idx_d = idx
+            if "idx" in idx_d:
+                pass
+            elif "didx" in idx_d:
+                idx_d["idx"] = self.didx_to_item_idx[idx["didx"]]
+            else:
                 assert "i" in idx and "dataset_name" in idx, "idx must contain 'i' and 'dataset_name' keys, or be a didx str or have the 'didx' field"
-                idx["didx"] = f"{idx['dataset_name']}/{idx['i']}"
-            if "load_cond" in idx.keys():
-                load_cond = idx["load_cond"]
-            if "load_cond_probs" in idx.keys():
-                load_cond_probs = idx["load_cond_probs"]
-            inh_classes = idx.get("idx_to_class_name",None)
-            idx = self.didx_to_item_idx[idx["didx"]]
-        #print(f"idx={idx}, load_cond={load_cond}, inh_classes={inh_classes is None}")
+                idx["idx"] = self.didx_to_item_idx[f"{idx['dataset_name']}/{idx['i']}"]
+        load_cond = idx_d.get("load_cond",self.load_cond_auto)
+        load_cond_probs = idx_d.get("load_cond_probs",self.load_cond_probs)
+        is_cond_call = idx_d.get("is_cond_call",False)
+        if load_cond and is_cond_call:
+            raise ValueError("Cannot load cond inputs in a cond function call to avoid recursions")
+        return idx_d["idx"],load_cond,load_cond_probs,is_cond_call
+
+    def __getitem__(self, idx):
+        idx,load_cond,load_cond_probs,is_cond_call = self.process_input(idx)
         info = copy.deepcopy(self.items[idx])
+        if load_cond:
+            self.load_cond_image_label(info,load_cond_probs)
         dataset_name = info["dataset_name"]
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
         label_path = os.path.join(self.data_root,dataset_name,info["label_path"])
-        image = np.atleast_3d(open_image_fast(image_path))
-        if image.shape[2]==1:
-            image = np.repeat(image,3,axis=-1)
-        label = open_image_fast(label_path)
+        image = open_image_fast(image_path,num_channels=3)
+        label = open_image_fast(label_path,num_channels=0)
         image,label = self.preprocess(image,label,info)
-        label,info = self.map_label_to_valid_bits(label,info,inh_classes=inh_classes)
+        if is_cond_call:
+            return label,image,info
+        label,info = self.map_label_to_valid_bits(label,info)
         if not self.crop_method.startswith("sam"): #TODO
             image,label = self.augment(image,label,info)
             image = image.astype(np.float32)*(2/255)-1
         image = torch.tensor(image).permute(2,0,1)
         label = torch.tensor(label).unsqueeze(0)
         info["image"] = image
-        info["num_classes"] = len([uq for uq in torch.unique(label) if uq!=255])
         j = self.sam_features_idx
         if j>=0:
             if info["sam"][j]:
@@ -892,8 +1010,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{j}.pt"))
             else:
                 info["image_features"] = None
-        if load_cond:
-            self.load_cond_image_label(info,load_cond_probs)
         return label,info
 
 def delete_all_matched_items(datasets=None,dry=False,verbose=True):
@@ -967,7 +1083,8 @@ def get_sam_aug(size,padval=255):
                                    position=A.PadIfNeeded.PositionType.TOP_LEFT)])
     return sam_aug
 
-def open_image_fast(image_path):
+def open_image_fast(image_path,
+                    num_channels=None):
     assert image_path.find(".")>=0, "image_path must contain a file extension"
     extension = image_path.split(".")[-1]
     if extension in ["jpg","jpeg"]:
@@ -975,6 +1092,32 @@ def open_image_fast(image_path):
             image = turbo_jpeg.decode(f.read(),pixel_format=TJPF_RGB)
     else:
         image = np.array(Image.open(image_path))
+    if num_channels is not None:
+        assert num_channels in [0,1,3,4], f"Expected num_channels to be in [0,1,3,4], got {num_channels}"
+        if num_channels==0: #means only 2 dims
+            if (len(image.shape)==3 and image.shape[2]==1):
+                image = image[:,:,0]
+            else:
+                assert len(image.shape)==2, f"loaded image must either be 2D or have 1 channel when num_channels=0. got shape: {image.shape}"
+        else:
+            if len(image.shape)==2:
+                image = image[:,:,None]
+            if num_channels==1:
+                assert image.shape[2]==1, f"loaded image must have at most 1 channel if num_channels==1, found {image.shape[2]}"
+            elif num_channels==3:
+                if image.shape[2]==1:
+                    image = np.repeat(image,num_channels,axis=-1)
+                elif image.shape[2]==4:
+                    image = image[:,:,:3]
+                else:
+                    assert image.shape[2]==3, f"loaded image must have 1,3 or 4 channels if num_channels==3, found {image.shape[2]}"
+            elif num_channels==4:
+                if image.shape[2]==1:
+                    image = np.concatenate([image,image,image,np.ones_like(image)*255],axis=-1)
+                elif image.shape[2]==3:
+                    image = np.concatenate([image,np.ones_like(image[:,:,0:1])*255],axis=-1)
+                else:
+                    assert image.shape[2]==4, f"loaded image must have 1,3 or 4 channels if num_channels==4, found {image.shape[2]}"
     return image
 
 def sobel1d(image,axis=0,mode="nearest"):
@@ -1141,7 +1284,7 @@ def main():
         dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",
                                                                      datasets=datasets,
                                                                      image_size=128,
-                                                                     label_map_method="all",
+                                                                     map_excess_classes_to="largest",
                                                                      semantic_prob=0.5,
                                                                      shuffle_labels=True,
                                                                      ),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
@@ -1211,7 +1354,7 @@ def main():
         dataset = SegmentationDataset(split="train",
                                     datasets=datasets,
                                     image_size=128,
-                                    label_map_method="all",
+                                    map_excess_classes_to="largest",
                                     semantic_prob=1.0,
                                     shuffle_labels=False,
                                     shuffle_datasets=False,

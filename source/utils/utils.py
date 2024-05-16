@@ -17,6 +17,8 @@ from pprint import pprint
 from collections import defaultdict
 import scipy.ndimage as nd
 from PIL import Image
+from jlc import (shaprint,MatplotlibTempBackend,quantile_normalize,
+                 TemporarilyDeterministic,load_state_dict_loose)
 
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
@@ -165,14 +167,6 @@ def fancy_print_kvs(kvs, atmost_digits=5, s="#"):
         print_str += "|" + s*(max_key_len+2) + "|" + s*(max_value_len+2) + "|\n"
         return print_str
 
-class MatplotlibTempBackend():
-    def __init__(self,backend):
-        self.backend = backend
-    def __enter__(self):
-        self.old_backend = matplotlib.get_backend()
-        matplotlib.use(self.backend)
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        matplotlib.use(self.old_backend)
 
 def bracket_glob_fix(x):
     return "[[]".join([a.replace("]","[]]") for a in x.split("[")])
@@ -466,52 +460,6 @@ def ce2_logits_loss(logits, x, loss_mask=None, batch_dim=0):
     bce = torch.nn.functional.binary_cross_entropy_with_logits
     return torch.mean(bce(logits, (x.clone()>0.0).float(), reduction="none")*loss_mask, dim=non_batch_dims)
 
-def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
-    arch_state_dict = model_arch.state_dict()
-    load_info = {"arch_not_sd": [],"sd_not_arch": [],"match_same_size": [], "match_diff_size": []}
-    sd_keys = list(state_dict.keys())
-    for name, W in arch_state_dict.items():
-        if name in sd_keys:
-            sd_keys.remove(name)
-            s1 = np.array(state_dict[name].shape)
-            s2 = np.array(W.shape)
-            l1 = len(s1)
-            l2 = len(s2)
-            l_max = max(l1,l2)
-            if l1<l_max:
-                s1 = np.concatenate((s1,np.ones(l_max-l1,dtype=int)))
-            if l2<l_max:
-                s2 = np.concatenate((s2,np.ones(l_max-l2,dtype=int)))
-                
-            if all(s1==s2):
-                load_info["match_same_size"].append(name)
-                arch_state_dict[name] = state_dict[name]
-            else:
-                if verbose:
-                    m = ". Matching." if allow_diff_size else ". Ignoring."
-                    print("Param. "+name+" found with sizes: "+str(list(s1[0:l1]))
-                                                      +" and "+str(list(s2[0:l2]))+m)
-                if allow_diff_size:
-                    s = [min(i_s1,i_s2) for i_s1,i_s2 in zip(list(s1),list(s2))]
-                    idx1 = [slice(None,s[i],None) for i in range(l2)]
-                    idx2 = tuple([slice(None,s[i],None) for i in range(l2)])
-                    
-                    if l1>l2:
-                        idx1 += [0 for _ in range(l1-l2)]
-                    idx1 = tuple(idx1)
-                    tmp = state_dict[name][idx1]
-                    arch_state_dict[name][idx2] = tmp
-                load_info["match_diff_size"].append(name)
-        else:
-            load_info["arch_not_sd"].append(name)
-    for name in sd_keys:
-        load_info["sd_not_arch"].append(name)
-    model_arch.load_state_dict(arch_state_dict)
-    return model_arch, load_info
-
-
-
-
 def dump_kvs(filename, kvs, sep=","):
     file_exists = os.path.isfile(filename)
     if file_exists:
@@ -621,54 +569,6 @@ class TemporarilyDeterministic:
                 np.random.seed(self.previous_seed)
             if self.torch:
                 torch.set_rng_state(self.previous_torch_seed)
-
-def load_state_dict_loose(model_arch,state_dict,allow_diff_size=True,verbose=False):
-    arch_state_dict = model_arch.state_dict()
-    load_info = {"arch_not_sd": [],"sd_not_arch": [],"match_same_size": [], "match_diff_size": []}
-    sd_keys = list(state_dict.keys())
-    """print(sd_keys)
-    print(state_dict["state"][0].keys())
-    print([type(v) for v in state_dict["state"][0].values()])
-    print(len(state_dict["param_groups"]))
-    assert 0"""
-    for name, W in arch_state_dict.items():
-        if name in sd_keys:
-            sd_keys.remove(name)
-            s1 = np.array(state_dict[name].shape)
-            s2 = np.array(W.shape)
-            l1 = len(s1)
-            l2 = len(s2)
-            l_max = max(l1,l2)
-            if l1<l_max:
-                s1 = np.concatenate((s1,np.ones(l_max-l1,dtype=int)))
-            if l2<l_max:
-                s2 = np.concatenate((s2,np.ones(l_max-l2,dtype=int)))
-                
-            if all(s1==s2):
-                load_info["match_same_size"].append(name)
-                arch_state_dict[name] = state_dict[name]
-            else:
-                if verbose:
-                    m = ". Matching." if allow_diff_size else ". Ignoring."
-                    print("Param. "+name+" found with sizes: "+str(list(s1[0:l1]))
-                                                      +" and "+str(list(s2[0:l2]))+m)
-                if allow_diff_size:
-                    s = [min(i_s1,i_s2) for i_s1,i_s2 in zip(list(s1),list(s2))]
-                    idx1 = [slice(None,s[i],None) for i in range(l2)]
-                    idx2 = tuple([slice(None,s[i],None) for i in range(l2)])
-                    
-                    if l1>l2:
-                        idx1 += [0 for _ in range(l1-l2)]
-                    idx1 = tuple(idx1)
-                    tmp = state_dict[name][idx1]
-                    arch_state_dict[name][idx2] = tmp
-                load_info["match_diff_size"].append(name)
-        else:
-            load_info["arch_not_sd"].append(name)
-    for name in sd_keys:
-        load_info["sd_not_arch"].append(name)
-    model_arch.load_state_dict(arch_state_dict)
-    return model_arch, load_info
 
 def set_random_seed(seed, deterministic=False):
     """Set random seed.
@@ -812,96 +712,6 @@ def format_save_path(args):
         if v=="modified_args" and (k not in ["model_id","origin","model_name","save_path"]):
             save_path += f"_({k}={getattr(args,k)})"
     return save_path
-
-def is_type_for_dot_shape(item):
-    return isinstance(item,np.ndarray) or torch.is_tensor(item)
-
-def is_deepest_expand(x,expand_deepest,max_expand):
-    if expand_deepest:
-        if isinstance(x,str):
-            if len(x)<=max_expand:
-                out = True
-            else:
-                out = False
-        elif isinstance(x,(int,float)):
-            out = True
-        else:
-            out = False
-    else:
-        out = False
-    return out
-
-def is_type_for_recursion(item,m=20):
-    out = False
-    if isinstance(item,(list,dict,tuple)):
-        if len(item)<=m:
-            out = True
-    return out
-
-def reduce_baseline(x):
-    if hasattr(x,"__len__"):
-        lenx = len(x)
-    else:
-        lenx = -1
-    return f"<{type(x).__name__}>len{lenx}"
-
-def fancy_shape(item):
-    assert is_type_for_dot_shape(item)
-    if torch.is_tensor(item):
-        out = str(item.shape)
-    else:
-        out = f"np.Size({list(item.shape)})"
-    return out
-
-def shaprint(x, max_recursions=5, max_expand=20, first_only=False,do_pprint=True,do_print=False,return_str=False, expand_deepest=False):
-    """
-    Prints almost any object as a nested structure of shapes and lengths.
-    Example:
-    strange_object = {"a":np.random.rand(3,4,5),"b": [np.random.rand(3,4,5) for _ in range(3)],"c": {"d": [torch.rand(3,4,5),[[1,2,3],[4,5,6]]]}}
-    shaprint(strange_object)
-    """
-    kwargs = {"max_recursions":max_recursions,
-              "max_expand":max_expand,
-              "first_only":first_only,
-              "do_pprint": False,
-              "do_print": False,
-              "return_str": True,
-              "expand_deepest":expand_deepest}
-    m = float("inf") if first_only else max_expand
-    if is_type_for_dot_shape(x):
-        out = fancy_shape(x)
-    elif is_deepest_expand(x,expand_deepest,max_expand):
-        out = x
-    elif is_type_for_recursion(x,m):
-        if kwargs["max_recursions"]<=0:
-            out = reduce_baseline(x)
-        else:
-            kwargs["max_recursions"] -= 1
-            if isinstance(x,list):
-                if first_only:
-                    out = [shaprint(x[0],**kwargs)]
-                else:
-                    out = [shaprint(a,**kwargs) for a in x]
-            elif isinstance(x,dict):
-                if first_only:
-                    k0 = list(x.keys())[0]
-                    out = {k0: shaprint(x[k0],**kwargs)}
-                else:
-                    out = {k:shaprint(v,**kwargs) for k,v in x.items()}
-            elif isinstance(x,tuple):
-                if first_only:
-                    out = tuple([shaprint(x[0],**kwargs)])
-                else:
-                    out = tuple([shaprint(a,**kwargs) for a in x])
-                
-    else:    
-        out = reduce_baseline(x)
-    if do_pprint:
-        pprint(out)
-    if do_print:
-        print(out)
-    if return_str:
-        return out
 
 def mask_from_list_of_shapes(imshape,resize):
     assert isinstance(imshape,list), "imshape must be a list or tuple"
@@ -1224,6 +1034,12 @@ def nice_split(s,split_s=","):
         out = []
     else:
         out = s.split(split_s)
+    return out
+
+def is_nan_float(x):
+    out = False
+    if isinstance(x,float):
+        out = np.isnan(x)
     return out
 
 def main():
