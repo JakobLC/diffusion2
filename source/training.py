@@ -24,18 +24,18 @@ import datetime
 from source.utils.argparse_utils import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
 from sampling import DiffusionSampler
-from source.utils.plot_utils import plot_forward_pass,make_loss_plot
+from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
 from datasets import (CatBallDataset, custom_collate_with_info, 
-                      SegmentationDataset, points_image_from_label,cond_image_keys)
+                      SegmentationDataset, points_image_from_label)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
-from cont_gaussian_diffusion import create_diffusion_from_args
+from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
 from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    fancy_print_kvs,bracket_glob_fix,format_relative_path,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose,shaprint,to_dev,model_arg_is_trivial,
-                   nice_split)
+                   nice_split,imagenet_preprocess,sam_resize_index)
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
                                     cond_image_keys, load_cond_image_probs_from_args,
@@ -246,7 +246,7 @@ class DiffusionModelTrainer:
                                         shuffle_zero=self.args.shuffle_zero,
                                         geo_aug_p=self.args.geo_aug_prob,
                                         crop_method=self.args.crop_method,
-                                        label_padding_val=255 if self.args.ignore_padded else 0,
+                                        padding_idx=255 if self.args.ignore_padded else 0,
                                         split_method=self.args.split_method,
                                         sam_features_idx=sam_features_idx,
                                         semantic_prob=self.args.semantic_prob,
@@ -400,6 +400,7 @@ class DiffusionModelTrainer:
                 model_kwargs["image_features"][image_idx] = image_features
                 if self.args.crop_method=="sam_big":
                     model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
+        model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.cgd.ab)
         for k in list(model_kwargs.keys()):
             if k in cond_image_keys:
                 model_kwargs[k] = to_dev(model_kwargs[k])
@@ -804,6 +805,43 @@ class DiffusionModelTrainer:
             self.dump_kvs_gen()
             gen_setup_idx += 1
 
+def dataset_from_modelname(model_name="vit128[T3]",
+                           bs=None,
+                           image_size=None,
+                           datasets=None,
+                           semantic_prob=None,
+                           split="train",
+                           return_type="dli",
+                           args_modifier={}):
+    assert return_type in ["dli","dl","ds"]
+    splits = ["train","vali","test","all"]
+    if not isinstance(split,str):
+        assert isinstance(split,int)
+        assert split>=0 and split<=3
+        split = splits[split]
+    else:
+        assert split in splits
+    if not isinstance(split,list):
+        split = [split]
+    args = TieredParser().get_args(alt_parse_args=["--model_name", model_name])
+
+    if bs is not None:
+        args.train_batch_size = bs
+    if datasets is not None:
+        args.datasets = datasets
+    if image_size is not None:
+        args.image_size = image_size
+    if semantic_prob is not None:
+        args.semantic_prob = semantic_prob
+    args.__dict__.update(args_modifier)
+    dli = DiffusionModelTrainer.create_datasets(None,split_list=split,args=args,use_training_sampler=True)
+    if return_type=="dli":
+        return dli
+    elif return_type=="dl":
+        return dli.dataloader
+    elif return_type=="ds":
+        return dli.dataloader.dataset
+
 def dummy_dataset_args():
     args = argparse.Namespace(datasets="ade20k",
                                 split_ratio="0.8,0.1,0.1",
@@ -823,6 +861,71 @@ def dummy_dataset_args():
                                 image_encoder="none",
                                 semantic_prob=0.0)
     return args
+
+default_overlay_kwargs = {            
+            "border_color": "black",
+            "alpha_mask": 0.5,
+            "pixel_mult": 1,
+            "set_lims": True,
+            "fontsize": 12,
+            "text_alpha": 1.0,
+            "text_border_instead_of_background": True
+            }
+
+#unfortunately has to be in training.py due to circular imports  TODO: fix this
+def visualize_cond_batch(dataset_name="visor", 
+                         model_name="vit128[T3]+ALLCOND",
+                         num_images=4,
+                         args_modifier={},
+                         overlay_kwargs = default_overlay_kwargs,
+                         montage_kwargs = {},
+                         crop=False,
+                         text=True,
+                         fontsize=None):
+    if fontsize is not None:
+        overlay_kwargs["fontsize"] = fontsize
+    all_image_keys = ["image"]+cond_image_keys
+    n_col = len(cond_image_keys)+1
+    n_row = num_images
+    image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(cond_image_keys)}}
+    index_to_image_key = {v:k for k,v in image_key_to_index.items()}
+    image_overlays = []
+    dataloader = dataset_from_modelname(model_name,bs=num_images,split="vali",datasets=dataset_name,args_modifier=args_modifier)
+    x,info = next(dataloader)
+    image_size = x[0].shape[-1]
+    zero_image = None#np.zeros((image_size,image_size,3))
+    for i in range(num_images):
+        image_overlays.append([zero_image for _ in range(n_col)])
+        image_dict = {"image": [x[i],info[i]["image"],info[i]], **info[i].get("cond",{})}
+        class_names = info[i]["idx_to_class_name"]
+        for k in all_image_keys:
+            if k in image_dict.keys():
+                label,image,_ = image_dict[k]
+                label,image = label.permute(1,2,0).numpy(),image.permute(1,2,0).numpy()
+                image = imagenet_preprocess(image,inv=True,dim=2)
+                image_overlay = mask_overlay_smooth(image,label,
+                                                    class_names=class_names if text else None
+                                                    **overlay_kwargs)
+                image_overlays[-1][image_key_to_index[k]] = image_overlay
+    
+    if crop:
+        for i in range(len(image_overlays)):
+            h,w = sam_resize_index(*info[i]["imshape"][:2],info[i]["image"].shape[-1])
+            for j in range(len(image_overlays[i])):
+                if image_overlays[i][j] is not None:
+                    image_overlays[i][j] = image_overlays[i][j][:h,:w]
+    montage_kwargs = {"return_im": True, "imshow": False, **montage_kwargs}
+    montage_im = jlc.montage(image_overlays,n_col=n_col,n_row=n_row,**montage_kwargs)
+    if text:
+        xtick_kwargs = {"fontsize": overlay_kwargs["fontsize"]} if fontsize is not None else {}
+        left_text = [f"image {i}" for i in range(num_images)]
+        bottom_text = ["image"]+cond_image_keys
+        bottom_text = [b+"\n" for b in bottom_text]
+        montage_im = jlc.add_text_axis_to_image(montage_im,n_horz=n_col,n_vert=n_row,
+                                                left=left_text,
+                                                bottom=bottom_text,
+                                                xtick_kwargs=xtick_kwargs)
+    return montage_im
 
 def main():
     import argparse

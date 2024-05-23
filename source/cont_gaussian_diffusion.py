@@ -6,6 +6,13 @@ import torch
 from datasets import AnalogBits
 from source.utils.utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
+from source.models.cond_vit import cond_image_keys
+
+def cond_kwargs_int2bit(kwargs,ab,keys=cond_image_keys):
+    union_keys = set(kwargs.keys()).intersection(set(keys))
+    for key in union_keys:
+        kwargs[key] = [(torch.cat([ab.int2bit(x[0][None])[0],x[1]]) if (x is not None) else None) for x in kwargs[key]]
+    return kwargs
 
 def add_(coefs,x,batch_dim=0,flat=False):
     """broadcast and add coefs to x"""
@@ -499,7 +506,6 @@ def transform_guidance_weight(gw, x):
 def create_diffusion_from_args(args):
     num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
     ab = AnalogBits(num_bits=num_bits,
-                    shuffle_zero=args.shuffle_zero,
                     onehot=args.onehot)
 
     cgd = ContinuousGaussianDiffusion(analog_bits=ab,

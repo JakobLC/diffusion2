@@ -357,22 +357,22 @@
         "class_type": "num_classes"
     },
     "+allcond": {
-        "semantic_prob": 0.5,
-        "adjacent_prob": 0.1,
-        "same_vol_prob": 0.3,
-        "same_classes_prob": 0.03,
-        "same_dataset_prob": 0.03,
+        "semantic_prob": 0.125,
+        "adjacent_prob": 0.125,
+        "same_vol_prob": 0.125,
+        "same_classes_prob": 0.125,
+        "same_dataset_prob": 0.125,
         "class_names_prob": 0.0,
-        "classes_prob": 0.3
+        "classes_prob": 0.125
     },
     "+ALLCOND": {
         "semantic_prob": 0.5,
-        "adjacent_prob": 0.9,
-        "same_vol_prob": 0.9,
+        "adjacent_prob": 0.5,
+        "same_vol_prob": 0.5,
         "same_classes_prob": 0.5,
         "same_dataset_prob": 0.5,
         "class_names_prob": 0.0,
-        "classes_prob": 0.3
+        "classes_prob": 0.5
     },
     "vit128": {
         "versions": {
@@ -393,6 +393,19 @@
         "input_scale": 0.006,
         "cond_vit_setup": "1b2ac3a4a",
         "datasets": "all",
+        "class_type": "num_classes",
+        "log_train_metrics": "loss,grad_norm,num_tokens"
+    },
+    "vit_cont": {
+        "vit_unet_cond_mode": "both_spatial_unet",
+        "mode": "load",
+        "ckpt_name": "*hq_1*",
+        "load_state_dict_loose": true,
+        "lr_warmup_steps": 10000,
+        "image_size": 128,
+        "input_scale": 0.006,
+        "cond_vit_setup": "1b2ac3a4a",
+        "datasets": "non-low-qual",
         "class_type": "num_classes",
         "log_train_metrics": "loss,grad_norm,num_tokens"
     }

@@ -187,6 +187,8 @@ def unet_vit_input_dicts_from_args(args):
         unet_input_keys = ["sample"]
     elif task_name=="no_unet": #T3: full ViT, no unet
         unet_input_keys = []
+    else:
+        raise ValueError("Invalid task_name: "+task_name)
     unet_input_dict = {k: full_unet_input_dict[k] for k in unet_input_keys}
 
     vit_input_dict = fancy_vit_from_args(args,return_input_dict_instead=True)
@@ -519,18 +521,19 @@ class FancyViT(nn.Module):
                     v_i = torch.atleast_1d(v[i]) if v[i] is not None else None
                     if v_i is not None:
                         assert torch.is_tensor(v_i), "Expected tensor for input. Found :" +str(type(v_i))+" for k="+k
+                        assert not isinstance(v_i,list), "Expected tensor for input. Found list for k="+k
                         assert len(v_i.shape)>0, "Expected tensor with at least one dimension. Found :" +str(v_i.shape)+" for k="+k
                         if self.input_dict[k]["input_type"]=="image":
-                            if ae: assert v_i.shape[1]==v_i.shape[2]==self.input_dict[k]["img_size"], f"Expected image size {self.input_dict[k]['img_size']}, got {v.shape[2]}x{v.shape[3]} for k={k}"
+                            if ae: assert v_i.shape[1]==v_i.shape[2]==self.input_dict[k]["img_size"], f"Expected image size {self.input_dict[k]['img_size']}, got {v_i.shape[1]}x{v_i.shape[2]} for k={k}, i={i}"
                             seq_len[i] += self.token_img_size**2
                         elif self.input_dict[k]["input_type"]=="scalar_continuous":
-                            if ae: assert v_i.shape[0]==1, f"Expected scalar_continuous to have shape (bs,1), got {v.shape} for k={k}"
+                            if ae: assert v_i.shape[0]==1, f"Expected scalar_continuous to have shape (bs,1), got {v_i.shape} for k={k}, i={i}"
                             seq_len[i] += 1
                         elif self.input_dict[k]["input_type"]=="scalar_discrete":
-                            if ae: assert v_i.shape[0]==1, f"Expected scalar_discrete to have shape (bs,1), got {v.shape} for k={k}"
+                            if ae: assert v_i.shape[0]==1, f"Expected scalar_discrete to have shape (bs,1), got {v_i.shape} for k={k}, i={i}"
                             seq_len[i] += 1
                         elif self.input_dict[k]["input_type"]=="vocabulary":
-                            if ae: assert v_i.shape[0]>=1, f"Expected vocabulary to have shape (bs,n>=1), got {v.shape} for k={k}"
+                            if ae: assert v_i.shape[0]>=1, f"Expected vocabulary to have shape (bs,n>=1), got {v_i.shape} for k={k}, i={i}"
                             seq_len[i] += len(v_i)
                         
         return max(seq_len)

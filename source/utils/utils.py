@@ -662,7 +662,8 @@ def get_time(verbosity=4,sep="-"):
 
 def nuke_saves_folder(dry_run=False, 
          ask_for_permission=True,
-         minimum_save_iteration=1):
+         minimum_save_iteration=1,
+         keep_most_recent=True):
     """
     Removes folders for all training runs, under some conditions.
     
@@ -670,10 +671,13 @@ def nuke_saves_folder(dry_run=False,
     dry_run (bool): If True, does not remove anything.
     ask_for_permission (bool): If True, asks for permission before removing anything.
     minimum_save_iterations (int): Minimum number of saves for a run to be kept.
+    keep_most_recent (bool): If True, keeps the most recent save in the most recent versions folder.
     """
     rm_str = "Removing (dry)" if dry_run else "Removing"
     saves_folder = Path("./saves")
-    folders = saves_folder.glob("*/*/")
+    folders = sorted(list(saves_folder.glob("*/*/")))
+    if keep_most_recent:
+        folders = folders[:-1]
     folders_for_removal = []
     for folder_path in folders:
         if folder_path.is_dir():

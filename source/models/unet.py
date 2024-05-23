@@ -551,6 +551,9 @@ class UNetModel(nn.Module):
                         unet_ch = row[1]["ch_out"]
                         self.vit_to_unet_map[str(depth)] = nn.Sequential(conv_nd(2,vit_ch,unet_ch,1),nn.Upsample(size=size,mode="bilinear"))
                         self.vit_injection_depths.append(depth)
+            else:
+                assert self.vit_injection_type=="none", "vit_injection_type must be one of 'emb','xattn','spatial_once','spatial_all','spatial_after_resize', or 'none'"
+                self.vit_injection_depths = []
         both_mult = 2 if is_pred_both else 1
         final_act_dict = {"none": nn.Identity(),
                         "softmax": nn.Softmax(dim=1),

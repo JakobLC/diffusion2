@@ -43,7 +43,7 @@
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"]
     },
     "conditioning": {
-        "vit_unet_cond_mode": ["both_cond_image",   "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_sptial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_cond_image'. "],
+        "vit_unet_cond_mode": ["both_spatial_unet",   "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_cond_image'. "],
         "image_prob": [0.95,                        "Probability of image being given as input. TYPE: float. DEFAULT: 0.9. "],
         "weak_bbox_prob": [0.0,                     "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
         "weak_points_prob": [0.5,                   "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
