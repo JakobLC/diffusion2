@@ -4,3 +4,5 @@ saves_old/
 /data/*/
 !/data/*/idx_to_class.json
 !/data/*/info.jsonl
+/jsons/sample_opts_ids.json
+/jsons/args_ids.json
