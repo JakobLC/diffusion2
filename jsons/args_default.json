@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.2.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.0."],
+    "model_version": ["1.2.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.0."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -43,7 +43,7 @@
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"]
     },
     "conditioning": {
-        "vit_unet_cond_mode": ["both_spatial_unet",   "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_cond_image'. "],
+        "vit_unet_cond_mode": ["both_spatial_unet", "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_cond_image'. "],
         "image_prob": [0.95,                        "Probability of image being given as input. TYPE: float. DEFAULT: 0.9. "],
         "weak_bbox_prob": [0.0,                     "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
         "weak_points_prob": [0.5,                   "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
@@ -52,7 +52,7 @@
         "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
         "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
         "cond_img_size": [-1,                       "Size of the image to condition on. TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
-        "cond_patch_size": [16,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 16. "],
+        "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "],
         "semantic_prob": [0.0,                      "Probability of semantic augmentation being used, otherwise instance. TYPE: float. DEFAULT: 0.0. "],
         "adjacent_prob": [0.0,                      "Probability of adjacent images being given as input. TYPE: float. DEFAULT: 0.0. "],
@@ -60,7 +60,7 @@
         "same_classes_prob": [0.0,                  "Probability of images from the same dataset with large class overlap being given as input. TYPE: float. DEFAULT: 0.0. "],
         "same_dataset_prob": [0.0,                  "Probability of images from the same dataset being given as input. TYPE: float. DEFAULT: 0.0. "],
         "class_names_prob": [0.0,                   "Probability of class name clip vectors being given as input. TYPE: float. DEFAULT: 0.0. "],
-        "max_class_names": [16,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 16. "]
+        "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "]
     },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],
@@ -127,7 +127,9 @@
         "crop_method": {"<1.1.0": "multicrop_most_border"},
         "gen_setups": {"<1.1.0": "vali,train"},
         "weak_signals": {"<1.1.0": false},
-        "vit_unet_cond_mode": {"<1.2.0": "no_vit"}
+        "vit_unet_cond_mode": {"<1.2.0": "no_vit"},
+        "max_class_names": {"<=1.2.0": 16},
+        "cond_patch_size": {"<=1.2.0": 16}
     },
     "deprecated": {
         "logs_folder": ["../logs2/",                "Folder for logs. TYPE: string. DEFAULT: '../logs2/'. "],

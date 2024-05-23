@@ -408,5 +408,25 @@
         "datasets": "non-low-qual",
         "class_type": "num_classes",
         "log_train_metrics": "loss,grad_norm,num_tokens"
+    },
+    "+128": {
+        "image_size": 128,
+        "input_scale": 0.006,
+        "max_iter": 200000
+    },
+    "qual": {
+        "versions": {
+            "cond_data": {"datasets": "visor,totseg"},
+            "T0": {"vit_unet_cond_mode": "no_vit"},
+            "T1v0": {},
+            "T1v1": {"cond_vit_setup": "1b2ac3a4a"},
+            "T2": {"vit_unet_cond_mode": "both_spatial_vit"},
+            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"}
+        },
+        "datasets": "non-low-qual",
+        "class_type": "num_classes",
+        "lr_warmup_steps": 10000,
+        "lr_decay_steps": 20000,
+        "max_iter": 100000
     }
 }
