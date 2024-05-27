@@ -13,7 +13,7 @@ import copy
 import math
 import warnings
 import pandas as pd
-
+from source.utils.utils import get_named_datasets
 
 cond_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
 new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
@@ -34,8 +34,7 @@ vit_shared_params = {'out_chans':   256,
                 'qkv_bias':         True,
                 'use_rel_pos':      True,
                 'window_size':      14,
-                'mlp_ratio':        4,
-                'norm_layer':       partial(torch.nn.LayerNorm, eps=1e-6)}
+                'mlp_ratio':        4}
 
 
 def vit_args_from_idx(idx):
@@ -159,7 +158,7 @@ def default_input_dict(img_size=1024,patch_size=16,image_channels=3,diff_channel
             "adjacent":       im_dict,#X
             "time":           {"input_type": "scalar_continuous", "min": 0.0, "max": 1.0},#X
             "num_classes":    {"input_type": "scalar_discrete", "size": 64},#(X)
-            "class_names":    {"input_type": "vocabulary", "size": 8096},#X
+            "class_names":    {"input_type": "vocabulary", "size": -1},#X
             "semantic":       {"input_type": "scalar_discrete", "size": 2},#X
     }
     return inputs
@@ -195,6 +194,29 @@ def unet_vit_input_dicts_from_args(args):
     
     return unet_input_dict,vit_input_dict
 
+def pd_table_of_inputs(args):
+    unet_input_dict,vit_input_dict = unet_vit_input_dicts_from_args(args)
+    if args["vit_unet_cond_mode"]!="no_unet":
+        unet_input_dict["time"] = 1
+        if args["image_encoder"]!="none":
+            unet_input_dict["image_features"] = 1
+        if args["classes_prob"]>0 and args["class_type"]!="none":
+            unet_input_dict["num_classes"] = 1
+    df = pd.DataFrame(columns=["name","input_type","is_spatial","where"])
+    #types: "image-non-spatial", "image-spatial", ""
+    uq_keys = list(set(list(unet_input_dict.keys())+list(vit_input_dict.keys())))
+    spatial_image_keys = ["image","bbox","points","self_cond","sample","image_features"]
+    d = default_input_dict()
+    d["image_features"] = {"input_type": "image"}
+    for key in uq_keys:
+        assert key in d, "Key "+key+" not found in default input dict. Found only: "+str(d.keys())
+        where = str(int(key in unet_input_dict.keys()))+str(int(key in vit_input_dict.keys()))
+        where = {"00": " ", "10": "UNet", "01": "ViT", "11": "Unet,ViT"}[where]
+        input_type = d[key]["input_type"]
+        is_spatial = key in spatial_image_keys
+        df.loc[len(df)] = [key,input_type,"X" if is_spatial else " ",where]
+    df = df.sort_values(by=["where","is_spatial","input_type","name"])
+    return df
 
 cond_vit_setup_long = {1: {"option_name": "preprocess" ,
                            "a": "Stack channels spatially",
@@ -241,7 +263,9 @@ def fancy_vit_from_args(args,return_input_dict_instead=False):
             "vit_unet_cond_mode",
             "weak_bbox_prob",
             "weak_points_prob",
-            "weak_signals"]
+            "weak_signals",
+            "class_names_prob",
+            "datasets"]
     keys += new_prob_keys
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
@@ -272,14 +296,22 @@ def fancy_vit_from_args(args,return_input_dict_instead=False):
     #remove keys from the input dict based on args
     if args["weak_points_prob"]<=0 or not args["weak_signals"]:
         del_keys2.append("points")
+
     if args["weak_bbox_prob"]<=0 or not args["weak_signals"]:
         del_keys2.append("bbox")
+
+    if args["class_names_prob"]<=0:
+        del_keys2.append("class_names")
+    else:
+        fancy_vit_args["input_dict"]["class_names"]["class_names_datasets"] = get_named_datasets(args["datasets"])
+        
     if args["vit_unet_cond_mode"]=="both_spatial_unet":
         del_keys2.extend(spatial_input_keys)
     elif not args["vit_unet_cond_mode"]=="no_unet":
         del_keys2.append("sample")
     else:
         assert args["vit_unet_cond_mode"] in ["both_spatial_vit","no_unet"], "Invalid vit_unet_cond_mode: "+args["vit_unet_cond_mode"]
+
     for k in del_keys2:
         if k in fancy_vit_args["input_dict"].keys():
             del fancy_vit_args["input_dict"][k]
@@ -338,7 +370,7 @@ class FancyViT(nn.Module):
         mlp_ratio: float = 4.0,
         out_chans: int = 256,
         qkv_bias: bool = True,
-        norm_layer: Type[nn.Module] = nn.LayerNorm,
+        norm_layer: Type[nn.Module] = partial(torch.nn.LayerNorm, eps=1e-6),
         act_layer: Type[nn.Module] = nn.GELU,
         use_abs_pos: bool = True,
         use_rel_pos: bool = False,
@@ -368,7 +400,7 @@ class FancyViT(nn.Module):
         self.img_sizes = []
         self.patch_sizes = []
         self.in_chans = []
-        
+        self.vocab_keys = []
         input_dict["cls"] = {"input_type": "scalar_discrete", "size": 1}
         has_image_input = False
         for input_name, input_info in input_dict.items():
@@ -386,7 +418,27 @@ class FancyViT(nn.Module):
             elif t=="scalar_discrete":
                 setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
             elif t=="vocabulary":
-                setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
+                if "class_names_datasets" in input_info.keys():
+                    assert "class_names"==input_name, "Must have class_names key if class_names_datasets is specified"
+                    assert input_info["size"]<=0, "Size must be non-positive (since it isn't used) for vocabulary based on class names. Found: "+str(input_info[input_name]["size"])
+                    clip_matrix, dataset_idx_to_clip_idx, pretty_name_to_clip_idx = get_clip_matrix(input_info["class_names_datasets"])
+                    input_dict[input_name]["size"] = clip_matrix.shape[0]
+                    clip_feat_dim = clip_matrix.shape[1]
+                    self.class_names_embed = nn.Sequential(nn.Embedding(input_info["size"], 
+                                                                        clip_feat_dim,
+                                                                        _weight=clip_matrix.float(),
+                                                                        _freeze=True),
+                                                           nn.Linear(clip_feat_dim,embed_dim))
+                    to_vocab_idx = {j: j for j in range(input_info["size"])}
+                    to_vocab_idx.update(pretty_name_to_clip_idx)
+                    to_vocab_idx.update(dataset_idx_to_clip_idx)
+                    to_vocab_idx = WrapToVocabDict(to_vocab_idx)
+                else:
+                    assert input_info["size"]>0, "Size must be positive for vocabulary. Found: "+str(input_info["size"])
+                    setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
+                    to_vocab_idx = DummyIdentityDict()
+                setattr(self, input_name+"_to_vocab_idx", to_vocab_idx)
+                self.vocab_keys.append(input_name)
         self.input_dict = input_dict
         self.img_size = self.img_sizes[0] if len(set(self.img_sizes))==1 else None
         self.patch_size = self.patch_sizes[0] if len(set(self.patch_sizes))==1 else None
@@ -518,9 +570,12 @@ class FancyViT(nn.Module):
             for i in range(bs):
                 if v is not None:
                     if ae: assert len(v)==bs, f"Expected length of bs={bs}, got length={len(v[i])} for k={k}"
-                    v_i = torch.atleast_1d(v[i]) if v[i] is not None else None
-                    if v_i is not None:
-                        assert torch.is_tensor(v_i), "Expected tensor for input. Found :" +str(type(v_i))+" for k="+k
+                    if v[i] is None:
+                        continue
+                    else:
+                        assert k in self.input_dict, f"Input name {k} not found in input_dict. Has to be one of: {self.input_dict.keys()}"
+                    if torch.is_tensor(v[i]):
+                        v_i = torch.atleast_1d(v[i])
                         assert not isinstance(v_i,list), "Expected tensor for input. Found list for k="+k
                         assert len(v_i.shape)>0, "Expected tensor with at least one dimension. Found :" +str(v_i.shape)+" for k="+k
                         if self.input_dict[k]["input_type"]=="image":
@@ -534,8 +589,15 @@ class FancyViT(nn.Module):
                             seq_len[i] += 1
                         elif self.input_dict[k]["input_type"]=="vocabulary":
                             if ae: assert v_i.shape[0]>=1, f"Expected vocabulary to have shape (bs,n>=1), got {v_i.shape} for k={k}, i={i}"
+                            #assert all index are valid
+                            if ae: assert (v_i<self.input_dict[k]["size"]).all(), f"Invalid index found for vocabulary. Expected index to be in range 0-{self.input_dict[k]['size']}, found: {v_i} for k={k}"
                             seq_len[i] += len(v_i)
-                        
+                    else:
+                        assert isinstance(v[i],list), "Expected list, tensor or none as inputs, found: "+str(type(v[i]))+" for k="+k
+                        assert self.input_dict[k]["input_type"]=="vocabulary", "Only vocabulary input types is supported for list inputs, found: "+self.input_dict[k]["input_type"]+" for k="+k
+                        v_i = v[i]
+                        assert all([v_ii in getattr(self, k+"_to_vocab_idx").keys() for v_ii in v_i]), f"Invalid index found for vocabulary. Expected index to be in range 0-{self.input_dict[k]['size']} or mappables such as tuples of (dataset_name,dataset_idx) or pretty_name strings, found: {v_i} for k={k}"
+                        seq_len[i] += len(v_i)
         return max(seq_len)
     
     def filter_inputs(self,inputs):
@@ -581,7 +643,7 @@ class FancyViT(nn.Module):
                 if item_i is None:
                     continue
                 else:
-                    item_i = item_i.unsqueeze(0)
+                    item_i = item_i.unsqueeze(0) if torch.is_tensor(item_i) else item_i
                 info_i = None
                 tokenized_item = None
                 if t=="image":
@@ -612,10 +674,11 @@ class FancyViT(nn.Module):
                     if item_i>=0:
                         tokenized_item = getattr(self, input_name+"_embed")(item_i.reshape(1,1))
                 elif t=="vocabulary":
-                    vocab_indices = item_i
-                    if (vocab_indices>=0).any():
-                        vocab_indices = vocab_indices[vocab_indices>=0].reshape(1,-1)
-                        tokenized_item = getattr(self, input_name+"_embed")(vocab_indices)
+                    vocab_indices = torch.tensor(
+                        [getattr(self, input_name+"_to_vocab_idx")[item_i[j]] for j in range(len(item_i))],
+                        device=device,
+                        dtype=torch.long).unsqueeze(0)
+                    tokenized_item = getattr(self, input_name+"_embed")(vocab_indices)
                 else:
                     raise ValueError(f"Invalid input_name, must be one of {self.input_dict.keys()}")
                 if tokenized_item is None:
@@ -710,6 +773,11 @@ def very_unique_from_tensor(x):
         out = very_unique_from_tensor(flat_param_vec)
     return out
 
+class DummyIdentityDict(dict):
+    def __init__(self):
+        self.super().__init__()
+    def __getitem__(self, key):
+        return key
 
 # This class and its supporting functions below lightly adapted from the ViTDet backbone available at: https://github.com/facebookresearch/detectron2/blob/main/detectron2/modeling/backbone/vit.py # noqa
 class ImageEncoderViT(nn.Module):
@@ -724,7 +792,7 @@ class ImageEncoderViT(nn.Module):
         mlp_ratio: float = 4.0,
         out_chans: int = 256,
         qkv_bias: bool = True,
-        norm_layer: Type[nn.Module] = nn.LayerNorm,
+        norm_layer: Type[nn.Module] = partial(torch.nn.LayerNorm, eps=1e-6),
         act_layer: Type[nn.Module] = nn.GELU,
         use_abs_pos: bool = True,
         use_rel_pos: bool = False,
@@ -856,7 +924,7 @@ class FancyBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
-        norm_layer: Type[nn.Module] = nn.LayerNorm,
+        norm_layer: Type[nn.Module] = partial(torch.nn.LayerNorm, eps=1e-6),
         act_layer: Type[nn.Module] = nn.GELU,
         use_rel_pos: bool = False,
         rel_pos_zero_init: bool = True
@@ -906,7 +974,7 @@ class Block(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
-        norm_layer: Type[nn.Module] = nn.LayerNorm,
+        norm_layer: Type[nn.Module] = partial(torch.nn.LayerNorm, eps=1e-6),
         act_layer: Type[nn.Module] = nn.GELU,
         use_rel_pos: bool = False,
         rel_pos_zero_init: bool = True,
@@ -1644,6 +1712,37 @@ def num_tokens_from_token_info(token_info,count_padding=False,sum_batch=True):
     if sum_batch:
         num_tokens = sum(num_tokens)
     return num_tokens
+
+def get_clip_matrix(datasets,save_path = f"./data/CLIP_emb.pth"):
+    loaded = torch.load(save_path)
+    dataset_idx_to_clip_idx = {}
+    pretty_name_to_clip_idx = {}
+    clip_matrix = []
+    k = 0
+    for dataset_name in datasets:
+        assert dataset_name in loaded.keys(), f"Dataset {dataset_name} not found in loaded keys."
+        clip_matrix.append(torch.from_numpy(loaded[dataset_name]["embeddings"]))
+        for i in range(len(loaded[dataset_name]["class_idx"])):
+            idx = loaded[dataset_name]["class_idx"][i]
+            pretty_name = loaded[dataset_name]["class_names_pretty"][i]
+            dataset_idx_to_clip_idx[(dataset_name,idx)] = k
+            pretty_name_to_clip_idx[pretty_name] = k
+            k += 1
+    clip_matrix = torch.cat(clip_matrix,dim=0)
+    return clip_matrix, dataset_idx_to_clip_idx, pretty_name_to_clip_idx
+
+class WrapToVocabDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        if torch.is_tensor(key):
+            #map to int
+            key = key.item() 
+        v = super().__getitem__(key)
+        if isinstance(v,int):
+            v = torch.tensor(v)
+        return v
 
 def main():
     import argparse

@@ -346,7 +346,10 @@
     },
     "hq": {
         "versions": {
-            "also_med": {"datasets": "non-low-qual"}
+            "also_med": {"datasets": "non-low-qual"},
+            "vit": {},
+            "vit_T2": {"vit_unet_cond_mode": "both_spatial_vit"},
+            "vit_T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"}
         },
         "datasets": "high-qual",
         "image_size": 128,
@@ -362,7 +365,7 @@
         "same_vol_prob": 0.125,
         "same_classes_prob": 0.125,
         "same_dataset_prob": 0.125,
-        "class_names_prob": 0.0,
+        "class_names_prob": 0.125,
         "classes_prob": 0.125
     },
     "+ALLCOND": {
@@ -371,7 +374,7 @@
         "same_vol_prob": 0.5,
         "same_classes_prob": 0.5,
         "same_dataset_prob": 0.5,
-        "class_names_prob": 0.0,
+        "class_names_prob": 0.5,
         "classes_prob": 0.5
     },
     "vit128": {
@@ -424,9 +427,16 @@
             "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"}
         },
         "datasets": "non-low-qual",
-        "class_type": "num_classes",
         "lr_warmup_steps": 10000,
         "lr_decay_steps": 20000,
         "max_iter": 100000
+    },
+    "+32": {
+        "cond_patch_size": 4,
+        "image_size": 32,
+        "input_scale": 0.5,
+        "max_iter": 20000,
+        "lr_warmup_steps": 0,
+        "lr_decay_steps": 0
     }
 }

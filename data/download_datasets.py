@@ -17,7 +17,7 @@ import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
-from source.utils.utils import quantile_normalize
+from source.utils.utils import quantile_normalize, prettify_classname
 import cv2
 from source.datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
@@ -1265,33 +1265,16 @@ def axis_bbox_to_idx(volshape,bbox_seg,delta_abs=0,delta_rel=0.05,
         n = np.round(min(max_images,width//min_dist)).astype(int)
         idx_sample.append(np.round(np.linspace(bbox[d*2],bbox[d*2+1],n)).astype(int).tolist())
     return idx_sample
-
-def dataset_classname_map(classname,dataset_name):
-    foreground_with_number = ["sa1b","hrsod","dram"]
-    no_map_required = ["visor","pascal","msra","fss","ecssd","duts","dis","coift","cityscapes","ade20k"]
-    has_underscores = ["totseg","to5k","monu4","monu"]
-    coco_like = ["coco"]
-    if dataset_name in foreground_with_number:
-        assert classname.find("foreground")>=0 or classname.find("background")>=0, "classname must contain foreground or background"
-        return "foreground" if classname.find("foreground")>=0 else "background"
-    elif dataset_name in no_map_required:
-        return classname
-    elif dataset_name in has_underscores:
-        return classname.replace("_"," ")
-    elif dataset_name in coco_like:
-        return classname.split("/")[-1].replace("-other","").replace("-"," ")
-    else:
-        raise NotImplementedError(f"dataset_name {dataset_name} not implemented")
     
-def save_clip_vectors(dataset_name=None,batch_size=16,save_path = f"./data/CLIP_emb.pth"):
+def save_clip_vectors(dataset_name=None,batch_size=16,save_path = f"./data/CLIP_emb.pth", clip_model="ViT-B/32"):
     idx_to_class = load_json_to_dict_list(f"./data/{dataset_name}/idx_to_class.json")[0]
-    idx_to_class_pretty = {k: dataset_classname_map(v,dataset_name) for k,v in idx_to_class.items()}
+    idx_to_class_pretty = {k: prettify_classname(v,dataset_name) for k,v in idx_to_class.items()}
     crit = [int(i) for i in list(idx_to_class_pretty.keys())]
     sort_order = np.argsort(crit)
     sorted_crit = [str(crit[i]) for i in sort_order] 
     list_of_classnames_pretty = [idx_to_class_pretty[i] for i in sorted_crit]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, preprocess = clip.load("ViT-B/32", device=device)
+    model, preprocess = clip.load(clip_model, device=device)
     n_batches = len(idx_to_class_pretty)//batch_size
     clip_emb_matrix = np.zeros((len(idx_to_class_pretty),512))
     with torch.no_grad():
@@ -1305,10 +1288,34 @@ def save_clip_vectors(dataset_name=None,batch_size=16,save_path = f"./data/CLIP_
         loaded = torch.load(save_path)
     else:
         loaded = {}
-    loaded[dataset_name] = {"classnames": list_of_classnames_pretty, 
+    loaded[dataset_name] = {"class_names": list_of_classnames_pretty,
+                            "class_names_pretty": list_of_classnames_pretty, 
                             "embeddings": clip_emb_matrix,
-                            "class_keys": sorted_crit}
+                            "class_idx": [int(i) for i in sorted_crit]}
     torch.save(loaded,save_path)
+
+def show_clip_vectors(save_path = f"./data/CLIP_emb.pth"):
+    check_keys=["class_names","class_names_pretty","embeddings","class_idx"]
+    loaded = torch.load(save_path)
+    dataset_names = list(loaded.keys())
+    for dataset_name in dataset_names:
+        idx_to_class = load_json_to_dict_list(f"./data/{dataset_name}/idx_to_class.json")[0]
+        n = len(idx_to_class)
+        list_of_pretty_classnames = [prettify_classname(v,dataset_name) for v in idx_to_class.values()]
+        dataset_was_saved_correctly = True
+        #check all keys are there and have length n
+        for key in check_keys:
+            if not key in loaded[dataset_name].keys():
+                dataset_was_saved_correctly = False
+            elif len(loaded[dataset_name][key])!=n:
+                dataset_was_saved_correctly = False
+        #check all pretty classnames are present
+        if not all([cn in loaded[dataset_name].get("class_names_pretty",[]) for cn in list_of_pretty_classnames]):
+            dataset_was_saved_correctly = False
+        if dataset_was_saved_correctly:
+            print(f"Dataset {dataset_name} was saved correctly.")
+        else:
+            print(f"Dataset {dataset_name} was not saved correctly.")
 
 def main():
     import argparse
@@ -1394,6 +1401,9 @@ def main():
         for dataset_name in all_dataset_names:
             print(f"Processing {dataset_name}")
             save_clip_vectors(dataset_name)
+    elif args.process==15:
+        print("PROCESS 15: show CLIP vectors")
+        show_clip_vectors()
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

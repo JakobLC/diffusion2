@@ -20,7 +20,8 @@ if not str(Path(__file__).parent.parent) in sys.path:
 from source.models.unet import get_sam_image_encoder
 import tqdm
 from source.models.cond_vit import cond_image_keys
-from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json,sam_resize_index,is_nan_float
+from source.utils.utils import (load_json_to_dict_list, save_dict_list_to_json,
+                                sam_resize_index,is_nan_float,get_named_datasets)
 from source.utils.argparse_utils import get_current_default_version
 import shutil
 import pandas as pd
@@ -354,7 +355,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.num_crops = num_crops
         self.downscale_thresholding_factor = 3
         self.datasets_info = load_json_to_dict_list(str(Path(data_root) / "datasets_info_live.json"))
-        available_datasets = [d["dataset_name"] for d in self.datasets_info if d["live"]]
+        """available_datasets = [d["dataset_name"] for d in self.datasets_info if d["live"]]
         if self.datasets==["non-medical"] or self.datasets=="non-medical":
             self.dataset_list = []
             for d in self.datasets_info:
@@ -388,7 +389,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 assert isinstance(self.datasets,str), "invalid datasets input. must be a list of strings or a comma separated string"
                 self.dataset_list = self.datasets.split(",")
             
-            assert all([d in available_datasets for d in self.dataset_list]), "Unrecognized dataset. Available datasets are: "+str(available_datasets)+" got "+str(self.dataset_list)
+            assert all([d in available_datasets for d in self.dataset_list]), "Unrecognized dataset. Available datasets are: "+str(available_datasets)+" got "+str(self.dataset_list)"""
+        self.dataset_list = get_named_datasets(self.datasets,datasets_info=self.datasets_info)
+        
         if split in ["train","vali","test","all"]:
             split = {"train": 0,"vali": 1, "test": 2, "all": 3}[split]
         assert split in list(range(-1,4)), "invalid split input. must be one of [0,1,2,3] or ['train','vali','test','all'], found "+str(split)

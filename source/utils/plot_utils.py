@@ -18,7 +18,7 @@ import pandas as pd
 import scipy.ndimage as nd
 from models.cond_vit import cond_image_keys
 from datasets import load_raw_image_label
-from jlc import (RenderMatplotlibAxis, add_text_axis_to_image,darker_color,
+from jlc import (RenderMatplotlibAxis, darker_color,
                  distance_transform_edt_border,mask_overlay_smooth,
                  get_mask,render_axis_ticks,darker_color,get_matplotlib_color,
                  add_text_axis_to_image,to_xy_anchor,render_text_gridlike,
@@ -390,7 +390,8 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     t_vec = np.array(range(num_timesteps, 0, -1))/num_timesteps
     top = bottom = ["","t="]+[f"{t_vec[j]:.2f}" for j in range(num_timesteps)]
     top[1] = "points"
-    add_text_axis_to_image(concat_filename,left=left,top=top,right=right,bottom=bottom,xtick_kwargs={"fontsize":20})
+    _ = add_text_axis_to_image(concat_filename,save_filename=concat_filename,
+                           left=left,top=top,right=right,bottom=bottom,xtick_kwargs={"fontsize":20})
     if remove_children:
         for filename in filenames:
             os.remove(filename)
@@ -556,10 +557,11 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
         else:
             bottom_names = ["" for i in range(bs)]
         add_text_axis_to_image(filename,
-                               top=sample_names,
-                               bottom=bottom_names,
-                               left=show_keys2,
-                               right=show_keys2)
+                            save_filename=filename,
+                            top=sample_names,
+                            bottom=bottom_names,
+                            left=show_keys2,
+                            right=show_keys2)
     if remove_old:
         clean_up(filename)
 
@@ -655,10 +657,11 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         if has_classes:
             t_and_mse = [f"class={output['classes'][i].item()}\n"+t for i,t in zip(perm,t_and_mse)]
         add_text_axis_to_image(filename,
-                               top=sample_names,
-                               bottom=t_and_mse,
-                               left=show_keys,
-                               right=show_keys)
+                            save_filename=filename,
+                            top=sample_names,
+                            bottom=t_and_mse,
+                            left=show_keys,
+                            right=show_keys)
     if remove_old:
         clean_up(filename)
         

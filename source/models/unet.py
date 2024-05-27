@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
 from segment_anything.modeling import ImageEncoderViT
-from source.models.cond_vit import FancyViT, fancy_vit_from_args, unet_vit_input_dicts_from_args
+from source.models.cond_vit import FancyViT, fancy_vit_from_args, unet_vit_input_dicts_from_args, new_prob_keys
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
 from source.utils.utils import model_arg_is_trivial
 from source.models.nn import (
@@ -299,10 +299,22 @@ class QKVAttention(nn.Module):
         matmul_ops = 2 * b * (num_spatial ** 2) * c
         model.total_ops += torch.DoubleTensor([matmul_ops])
 
-def unet_kwarg_to_tensor(kwarg):
-    if (kwarg is None) or isinstance(kwarg, torch.Tensor):
-        #output is correctly formatted
+def unet_kwarg_to_tensor(kwarg,key=None,non_tensor_exception_keys=["class_names"],dev=None):
+    key_exception = False
+    if key is not None:
+        if key in non_tensor_exception_keys:
+            key_exception = True
+    if kwarg is None:
         pass
+    elif torch.is_tensor(kwarg):
+        pass
+    elif key_exception:
+        crit = [isinstance(item,(str,tuple,int,torch.Tensor,list)) or (item is None) for item in kwarg]
+        assert all(crit), f"If kwarg for exception keys is a list, then all elements must be str, tuple, int, or torch.Tensor. kwarg={kwarg}"
+        if model_arg_is_trivial(kwarg):
+            kwarg = None
+        else:
+            kwarg = [[] if item is None else item for item in kwarg]
     elif isinstance(kwarg, list):
         assert all([(isinstance(kw, torch.Tensor) or kw is None) for kw in kwarg]), f"If kwarg is a list, all elements must be torch.Tensor or None. kwarg={kwarg}"
         if all([kw is None for kw in kwarg]): #also return true for empty list
@@ -323,6 +335,8 @@ def unet_kwarg_to_tensor(kwarg):
             kwarg = full_kwarg
     else:
         raise ValueError(f"kwarg={kwarg} is not a valid type. must be None, torch.Tensor, or list of torch.Tensor/None")
+    if (dev is not None) and torch.is_tensor(kwarg):
+            kwarg = kwarg.to(dev)
     return kwarg
             
 class UNetModel(nn.Module):
@@ -809,6 +823,8 @@ def create_unet_from_args(args):
         vit_args = fancy_vit_from_args(args)
         if len(vit_args)==0:
             vit_args = None
+            prob_dict = {k: args[k] for k in new_prob_keys}
+            assert all([p==0.0 for p in list(prob_dict.values())]), "cond_vit_mode was set to no_vit, but some prob keys which require vit were not set to 0. prob_dict="+str(prob_dict)
         unet = UNetModel(image_size=args["image_size"],
                     is_pred_both=args["predict"]=="both",
                     out_channels=out_channels,
@@ -900,6 +916,14 @@ def get_ch_in_out(module):
     else:
         raise ValueError("last block type not recognized: "+last_block_type)
     return ch_in, ch_out
+
+def is_vocab_arg(k,unet):
+    out = False
+    if hasattr(unet,"vit"):
+        if unet.vit is not None:
+            out = k in unet.vit.vocab_keys
+    return out
+
 
 def main():
     import argparse

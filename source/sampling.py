@@ -127,6 +127,7 @@ class DiffusionSampler(object):
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
         assert self.opts.postprocess in ['none','area0.005'], f"postprocess={self.opts.postprocess} is not a valid option."
+
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
         
@@ -206,11 +207,10 @@ class DiffusionSampler(object):
                 if isinstance(samples[0][k],dict):
                     for sub_k in samples[0][k].keys():
                         assert check_keys_are_same([s[k] for s in samples])
-                        #if not torch.is_tensor(samples[0][k][sub_k]):
-                        #    raise ValueError(f"Expected tensor for samples[0][{k}][{sub_k}]. Got {type(samples[0][k][sub_k])}.")
-                        sample_output[sub_k] = unet_kwarg_to_tensor([s[k][sub_k] for s in samples])
+                        
+                        sample_output[sub_k] = unet_kwarg_to_tensor([s[k][sub_k] for s in samples],key=sub_k)
                 elif torch.is_tensor(samples[0][k]):
-                    sample_output[k] = unet_kwarg_to_tensor([s[k] for s in samples])
+                    sample_output[k] = unet_kwarg_to_tensor([s[k] for s in samples],key=k)
         
         return sample_output, metric_output
             
@@ -372,8 +372,8 @@ class DiffusionSampler(object):
                     self.source_idx = 0
 
         for k in batch_kwargs.keys():
-            if batch_kwargs[k] is not None:
-                batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k])
+            if (batch_kwargs[k] is not None):
+                batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k],key=k)
         batch_x = torch.stack(batch_x,dim=0)
         return batch_x, batch_kwargs, batch_info, batch_queue
     

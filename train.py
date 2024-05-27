@@ -28,10 +28,9 @@ from source.training import DiffusionModelTrainer
 # [5] check multiple workers works
 # [4] make i.e. 2x,4x imsize compared to diff sample 
 # [5] resume training by model_id
-# [6] implement CLIP matrix for datasets
-# [6] make class inheritance work
 # [7] add half precision to vit
-# [7] make class names from dataloader denote the largest class (or possibly merged string), instead of a random class as now
+# [5] add parameter to NOT give timesteps to ViT
+# [8] conditioned saving of light stats
 
 #training TODO
 # loop over lr

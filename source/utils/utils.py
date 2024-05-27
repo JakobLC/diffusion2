@@ -16,6 +16,7 @@ import re
 from pprint import pprint
 from collections import defaultdict
 import scipy.ndimage as nd
+import copy
 from PIL import Image
 from jlc import (shaprint,MatplotlibTempBackend,quantile_normalize,
                  TemporarilyDeterministic,load_state_dict_loose)
@@ -1045,6 +1046,46 @@ def is_nan_float(x):
     if isinstance(x,float):
         out = np.isnan(x)
     return out
+
+def get_named_datasets(datasets,datasets_info=None):
+    if datasets_info is None:
+        datasets_info = load_json_to_dict_list(str(Path(__file__).parent.parent.parent / "data" / "datasets_info_live.json"))
+    
+    if not isinstance(datasets,list):
+        assert isinstance(datasets,str), "expected datasets to be a string or a list of strings"
+        datasets = datasets.split(",")
+    named_datasets_criterion = {"non-medical": lambda d: d["type"]=="pictures",
+                                    "medical": lambda d: d["type"]=="medical",
+                                    "all": lambda d: True,
+                                    "high-qual": lambda d: d["quality"]=="high",
+                                    "non-low-qual": lambda d: d["quality"]!="low"}
+    dataset_list = copy.deepcopy(datasets)
+    if len(datasets)==1:
+        if datasets[0] in named_datasets_criterion:
+            crit = named_datasets_criterion[datasets[0]]
+            dataset_list = [d["dataset_name"] for d in datasets_info if d["live"] and crit(d)]
+
+    available_datasets = [d["dataset_name"] for d in datasets_info if d["live"]]
+    assert all([d in available_datasets for d in dataset_list]), "Unrecognized dataset. Available datasets are: "+str(available_datasets)+". Named groups of datasets are: "+str(list(named_datasets_criterion.keys()))+" got "+str(dataset_list)
+    
+    return dataset_list
+
+def prettify_classname(classname,dataset_name):
+    foreground_with_number = ["sa1b","hrsod","dram"]
+    no_map_required = ["visor","pascal","msra","fss","ecssd","duts","dis","coift","cityscapes","ade20k"]
+    has_underscores = ["totseg","to5k","monu4","monu"]
+    coco_like = ["coco"]
+    if dataset_name in foreground_with_number:
+        assert classname.find("foreground")>=0 or classname.find("background")>=0, "classname must contain foreground or background"
+        return "foreground" if classname.find("foreground")>=0 else "background"
+    elif dataset_name in no_map_required:
+        return classname
+    elif dataset_name in has_underscores:
+        return classname.replace("_"," ")
+    elif dataset_name in coco_like:
+        return classname.split("/")[-1].replace("-other","").replace("-"," ")
+    else:
+        raise NotImplementedError(f"dataset_name {dataset_name} not implemented")
 
 def main():
     import argparse

@@ -13,6 +13,8 @@ import traceback
 import torch.nn.functional as F
 import json
 import argparse
+import time
+from pprint import pprint
 from source.utils.fp16_util import (
     make_master_params,
     master_params_to_model_params,
@@ -35,11 +37,12 @@ from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose,shaprint,to_dev,model_arg_is_trivial,
-                   nice_split,imagenet_preprocess,sam_resize_index)
+                   nice_split,imagenet_preprocess,sam_resize_index, prettify_classname)
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
                                     cond_image_keys, load_cond_image_probs_from_args,
-                                    num_tokens_from_token_info)
+                                    num_tokens_from_token_info, is_valid_cond_vit_setup,
+                                    pd_table_of_inputs)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 
@@ -48,6 +51,7 @@ class DiffusionModelTrainer:
         self.exit_flag = False
         self.restart_flag = False
         self.args = args
+        self.prev_time = time.time()
         self.init()
 
     def init(self):
@@ -56,10 +60,19 @@ class DiffusionModelTrainer:
         self.cgd = create_diffusion_from_args(self.args)
         if not self.args.mode=="data":
             self.model = create_unet_from_args(self.args)
-            n_trainable = jlc.num_of_params(self.model,print_numbers=False)[0]
+            n_trainable_all = jlc.num_of_params(self.model,print_numbers=False)[0]
+            if self.model.vit is not None:
+                n_trainable_vit = jlc.num_of_params(self.model.vit,print_numbers=False)[0]
+            else:
+                n_trainable_vit = 0
+            n_trainable_unet = n_trainable_all - n_trainable_vit
+            #add space every 3rd number from the back
+            n_trainable_unet, n_trainable_vit = str(n_trainable_unet), str(n_trainable_vit)
+            n_trainable_unet = " ".join([n_trainable_unet[::-1][i:i+3] for i in range(0,len(n_trainable_unet),3)])[::-1]
+            n_trainable_vit = " ".join([n_trainable_vit[::-1][i:i+3] for i in range(0,len(n_trainable_vit),3)])[::-1]
         else:
-            n_trainable = 0
-
+            n_trainable_unet = "N/A"
+            n_trainable_vit = "N/A"
         if self.args.mode=="new":
             if self.args.save_path=="":
                 self.args.save_path = format_save_path(self.args)
@@ -100,8 +113,9 @@ class DiffusionModelTrainer:
             raise NotImplementedError("CPU not implemented")
             self.device = torch.device("cpu")
         
-        self.log("Number of trainable parameters: "+str(n_trainable))
-        
+        self.log("Number of trainable parameters (UNet): "+n_trainable_unet)
+        self.log("Number of trainable parameters (ViT): "+n_trainable_vit)
+
         self.log("Saving to: "+self.args.save_path)
 
         if self.args.cat_ball_data:
@@ -279,6 +293,10 @@ class DiffusionModelTrainer:
             elif self.args.debug_run=="only_dl":
                 for _ in tqdm(dataloader):
                     pass
+            elif self.args.debug_run=="cond_vit_info":
+                pprint(is_valid_cond_vit_setup(self.args.cond_vit_setup,long_names_instead=1))
+                print(pd_table_of_inputs(self.args.__dict__).to_string())
+                self.exit_flag = True
             if pure_gen_dataset_mode:
                 return dataloader
             else:
@@ -373,9 +391,13 @@ class DiffusionModelTrainer:
                 else:
                     raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
             if self.args.class_names_prob>0:
-                raise NotImplementedError("class_names not implemented")
                 if np.random.rand()<self.args.class_names_prob or gen:
-                    model_kwargs["class_names"].append(info[i]["class_names"])
+                    class_names = list(info[i]["idx_to_class_name"].values())
+                    if "padding" in class_names:
+                        class_names.remove("padding")
+                    model_kwargs["class_names"].append(
+                        [prettify_classname(cn,dataset_name=info[i]["dataset_name"]) for cn in list(class_names)]
+                        )
                 else:
                     model_kwargs["class_names"].append(None)
             
@@ -405,7 +427,7 @@ class DiffusionModelTrainer:
             if k in cond_image_keys:
                 model_kwargs[k] = to_dev(model_kwargs[k])
             else:
-                model_kwargs[k] = to_dev(unet_kwarg_to_tensor(model_kwargs[k]))
+                model_kwargs[k] = unet_kwarg_to_tensor(model_kwargs[k],key=k,dev=self.device)
             if model_arg_is_trivial(model_kwargs[k]):
                 if del_none:
                     del model_kwargs[k]
@@ -497,6 +519,10 @@ class DiffusionModelTrainer:
             else:
                 num_tokens = 0
             kvs_step["num_tokens"] = num_tokens
+        if hasattr(self.model,"last_token_info"):
+            last_token_info = self.model.last_token_info
+            num_tokens = num_tokens_from_token_info(last_token_info)
+            metrics["num_tokens"] = num_tokens
         #reorder to match the order in args.log_train_metrics
         kvs_step = [kvs_step[k] for k in nice_split(self.args.log_train_metrics)]
         self.log_kv_step(kvs_step)
@@ -580,6 +606,7 @@ class DiffusionModelTrainer:
         if self.exit_flag:
             self.log("Training loop stopped due to exit flag.")
             return
+        
         self.step += 1
         self.log("Starting training loop...")
         #pbar = tqdm(unit='ims', unit_scale=self.args.train_batch_size)
@@ -718,6 +745,8 @@ class DiffusionModelTrainer:
         step buffer to a file and then clears the buffers.
         """
         if not only_steps:
+            self.log_kv({"time": time.time()-self.prev_time})
+            self.prev_time = time.time()
             self.log_kv({"step": self.step})
             self.log_kv({"loss_scale": self.log_loss_scale})
             for k,v in self.kvs_buffer.items():

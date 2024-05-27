@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
-from utils.utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
+from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
 import copy
 from shutil import rmtree
 
