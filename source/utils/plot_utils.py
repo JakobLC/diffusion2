@@ -13,6 +13,7 @@ from source.utils.utils import (bracket_glob_fix, save_dict_list_to_json,
                                 imagenet_preprocess, get_likelihood, 
                                 load_json_to_dict_list, wildcard_match,
                                 sam_resize_index)
+from source.datasets import get_dataset_from_args
 import cv2
 import pandas as pd
 import scipy.ndimage as nd
@@ -766,7 +767,7 @@ def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,lon
     jlc.zoom()
     return image_overlays
 
-def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,**kwargs):
+def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,show_border=1,**kwargs):
     bs = len(batch[-1])
     
     images = [b["image"].permute(1,2,0).numpy() for b in batch[-1]]
@@ -787,7 +788,7 @@ def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_in
         class_names = [info["idx_to_class_name"] for info in batch[-1]]
     else:
         class_names = [None]*bs
-    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask,class_names=class_names.pop(0)) for im,lab in zip(images,labels)],**kwargs)
+    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask,class_names=class_names.pop(0),show_border=show_border) for im,lab in zip(images,labels)],**kwargs)
 
 def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
             "border_color": "black",
@@ -853,6 +854,69 @@ def visualize_latent_vec(dim,cmap="inferno",
         plt.gca().set_facecolor("none")
     plt.axis("off")
     plt.show()
+
+default_overlay_kwargs = {            
+            "border_color": "black",
+            "alpha_mask": 0.5,
+            "pixel_mult": 1,
+            "set_lims": True,
+            "fontsize": 12,
+            "text_alpha": 1.0,
+            "text_border_instead_of_background": True
+            }
+
+#unfortunately has to be in training.py due to circular imports  TODO: fix this
+def visualize_cond_batch(args,
+                         datasets=None,#"visor", 
+                         num_images=4,
+                         overlay_kwargs = default_overlay_kwargs,
+                         montage_kwargs = {},
+                         crop=False,
+                         text=True,
+                         fontsize=None):
+    if fontsize is not None:
+        overlay_kwargs["fontsize"] = fontsize
+    all_image_keys = ["image"]+cond_image_keys
+    n_col = len(cond_image_keys)+1
+    n_row = num_images
+    image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(cond_image_keys)}}
+    image_overlays = []
+    #dataloader = dataset_from_modelname(model_name,bs=num_images,split="vali",datasets=dataset_name,args_modifier=args_modifier)
+    dataloader = get_dataset_from_args(args,split="vali",mode="training")
+    x,info = next(dataloader)
+    zero_image = None#np.zeros((image_size,image_size,3))
+    for i in range(num_images):
+        image_overlays.append([zero_image for _ in range(n_col)])
+        image_dict = {"image": [x[i],info[i]["image"],info[i]], **info[i].get("cond",{})}
+        class_names = info[i]["idx_to_class_name"]
+        for k in all_image_keys:
+            if k in image_dict.keys():
+                label,image,_ = image_dict[k]
+                label,image = label.permute(1,2,0).numpy(),image.permute(1,2,0).numpy()
+                image = imagenet_preprocess(image,inv=True,dim=2)
+                image_overlay = mask_overlay_smooth(image,label,
+                                                    class_names=class_names if text else None
+                                                    **overlay_kwargs)
+                image_overlays[-1][image_key_to_index[k]] = image_overlay
+    
+    if crop:
+        for i in range(len(image_overlays)):
+            h,w = sam_resize_index(*info[i]["imshape"][:2],info[i]["image"].shape[-1])
+            for j in range(len(image_overlays[i])):
+                if image_overlays[i][j] is not None:
+                    image_overlays[i][j] = image_overlays[i][j][:h,:w]
+    montage_kwargs = {"return_im": True, "imshow": False, **montage_kwargs}
+    montage_im = jlc.montage(image_overlays,n_col=n_col,n_row=n_row,**montage_kwargs)
+    if text:
+        xtick_kwargs = {"fontsize": overlay_kwargs["fontsize"]} if fontsize is not None else {}
+        left_text = [f"image {i}" for i in range(num_images)]
+        bottom_text = ["image"]+cond_image_keys
+        bottom_text = [b+"\n" for b in bottom_text]
+        montage_im = jlc.add_text_axis_to_image(montage_im,n_horz=n_col,n_vert=n_row,
+                                                left=left_text,
+                                                bottom=bottom_text,
+                                                xtick_kwargs=xtick_kwargs)
+    return montage_im
 
 def main():
     import argparse

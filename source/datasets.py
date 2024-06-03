@@ -10,6 +10,7 @@ import os
 import albumentations as A
 import cv2
 import copy
+from argparse import Namespace
 import jlc
 from turbojpeg import TurboJPEG,TJPF_RGB
 import warnings
@@ -22,7 +23,7 @@ import tqdm
 from source.models.cond_vit import cond_image_keys
 from source.utils.utils import (load_json_to_dict_list, save_dict_list_to_json,
                                 sam_resize_index,is_nan_float,get_named_datasets)
-from source.utils.argparse_utils import get_current_default_version
+from source.utils.argparse_utils import get_current_default_version,load_existing_args
 import shutil
 import pandas as pd
 
@@ -355,41 +356,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.num_crops = num_crops
         self.downscale_thresholding_factor = 3
         self.datasets_info = load_json_to_dict_list(str(Path(data_root) / "datasets_info_live.json"))
-        """available_datasets = [d["dataset_name"] for d in self.datasets_info if d["live"]]
-        if self.datasets==["non-medical"] or self.datasets=="non-medical":
-            self.dataset_list = []
-            for d in self.datasets_info:
-                if d["live"]:
-                    if d["type"]=="pictures":
-                        self.dataset_list.append(d["dataset_name"])
-        elif self.datasets==["medical"] or self.datasets=="medical":
-            self.dataset_list = []
-            for d in self.datasets_info:
-                if d["live"]:
-                    if d["type"]=="medical":
-                        self.dataset_list.append(d["dataset_name"])
-        elif self.datasets==["all"] or self.datasets=="all":
-            self.dataset_list = available_datasets
-        elif self.datasets==["high-qual"] or self.datasets=="high-qual":
-            self.dataset_list = []
-            for d in self.datasets_info:
-                if d["live"]:
-                    if d["quality"]=="high":
-                        self.dataset_list.append(d["dataset_name"])
-        elif self.datasets==["non-low-qual"] or self.datasets=="non-low-qual":
-            self.dataset_list = []
-            for d in self.datasets_info:
-                if d["live"]:
-                    if d["quality"]!="low":
-                        self.dataset_list.append(d["dataset_name"])
-        else:
-            if isinstance(self.datasets,list):
-                self.dataset_list = self.datasets
-            else:
-                assert isinstance(self.datasets,str), "invalid datasets input. must be a list of strings or a comma separated string"
-                self.dataset_list = self.datasets.split(",")
-            
-            assert all([d in available_datasets for d in self.dataset_list]), "Unrecognized dataset. Available datasets are: "+str(available_datasets)+" got "+str(self.dataset_list)"""
         self.dataset_list = get_named_datasets(self.datasets,datasets_info=self.datasets_info)
         
         if split in ["train","vali","test","all"]:
@@ -1279,6 +1245,74 @@ def padding_to_val(label,padding_idx,val=-1):
     label = label.astype(int)
     label[label==padding_idx] = val
     return label
+
+def get_dataset_from_args(args_or_model_id,
+                          split="vali",
+                          prioritized_didx=None,
+                          mode="training",
+                          return_type="dli",
+                          load_cond_probs_overide=None,
+                          ):
+    assert split in ["train","vali","test","all",0,1,2,3], f"split must be in ['train','vali','test','all'], got {split}"
+    split = {0:"train",1:"vali",2:"test",3:"all"}.get(split,split)
+    assert return_type in ["dli","dl","ds"], f"return_type must be in ['dli','dl','ds'], got {return_type}"
+    assert mode in ["training","pure_gen","pri_didx",None], f"sampler_mode must be in ['training','pure_gen','pri_didx',None], got {mode}"
+    if isinstance(args_or_model_id,dict):
+        args = Namespace(**args_or_model_id)
+    elif isinstance(args_or_model_id,str):
+        args = load_existing_args(args_or_model_id)
+    else:
+        assert isinstance(args_or_model_id,Namespace)
+        args = args_or_model_id
+    if load_cond_probs_overide is None:
+        load_cond_probs = {k: args.__dict__[k+"_prob"] for k in cond_image_keys}
+    else:
+        assert isinstance(load_cond_probs_overide,float), f"load_cond_probs_overide must be a float, got {load_cond_probs_overide}"
+        load_cond_probs = {k: load_cond_probs_overide for k in cond_image_keys}
+    ds = SegmentationDataset(split=split,
+                                        split_ratio=[float(item) for item in args.split_ratio.split(",")],
+                                        image_size=args.image_size,
+                                        datasets=args.datasets,
+                                        min_rel_class_area=args.min_label_size,
+                                        max_num_classes=args.max_num_classes,
+                                        shuffle_zero=args.shuffle_zero,
+                                        geo_aug_p=args.geo_aug_prob,
+                                        crop_method=args.crop_method,
+                                        padding_idx=255 if args.ignore_padded else 0,
+                                        split_method=args.split_method,
+                                        sam_features_idx=['none','sam_vit_b','sam_vit_l','sam_vit_h'].index(args.image_encoder)-1,
+                                        semantic_prob=args.semantic_prob,
+                                        conditioning=args.vit_unet_cond_mode!="no_vit",
+                                        load_cond_probs=load_cond_probs,
+                                        save_matched_items=args.dataloader_save_processing
+                                        )
+    if return_type=="ds":
+        return ds
+    tbs = args.train_batch_size
+    vbs = args.vali_batch_size if args.vali_batch_size>0 else tbs
+    bs = {"train": tbs,
+          "vali": vbs,
+          "test": vbs,
+          "all": vbs}[split]
+    if mode=="training":
+        sampler = ds.get_sampler(args.seed)
+    elif mode=="pure_gen":
+        sampler = ds.get_gen_dataset_sampler(args.datasets,args.seed)
+    elif mode=="pri_didx":
+        assert prioritized_didx is not None, "prioritized_didx must be provided if mode is pri_didx"
+        sampler = ds.get_prioritized_sampler(prioritized_didx,seed=args.seed)
+    dl = torch.utils.data.DataLoader(ds,
+                                    batch_size=bs,
+                                    sampler=sampler,
+                                    shuffle=(sampler is None),
+                                    drop_last=mode!="pure_gen",
+                                    collate_fn=custom_collate_with_info,
+                                    num_workers=args.dl_num_workers)
+    if return_type=="dl":
+        return dl
+    elif return_type=="dli":
+        return jlc.DataloaderIterator(dl)
+    
 
 def main():
     import argparse

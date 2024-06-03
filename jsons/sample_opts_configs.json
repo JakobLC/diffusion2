@@ -42,5 +42,32 @@
         },
         "num_timesteps": 25, "num_samples": -1, "plotting_functions": "","seed": 1, 
         "split": "vali", "num_votes": 1, "kwargs_mode": "only_image", "datasets": "coco,pascal,sa1b,coift,hrsod,to5k,ade20k,dram,cityscapes",
-        "save_light_stats": true}
+        "save_light_stats": true},
+    "kwarg_sweep": {
+        "versions": {
+            "cond": {
+                "datasets": "totseg;visor", 
+                "kwargs_mode": "only_image;image,adjecant;image,same_dataset;image,same_vol;image,same_classes;image,self_cond;image,num_classes", 
+                "semantic_prob": 1.0,
+                "num_timesteps": 100,
+                "num_samples": 128
+            }
+        },
+        "name_match_str": "*hq_6",
+        "num_timesteps": 25,
+        "num_samples": 64,
+        "num_votes": 1,
+        "seed": 1,
+        "kwargs_mode": "only_image;train;all",
+        "save_light_stats": true
+    },
+    "points": {
+        "datasets": "pascal",
+        "num_timesteps": 10,
+        "num_samples": 8,
+        "num_votes": 1,
+        "seed": 1,
+        "kwargs_mode": "image,points;only_image",
+        "save_light_stats": true
+    }
 }

@@ -19,6 +19,10 @@ def main(**modified_args):
         return
     ckpt_name = get_ckpt_name(sample_opts.name_match_str,return_multiple_matches=False)
     print("\nckpt_name:",ckpt_name)
+    if len(ckpt_name)==0:
+        print("No ckpt found")
+        return
+    print(str(Path(ckpt_name).parent / "args.json"))
     model_id = load_existing_args(str(Path(ckpt_name).parent / "args.json"),"args",verify_keys=False).model_id
     print("\nmodel_id:",model_id)
     args = load_existing_args(model_id,"args",verify_keys=True)

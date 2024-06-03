@@ -42,6 +42,17 @@ def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
         s = str(s)
     return s
 
+def list_wrap_type(t):
+    def list_wrap(x):
+        if isinstance(x,str):
+            if x.find(";")>=0:
+                return [t(y) for y in x.split(";")]
+            else:
+                return t(x)
+        else:
+            return t(x)
+    return list_wrap
+
 def load_defaults(idx=0,ordered_dict=False,filename="jsons/args_default.json",
                   return_special_argkey=None,
                   deprecated_argkey="deprecated",
@@ -175,6 +186,44 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError("boolean value expected")
 
+def str_with_semicolon_version(v):
+    """
+    Converts strings of the type 
+    from       |   to
+    -----------------------
+    'm[v1;v2]'         -> 'm[v1];m[v2]'
+    'm1[v1];m2[v1;v2]' -> 'm1[v1];m2[v1];m2[v2]'
+    'm[v1;v2]+p1'      -> 'm[v1]+p1;m[v2]+p1'
+    """
+    assert v.count("[")==v.count("]"), f"v={v} has mismatched brackets."
+    if v.find(";")<0:
+        return v
+    #replace all ";" inside brackets with ":"
+    v2 = ""
+    open_brackets = 0
+    for s_idx in range(len(v)):
+        if v[s_idx]=="[":
+            open_brackets += 1
+        elif v[s_idx]=="]":
+            open_brackets -= 1
+        if v[s_idx]==";":
+            if open_brackets>0:
+                v2 += ":"
+            else:
+                v2 += ";"
+        else:
+            v2 += v[s_idx]
+    #split by ";"
+    v_out = ""
+    for s in v2.split(";"):
+        s1 = s[:s.find("[")]
+        bracket_string = s[s.find("["):s.find("]")+1]
+        s3 = s[s.find("]")+1:]
+        for s2 in bracket_string[1:-1].split(":"):
+            v_out += s1+"["+s2+"]"+s3+";"
+    v_out = v_out[:-1]
+    return v_out.split(";")
+
 class TieredParser():
     def __init__(self,name="args",
                  tiers_dict={"modified_args": 0,
@@ -188,7 +237,9 @@ class TieredParser():
                     backwards_comp_argkey="version_backwards_compatability",
                     dynamic_argkey="dynamic",
                     key_to_type={"origin": dict,
-                                 "name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True)}):
+                                 "name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True),
+                                 "model_name": str_with_semicolon_version,
+                                 "gen_setup": str_with_semicolon_version}):
         self.tiers_dict = tiers_dict
         assert name in ["args","sample_opts"], f"name={name} not supported."
         self.name_key = {"args": "model_name","sample_opts": "gen_setup"}[name]
@@ -227,17 +278,6 @@ class TieredParser():
                                      help=self.get_description_from_key(k))
             self.type_dict[k] = t
 
-    def get_closest_matches(self, k, n=3):
-        """finds the n closest matched between a specified string, k, and the 
-        keys of the type_dict. Closeness is measured by intersection 
-        (len(intersection) where intersection is the longest common substring) 
-        over union (len(k1) + len(k2) - len(intersection))."""
-        iou_per_key = {}
-        for k2 in self.type_dict.keys():
-            intersection = longest_common_substring(k,k2)
-            iou_per_key[k2] = len(intersection)/(len(k)+len(k2)-len(intersection))
-        return [a[0] for a in sorted(iou_per_key.items(), key=lambda x: x[1], reverse=True)[:n]]
-
     def construct_args(self,tiers,tiers_dict=None,tiers_for_origin=list(range(4))):
         if tiers_dict is None:
             tiers_dict = self.tiers_dict
@@ -249,7 +289,7 @@ class TieredParser():
             tier_name = tiers_dict_inv[tier_num]
             for k,v in tiers[tier_name].items():
                 if k not in self.type_dict.keys():
-                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closest known matches: {self.get_closest_matches(k,n=3)}")
+                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closest known matches: {get_closest_matches(k,self.id_dict.keys(),n=3)}")
             args.update(tiers[tier_name])
             origin.update({k: tier_name for k in tiers[tier_name].keys()})
         tfo = [tiers_dict_inv[k] for k in tiers_for_origin]
@@ -409,22 +449,23 @@ def get_type_from_default(default_v):
     t = list_wrap_type(str2bool if isinstance(default_v, bool) else t2)
     return t
 
-def list_wrap_type(t):
-    def list_wrap(x):
-        if isinstance(x,str):
-            if x.find(";")>=0:
-                return [t(y) for y in x.split(";")]
-            else:
-                return t(x)
-        else:
-            return t(x)
-    return list_wrap
+def get_closest_matches(k, list_of_things, n=3):
+    """finds the n closest matched between a specified string, k, and the 
+    keys of the type_dict. Closeness is measured by intersection 
+    (len(intersection) where intersection is the longest common substring) 
+    over union (len(k1) + len(k2) - len(intersection))."""
+    iou_per_key = {}
+    for k2 in list_of_things:
+        intersection = longest_common_substring(k,k2)
+        iou_per_key[k2] = len(intersection)/(len(k)+len(k2)-len(intersection))
+    return [a[0] for a in sorted(iou_per_key.items(), key=lambda x: x[1], reverse=True)[:n]]
 
 def load_existing_args(path_or_id,
                   name_key="args",
                   verify_keys=True,
                   origin_replace_keys=["commandline","modified_args"],
-                  use_loaded_dynamic_args=True):
+                  use_loaded_dynamic_args=True,
+                  behavior_on_mismatch="raise"):
     tp = TieredParser(name_key)
     if str(path_or_id).endswith(".json"):
         args_loaded = json.loads(Path(path_or_id).read_text())
@@ -433,7 +474,7 @@ def load_existing_args(path_or_id,
             args_loaded = args_loaded[0]
     else:
         id_dict = tp.load_and_format_id_dict()
-        assert path_or_id in id_dict.keys(), f"path_or_id={path_or_id} not found in id_dict.keys()."
+        assert path_or_id in id_dict.keys(), f"path_or_id={path_or_id} not found in id_dict.keys(). Closest matches: {get_closest_matches(path_or_id,id_dict.keys(),n=3)}"
         args_loaded = id_dict[path_or_id]
     if not "origin" in args_loaded.keys():
         args_loaded["origin"] = {}
@@ -462,7 +503,14 @@ def load_existing_args(path_or_id,
         else:
             if (k in theo_keys) and (k in load_keys):
                 if (args_theoretical.__dict__[k] != args_loaded[k]) and verify_keys:
-                    raise ValueError(f"args_theoretical.__dict__[{k}]={args_theoretical.__dict__[k]} != args_loaded[{k}]={args_loaded[k]}")
+                    if behavior_on_mismatch=="raise":
+                        raise ValueError(f"args_theoretical.__dict__[{k}]={args_theoretical.__dict__[k]} != args_loaded[{k}]={args_loaded[k]}")
+                    elif behavior_on_mismatch=="theo":
+                        args_loaded[k] = args_theoretical.__dict__[k]
+                    elif behavior_on_mismatch=="loaded":
+                        pass
+                    else:
+                        raise ValueError(f"behavior_on_mismatch={behavior_on_mismatch} must be one of ['raise','theo','loaded']")
             elif (k in theo_keys) and (k not in load_keys):
                 args_loaded[k] = args_theoretical.__dict__[k]
             elif (k not in theo_keys) and (k in load_keys):
@@ -531,7 +579,7 @@ def add_folder_ids(folder,
 def delete_existing_args(id,name_key="sample_opts"):
     tp = TieredParser(name_key)
     id_dict = tp.load_and_format_id_dict()
-    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys()."
+    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys(). Closest matches: {get_closest_matches(id,id_dict.keys(),n=3)}"
     overwrite_existing_args(argparse.Namespace(**id_dict[id]),delete_instead_of_overwrite=True)
 
 def overwrite_existing_args(args,delete_instead_of_overwrite=False):
@@ -619,7 +667,7 @@ def kill_missing_ids(name_key="args",dry=False,keep_criterion=None):
 def kill_by_id(id, name_key="sample_opts", dry=False):
     tp = TieredParser(name_key)
     id_dict = tp.load_and_format_id_dict(return_type="ordereddict")
-    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys()."
+    assert id in id_dict.keys(), f"id={id} not found in id_dict.keys(). Closest matches: {get_closest_matches(id,id_dict.keys(),n=3)}"
     if dry:
         print(f"Would remove id={id} from {name_key}.")
     else:

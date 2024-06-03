@@ -12,7 +12,6 @@ from source.training import DiffusionModelTrainer
 
 
 #TODO [priority]
-# [1] make K-means clustering of SAM features for comparison
 # [2] implement dummy diffusion
 # [2] make so if you do --model_name m1;m1 --some_other_arg arg1;arg2, it will also loop when followed up with --mode cont
 # [3] fix SAM augmentations
@@ -31,11 +30,6 @@ from source.training import DiffusionModelTrainer
 # [7] add half precision to vit
 # [5] add parameter to NOT give timesteps to ViT
 # [8] conditioned saving of light stats
-
-#training TODO
-# loop over lr
-# loop over input scaling and image sizes
-# train model with low logsnr_max and v prediction (logsnr_max=5)
 
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)

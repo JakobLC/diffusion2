@@ -8,19 +8,19 @@ from PIL import Image
 import os,sys
 import argparse
 from training import DiffusionModelTrainer
-from source.utils.argparse_utils import TieredParser
+from source.utils.argparse_utils import TieredParser, get_closest_matches,load_defaults
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from collections import defaultdict
 import tqdm
 from pathlib import Path
 from datasets import (AnalogBits,load_raw_image_label,
                       load_raw_image_label_from_didx,
-                      longest_side_resize_func)
+                      longest_side_resize_func,get_dataset_from_args)
 import copy
 from utils.utils import (imagenet_preprocess, get_mse_metrics,
                          get_segment_metrics, shaprint, 
                          load_json_to_dict_list,sam_resize_index, 
-                         postprocess_list_of_segs)
+                         postprocess_list_of_segs,wildcard_match)
 from utils.plot_utils import (mask_overlay_smooth, darker_color, 
                               get_matplotlib_color,index_dict_with_bool,
                               render_text_gridlike)
@@ -241,19 +241,17 @@ def evaluate_sam(datasets="ade20k",
     if longest_side_resize>0 and not longest_side_resize==1024:
         args.image_size = longest_side_resize
         args.crop_method = "sam_small"
-    if pri_didx is not None:
-        args.pri_didx = pri_didx
     args.image_encoder = ['sam_vit_b','sam_vit_l','sam_vit_h'][model_idx]
     args.datasets = datasets
     trainer = DiffusionModelTrainer(args)
-    trainer.create_datasets("vali",args=args)
-    load_raw_image_label = getattr(trainer,split+"_dl").dataloader.dataset.load_raw_image_label
+    dli = get_dataset_from_args(args,prioritized_didx=pri_didx,return_type="dli")
+    load_raw_image_label = dli.dataloader.dataset.load_raw_image_label
     
     sam_checkpoint = "../segment-anything/segment_anything/checkpoint/"+ckpt_type_dict[model_type]
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     sam.to(device=device)
     sam_agnostic = SamAgnosticGenerator(sam,**generator_kwargs)
-    n = len(getattr(trainer,split+"_dl"))
+    n = len(dli)
     if isinstance(ratio_of_dataset,float) and ratio_of_dataset<=1:
         n_batches = np.ceil(n*ratio_of_dataset).astype(int)
     else:
@@ -265,7 +263,7 @@ def evaluate_sam(datasets="ade20k",
     light_data = []
     print(f"evaluating {n_batches} batches")
     for i in tqdm.tqdm(range(n_batches),disable=not progress_bar):
-        batch = next(getattr(trainer,split+"_dl"))
+        batch = next(dli)
         _, model_kwargs, info = trainer.get_kwargs(batch,gen=True)
         features = model_kwargs["image_features"]
         bs = len(batch[-1])
@@ -382,6 +380,34 @@ class SavedSamplesManager:
     def __len__(self):
         return len(self.saved_samples)
     
+    def rename_by_opts_key(self,opts_keys=None,ss_idx=None,include_renamed_keys=False):
+        """
+        Renames all saved samples (or subset by ss_idx) by a key in the opts dictionary.
+        If opts_key=None, then the key(s) are determined by the opts_keys attribute of the saved samples which differs.
+        """
+        if ss_idx is None:
+            ss_idx = list(range(len(self.saved_samples)))
+
+        if (opts_keys is None) or is_empty_list(opts_keys):
+            ignore_keys = load_defaults(filename="jsons/sample_opts_default.json",
+                                                return_special_argkey="dynamic")
+            values_per_key = {}
+            for i in ss_idx:
+                if hasattr(self.saved_samples[i],"sample_opts"):
+                    for k,v in self.saved_samples[i].sample_opts.items():
+                        if k not in ignore_keys:
+                            if k not in values_per_key.keys():
+                                values_per_key[k] = []
+                            values_per_key[k].append(v)
+            opts_keys = [k for k,v in values_per_key.items() if len(set(v))>1]
+        if include_renamed_keys:
+            new_name_func = lambda x: "_".join([f"{k}={str(x[k])}" for k in opts_keys])
+        else:
+            new_name_func = lambda x: "_".join([str(x[k]) for k in opts_keys])
+        for i in ss_idx:
+            if hasattr(self.saved_samples[i],"sample_opts"):
+                self.saved_samples[i].name = new_name_func(self.saved_samples[i].sample_opts)
+
     def save(self,save_path):
         list_of_save_dicts = [ss.save(save_path=None,return_instead_of_save=True) for ss in self.saved_samples]
         torch.save(list_of_save_dicts,save_path)
@@ -395,6 +421,27 @@ class SavedSamplesManager:
             ss_list.append(ss)
         self.add_saved_samples(ss_list)
 
+    def load_by_ids(self,model_id_match_str="*",gen_id_match_str="*",load_heavy=False,load_light=True):
+        """
+        Finds the (model_ids,gen_ids) pairs that match the given strings and loads them
+        """
+        id_pairs = get_all_id_pairs(only_with_light_stats=True)
+        assert len(id_pairs)>0, "No saved samples found with light stats"
+        gen_id_loads = []
+        for model_id,gen_id in id_pairs:
+            if (wildcard_match(pattern=model_id_match_str,text=model_id) and 
+                wildcard_match(pattern=gen_id_match_str,  text=gen_id)):
+                gen_id_loads.append(gen_id)
+        if len(gen_id_loads)==0:
+            print(f"model_id_match_str: {model_id_match_str}")
+            print(f"gen_id_match_str: {gen_id_match_str}")
+            warning_msg = "No saved samples found with the given match strings."
+            warning_msg += f" Matched model_ids: {str([model_id for model_id,_ in id_pairs if wildcard_match(pattern=model_id_match_str,text=model_id)])}"
+            warning_msg += f" Matched gen_ids: {str([gen_id for _,gen_id in id_pairs if wildcard_match(pattern=gen_id_match_str,text=gen_id)])}"
+            warnings.warn(warning_msg)
+        for gen_id in gen_id_loads:
+            self.add_saved_samples(DiffSamples(gen_id=gen_id,load_heavy=load_heavy,load_light=load_light))
+        
     def add_saved_samples(self,saved_samples):
         if isinstance(saved_samples,list):
             assert all([is_saved_samples(ss) for ss in saved_samples]), "expected all elements in a list to be instances of SavedSamples, found "+str([type(ss) for ss in saved_samples])
@@ -483,6 +530,7 @@ class SavedSamplesManager:
                     text_color_inside="white",
                     ss_idx=None,
                     plot_qual_seg_kwargs={}):
+        self.raise_error_on_no_ss()
         if num_images is None:
             assert isinstance(didx,list), "If num_images is None, idx must be a list"
             num_images = len(didx)
@@ -572,35 +620,83 @@ class SavedSamplesManager:
             subplot_per_ss=False,
             transposed=False,
             figsize=(12,6),
-            lines_instead_of_hist=False):
+            lines_instead_of_hist=False,
+            bins=None, 
+            unit_xlim=True):
+        self.raise_error_on_no_ss()
         metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
-        ncol = 1 if subplot_per_metric else len(metric_names)
-        nrow = 1 if subplot_per_ss else len(ss_idx)
+        ncol =  len(metric_names) if subplot_per_metric else 1
+        nrow = len(ss_idx) if subplot_per_ss else 1
+        print(metric_names)
         if transposed:
             ncol,nrow = nrow,ncol
         plt.figure(figsize=figsize)
-        
+        ymax = {}
         for i in range(len(ss_idx)):
             for j in range(len(metric_names)):
-                
-                if nrow==1 and ncol==1:
-                    subplot_index = 1
-                elif nrow==1 and ncol>1:
-                    subplot_index = 1+j
-                elif nrow>1 and ncol==1:
-                    subplot_index = i+1
-                else:
-                    subplot_index = j*nrow+i+1 if transposed else i*ncol+j+1
-                plt.subplot(nrow,ncol,subplot_index)
-
+                n = self.saved_samples[ss_idx[i]].name
                 m = metric_names[j]
                 y = metrics[i][m]
-                if lines_instead_of_hist:
-                    std_kernel = np.std(y)/10
 
+                if nrow==1 and ncol==1:
+                    subplot_index = 1
+                    label = f"{n} {m}"
+                    title = ""
+                elif nrow==1 and ncol>1:
+                    subplot_index = 1+j
+                    label = n if subplot_per_metric else m
+                    title = m if subplot_per_metric else n
+                elif nrow>1 and ncol==1:
+                    subplot_index = i+1
+                    label = n if subplot_per_metric else m
+                    title = m if subplot_per_metric else n
+                else:
+                    subplot_index = j*nrow+i+1 if transposed else i*ncol+j+1
+                    label = ""
+                    title = f"{n} {m}"
+
+                plt.subplot(nrow,ncol,subplot_index)
+
+                if lines_instead_of_hist:
+                    if isinstance(bins,int):
+                        bin_width = 1/bins
+                    elif isinstance(bins,(list,np.ndarray)):
+                        bin_width = bins[1]-bins[0]
+                    else:
+                        assert bins is None, "expected bins to be an int, list, np.ndarray or None"
+                        bin_width =  np.std(y)/10
+                    std_kernel = bin_width
+                    x = np.linspace(0,1,500)
+                    y_curve = []
+                    for x_i in x:
+                        y_curve.append(np.sum(np.exp(-(y-x_i)**2/(2*std_kernel**2))))
+                    y_curve = np.array(y_curve)
+                    y_curve = y_curve/y_curve.sum()*len(y_curve)
+                    #plot between the curve and zero
+                    plt.plot(x,y_curve,label=label)
+                    plt.fill_between(x,y_curve,0,alpha=0.3)
+                    ymax[(nrow,ncol)] = max(ymax.get((nrow,ncol),0),max(y_curve))
+                else:
+                    hist_out = plt.hist(y,bins=bins,label=label,density=True)
+                    ymax[(nrow,ncol)] = max(ymax.get((nrow,ncol),0),max(hist_out[0]))
+                if mean_lines:
+                    mean = np.mean(y)
+                    plt.axvline(mean,color="red")
+                    if mean_lines_text:
+                        plt.text(mean,0,f"{mean:.2f}",rotation=90)
+                last_subplot_visit = True
+                if last_subplot_visit:
+                    plt.title(title)
+                    if ncol==1 or nrow==1:
+                        plt.legend()
+                    if unit_xlim:
+                        plt.xlim(0,1)
+                    plt.ylim(0,ymax[(nrow,ncol)]*1.2+(1 if ymax[(nrow,ncol)]<1e10 else 0))
+        plt.tight_layout()
         return 
     
     def metrics_for_plotting(self,metric_names=None,ss_idx=None,intersection_only=True,transpose_metric_ss=False):
+        self.raise_error_on_no_ss()
         if ss_idx is None:
             ss_idx = list(range(len(self.saved_samples)))
         if intersection_only:
@@ -660,6 +756,9 @@ class SavedSamplesManager:
         if remove_original_ss:
             self.saved_samples.pop(ss_idx)
 
+    def raise_error_on_no_ss(self):
+        assert len(self.saved_samples)>0, "No saved samples found. Cannot construct plots"
+
     def bar(self,
             metric_names=None,
             ss_idx=None,
@@ -670,6 +769,7 @@ class SavedSamplesManager:
             intersection_only=True,
             figsize=(12,6),
             subplot_horz=True):
+        self.raise_error_on_no_ss()
         metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
         #metrics structure:
         #metrics[ss_idx][metric_name] = list of values where mean is the bar height (instead of mean value, so we can get std)
@@ -720,22 +820,39 @@ class SavedSamplesManager:
                           ss_idx=None,
                           intersection_only=False,
                           to_df=True,
-                          significant_digits=3,convert_to_pct=False):
+                          significant_digits=3,
+                          convert_to_pct=False,
+                          opts_keys_for_table=[]):
+        self.raise_error_on_no_ss()
         metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
         ss_names = [self.saved_samples[i].name for i in ss_idx]
         mean_metrics = {ss_name: {m: np.mean(metrics[i][m]).item() for m in metric_names} for i,ss_name in enumerate(ss_names)}
+        if len(opts_keys_for_table)>0:
+            for k in opts_keys_for_table:
+                list_of_vals = []
+                for i in range(len(ss_idx)):
+                    if hasattr(self.saved_samples[ss_idx[i]],"sample_opts"):
+                        list_of_vals.append(self.saved_samples[ss_idx[i]].sample_opts.get(k,float("nan")))
+                    else:
+                        list_of_vals.append(float("nan"))
+                for ss_name,v in zip(ss_names,list_of_vals):
+                    mean_metrics[ss_name][k] = v
         if to_df:
             mean_metrics = pd.DataFrame(mean_metrics)
-            if convert_to_pct:
-                mean_metrics = mean_metrics.applymap(lambda x: f"{x*100:.{significant_digits}f}%")
-            else:
-                mean_metrics = mean_metrics.applymap(lambda x: f"{x:.{significant_digits}f}")
+            def conversion(x):
+                try:
+                    if convert_to_pct:
+                        return f"{float(x)*100:.{significant_digits}f}"
+                    else:
+                        return f"{float(x):.{significant_digits}}"
+                except:
+                    return x
+            mean_metrics = mean_metrics.applymap(conversion)
         else:
             if convert_to_pct:
                 mean_metrics = {k: {kk: f"{vv*100:.{significant_digits}f}%" for kk,vv in v.items()} for k,v in mean_metrics.items()}
             else:
                 mean_metrics = {k: {kk: f"{vv:.{significant_digits}f}" for kk,vv in v.items()} for k,v in mean_metrics.items()}
-
         return mean_metrics
 
     def scatter(self,metric1="ari",metric2=None,
@@ -744,6 +861,7 @@ class SavedSamplesManager:
                 full_lims=False,
                 buffer=0.1,
                 didx_of_extremes=0):
+        self.raise_error_on_no_ss()
         assert metric1 is not None
         if metric2 is None:
             metric2 = metric1
@@ -796,7 +914,36 @@ class SavedSamplesManager:
             plt.ylim(m1,m2)
         plt.show()
         return out
-    
+
+def is_empty_list(x):
+    if isinstance(x,list):
+        out = len(x)==0
+    else:
+        out = False
+    return out
+
+def get_all_id_pairs(only_with_light_stats=False):
+    """
+    Returns all (model_id,gen_id) pairs
+    """
+    out = []
+    id_dict = TieredParser("sample_opts").load_and_format_id_dict()
+    for v in id_dict.values():
+        gen_id = v["gen_id"]
+        model_id = v.get("model_id","")
+        if only_with_light_stats:
+            add = False
+            if "light_stats_filename" in v.keys():
+                if v["light_stats_filename"] is not None:
+                    if len(v["light_stats_filename"])>0:
+                        if Path(v["light_stats_filename"]).exists():
+                            add = True
+        else:
+            add = True
+        if add:
+            out.append((model_id,gen_id))
+    return out
+
 def fancy_bar(fancy_bar_args,x,y,*args,**kwargs):
 
     assert len(x)==len(y), "expected x and y to have the same length, found len(x)="+str(len(x))+" and len(y)="+str(len(y))
@@ -1282,7 +1429,7 @@ class DiffSamples(SavedSamples):
                 ):
         super().__init__(mem_threshold=mem_threshold)
         id_dict = TieredParser("sample_opts").load_and_format_id_dict()
-        assert gen_id in id_dict.keys(), f"gen_id {gen_id} not found in id_dict"
+        assert gen_id in id_dict.keys(), f"gen_id {gen_id} not found in id_dict. Closest matches are {get_closest_matches(gen_id,id_dict.keys())}"
         self.gen_id = gen_id
         self.name = gen_id
         self.sample_opts = id_dict[gen_id]

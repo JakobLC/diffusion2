@@ -28,7 +28,7 @@ from source.utils.argparse_utils import (save_args, TieredParser,load_existing_a
 from sampling import DiffusionSampler
 from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
 from datasets import (CatBallDataset, custom_collate_with_info, 
-                      SegmentationDataset, points_image_from_label)
+                      SegmentationDataset, points_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
@@ -37,7 +37,8 @@ from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    set_random_seed,is_infinite_and_not_none,get_time,
                    AlwaysReturnsFirstItemOnNext,format_save_path,
                    load_state_dict_loose,shaprint,to_dev,model_arg_is_trivial,
-                   nice_split,imagenet_preprocess,sam_resize_index, prettify_classname)
+                   nice_split,imagenet_preprocess,sam_resize_index, prettify_classname,
+                   fix_clip_matrix_in_state_dict)
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
                                     cond_image_keys, load_cond_image_probs_from_args,
@@ -55,6 +56,10 @@ class DiffusionModelTrainer:
         self.init()
 
     def init(self):
+        if self.args.debug_run=="print_model_name_and_exit":
+            print(self.args.model_name)
+            self.exit_flag = True
+            return
         if not self.restart_flag:
             self.args.seed = set_random_seed(self.args.seed)
         self.cgd = create_diffusion_from_args(self.args)
@@ -173,6 +178,7 @@ class DiffusionModelTrainer:
                     self.log("WARNING: self.args.lr_warmup_steps=0. Warmup is recommended with loose model loading as it does not work for the optimizer.")
             else:
                 self.opt.load_state_dict(ckpt["optimizer"])
+                ckpt["model"] = fix_clip_matrix_in_state_dict(ckpt["model"],self.model)
                 self.model.load_state_dict(ckpt["model"])
                 self.master_params = self._state_dict_to_master_params(ckpt["model"])
                 for i, ema_rate in enumerate(self.ema_rates):
@@ -224,68 +230,11 @@ class DiffusionModelTrainer:
         self.restart_flag = False
         self.log("Init complete.")
 
-    def create_datasets(self,split_list=["train","vali"],args=None,use_training_sampler=False):
+    def create_datasets(self,split_list=["train","vali"]):
         if isinstance(split_list,str):
             split_list = [split_list]
-        if self is None:
-            assert len(split_list)==1, "split_list must be of length 1 when in pure_gen_dataset_mode"
-            pure_gen_dataset_mode = True
-            self = argparse.Namespace()
-            self.args = dummy_dataset_args()
-            if args is not None:
-                assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
-                self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
-            
-            if self.args.seed is None:
-                self.args.seed = set_random_seed(self.args.seed)
-            self.seed = self.args.seed
-        else:
-            if args is not None:
-                assert self.args.mode in ["gen", "data"], "args can only be set when in gen or data mode"
-                assert isinstance(args,(dict,argparse.Namespace)), "args must be dict or argparse.Namespace or None"
-                self.args.__dict__.update(args.__dict__ if isinstance(args,argparse.Namespace) else args)
-            pure_gen_dataset_mode = False
-        split_ratio = [float(item) for item in self.args.split_ratio.split(",")]
-        sam_features_idx = ['none','sam_vit_b','sam_vit_l','sam_vit_h'].index(self.args.image_encoder)-1
-        load_cond_probs = {k: self.args.__dict__[k+"_prob"] for k in cond_image_keys}
-        if sum(list(load_cond_probs.values()))==0:
-            load_cond_probs = None
         for split in split_list:
-            dataset = SegmentationDataset(split=split,
-                                        split_ratio=split_ratio,
-                                        image_size=self.args.image_size,
-                                        datasets=self.args.datasets,
-                                        min_rel_class_area=self.args.min_label_size,
-                                        max_num_classes=self.args.max_num_classes,
-                                        shuffle_zero=self.args.shuffle_zero,
-                                        geo_aug_p=self.args.geo_aug_prob,
-                                        crop_method=self.args.crop_method,
-                                        padding_idx=255 if self.args.ignore_padded else 0,
-                                        split_method=self.args.split_method,
-                                        sam_features_idx=sam_features_idx,
-                                        semantic_prob=self.args.semantic_prob,
-                                        conditioning=self.args.vit_unet_cond_mode!="no_vit",
-                                        load_cond_probs=load_cond_probs,
-                                        save_matched_items=self.args.dataloader_save_processing
-                                        )
-            bs = {"train": self.args.train_batch_size,
-                  "vali": self.args.vali_batch_size if self.args.vali_batch_size>0 else self.args.train_batch_size,
-                  "test": self.args.train_batch_size,
-                  "all": self.args.train_batch_size}[split]
-            if hasattr(args,"pri_didx"):
-                sampler = dataset.get_prioritized_sampler(args.pri_didx,seed=self.args.seed)
-            else:
-                if use_training_sampler or not pure_gen_dataset_mode:
-                    sampler = dataset.get_sampler(self.args.seed) if hasattr(dataset,"get_sampler") else None
-                else:
-                    sampler = dataset.get_gen_dataset_sampler(self.args.datasets,self.args.seed)
-            dataloader = jlc.DataloaderIterator(torch.utils.data.DataLoader(dataset,
-                                        batch_size=bs,
-                                        sampler=sampler,
-                                        shuffle=(sampler is None),
-                                        drop_last=not pure_gen_dataset_mode,
-                                        collate_fn=custom_collate_with_info,
-                                        num_workers=self.args.dl_num_workers))
+            dataloader = get_dataset_from_args(self.args,split,mode="training")
             if self.args.debug_run=="no_dl":
                 dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
             elif self.args.debug_run=="anomaly":
@@ -297,8 +246,6 @@ class DiffusionModelTrainer:
                 pprint(is_valid_cond_vit_setup(self.args.cond_vit_setup,long_names_instead=1))
                 print(pd_table_of_inputs(self.args.__dict__).to_string())
                 self.exit_flag = True
-            if pure_gen_dataset_mode:
-                return dataloader
             else:
                 setattr(self,split+"_dl",dataloader)
 
@@ -834,7 +781,7 @@ class DiffusionModelTrainer:
             self.dump_kvs_gen()
             gen_setup_idx += 1
 
-def dataset_from_modelname(model_name="vit128[T3]",
+"""def dataset_from_modelname(model_name="vit128[T3]",
                            bs=None,
                            image_size=None,
                            datasets=None,
@@ -842,6 +789,7 @@ def dataset_from_modelname(model_name="vit128[T3]",
                            split="train",
                            return_type="dli",
                            args_modifier={}):
+    raise ValueError("This function is deprecated. Use source.datasets.get_dataset_from_args instead.")
     assert return_type in ["dli","dl","ds"]
     splits = ["train","vali","test","all"]
     if not isinstance(split,str):
@@ -889,72 +837,7 @@ def dummy_dataset_args():
                                 debug_run="",
                                 image_encoder="none",
                                 semantic_prob=0.0)
-    return args
-
-default_overlay_kwargs = {            
-            "border_color": "black",
-            "alpha_mask": 0.5,
-            "pixel_mult": 1,
-            "set_lims": True,
-            "fontsize": 12,
-            "text_alpha": 1.0,
-            "text_border_instead_of_background": True
-            }
-
-#unfortunately has to be in training.py due to circular imports  TODO: fix this
-def visualize_cond_batch(dataset_name="visor", 
-                         model_name="vit128[T3]+ALLCOND",
-                         num_images=4,
-                         args_modifier={},
-                         overlay_kwargs = default_overlay_kwargs,
-                         montage_kwargs = {},
-                         crop=False,
-                         text=True,
-                         fontsize=None):
-    if fontsize is not None:
-        overlay_kwargs["fontsize"] = fontsize
-    all_image_keys = ["image"]+cond_image_keys
-    n_col = len(cond_image_keys)+1
-    n_row = num_images
-    image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(cond_image_keys)}}
-    index_to_image_key = {v:k for k,v in image_key_to_index.items()}
-    image_overlays = []
-    dataloader = dataset_from_modelname(model_name,bs=num_images,split="vali",datasets=dataset_name,args_modifier=args_modifier)
-    x,info = next(dataloader)
-    image_size = x[0].shape[-1]
-    zero_image = None#np.zeros((image_size,image_size,3))
-    for i in range(num_images):
-        image_overlays.append([zero_image for _ in range(n_col)])
-        image_dict = {"image": [x[i],info[i]["image"],info[i]], **info[i].get("cond",{})}
-        class_names = info[i]["idx_to_class_name"]
-        for k in all_image_keys:
-            if k in image_dict.keys():
-                label,image,_ = image_dict[k]
-                label,image = label.permute(1,2,0).numpy(),image.permute(1,2,0).numpy()
-                image = imagenet_preprocess(image,inv=True,dim=2)
-                image_overlay = mask_overlay_smooth(image,label,
-                                                    class_names=class_names if text else None
-                                                    **overlay_kwargs)
-                image_overlays[-1][image_key_to_index[k]] = image_overlay
-    
-    if crop:
-        for i in range(len(image_overlays)):
-            h,w = sam_resize_index(*info[i]["imshape"][:2],info[i]["image"].shape[-1])
-            for j in range(len(image_overlays[i])):
-                if image_overlays[i][j] is not None:
-                    image_overlays[i][j] = image_overlays[i][j][:h,:w]
-    montage_kwargs = {"return_im": True, "imshow": False, **montage_kwargs}
-    montage_im = jlc.montage(image_overlays,n_col=n_col,n_row=n_row,**montage_kwargs)
-    if text:
-        xtick_kwargs = {"fontsize": overlay_kwargs["fontsize"]} if fontsize is not None else {}
-        left_text = [f"image {i}" for i in range(num_images)]
-        bottom_text = ["image"]+cond_image_keys
-        bottom_text = [b+"\n" for b in bottom_text]
-        montage_im = jlc.add_text_axis_to_image(montage_im,n_horz=n_col,n_vert=n_row,
-                                                left=left_text,
-                                                bottom=bottom_text,
-                                                xtick_kwargs=xtick_kwargs)
-    return montage_im
+    return args"""
 
 def main():
     import argparse

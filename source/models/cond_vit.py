@@ -14,6 +14,8 @@ import math
 import warnings
 import pandas as pd
 from source.utils.utils import get_named_datasets
+from argparse import Namespace
+from source.utils.argparse_utils import TieredParser
 
 cond_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
 new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
@@ -195,6 +197,12 @@ def unet_vit_input_dicts_from_args(args):
     return unet_input_dict,vit_input_dict
 
 def pd_table_of_inputs(args):
+    if isinstance(args,Namespace):
+        args = copy.deepcopy(args.__dict__)
+    elif isinstance(args,str):
+        args = TieredParser().get_args(alt_parse_args=["--model_name","hq"]).__dict__
+    else:
+        assert isinstance(args,dict), "Expected Namespace or dict, str (as model name) or Namespace found: "+str(type(args))
     unet_input_dict,vit_input_dict = unet_vit_input_dicts_from_args(args)
     if args["vit_unet_cond_mode"]!="no_unet":
         unet_input_dict["time"] = 1

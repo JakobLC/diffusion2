@@ -678,7 +678,9 @@ class UNetModel(nn.Module):
         :param kwargs: additional kwargs for the model. see self.unet_input_dict for available kwargs.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        
+        if not all([(k in self.legal_keys) or (kwargs[k] is None) for k in kwargs.keys()]):
+            illegal_args = [k for k in kwargs.keys() if (k not in self.legal_keys) and (kwargs[k] is not None)]
+            raise ValueError(f"illegal kwargs (= different from None and without model support): {illegal_args}. legal kwargs: {self.legal_keys}")
         if self.vit is not None:
             vit_output,token_info = self.vit(self.vit.filter_inputs({**kwargs, 
                                                           "sample": sample, 

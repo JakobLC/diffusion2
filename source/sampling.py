@@ -39,14 +39,12 @@ class DiffusionSampler(object):
         self.bss = 0
         self.source_batch = None
         self.queue = None
-        if self.opts.eval_batch_size==0:
-            self.eval_batch_size = self.trainer.args.train_batch_size
-        else:
-            self.eval_batch_size = self.opts.eval_batch_size
+        self.eval_batch_size = self.opts.eval_batch_size if self.opts.eval_batch_size>0 else self.trainer.args.train_batch_size
         if len(self.opts.datasets)>0:
             if not isinstance(self.opts.datasets,list):
                 self.opts.datasets = self.opts.datasets.split(",")
         if len(self.opts.datasets)>0:
+            assert self.trainer.args.mode=="gen", "Datasets can only be specified in sampling mode."
             self.trainer.args.datasets = self.opts.datasets
             self.trainer.create_datasets(self.opts.split)
             lpd = getattr(self.trainer,f"{self.opts.split}_dl").dataloader.dataset.len_per_dataset
@@ -74,6 +72,9 @@ class DiffusionSampler(object):
             matplotlib.use("agg")
         else:
             old_backend = None
+        if self.opts.semantic_prob>=0:
+            self.semantic_prob_old = self.dataloader.dataloader.dataset.semantic_prob
+            self.dataloader.dataloader.dataset.semantic_prob = self.opts.semantic_prob
         if self.opts.default_save_folder=="":
             self.opts.default_save_folder = os.path.join(self.trainer.args.save_path,"samples")
         def_save_name = f"{self.opts.gen_id}_{self.trainer.step:06d}"
@@ -190,6 +191,9 @@ class DiffusionSampler(object):
         if hasattr(self,"swap_pointers_func"):
             self.swap_pointers_func()
             del self.swap_pointers_func
+        if hasattr(self,"semantic_prob_old"):
+            self.dataloader.dataloader.dataset.semantic_prob = self.semantic_prob_old
+            del self.semantic_prob_old
         if not self.opts.return_samples:
             sample_output = None
         return sample_output, metric_output
@@ -319,20 +323,31 @@ class DiffusionSampler(object):
                 if model_kwargs["points"] is None:
                     model_kwargs["points"] = 0
                 model_kwargs["points"] = model_kwargs["points"]*self.trainer.cgd.ab.int2bit(x)
-        elif self.opts.kwargs_mode=="none":
-            x,info = batch
-            x = x.to(self.device)
-            model_kwargs = {}
-        elif self.opts.kwargs_mode=="only_image":
+        else:
             x,info = batch
             x = x.to(self.device)
             x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
-            model_kwargs = {k: v for k,v in model_kwargs.items() if k in ["image","image_features"]}
-        elif self.opts.kwargs_mode=="classes":
-            x,info = batch
-            x = x.to(self.device)
-            x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
-            model_kwargs = {k: v for k,v in model_kwargs.items() if k in ["image","image_features","classes"]}
+            if self.opts.kwargs_mode=="none":
+                model_kwargs_use = []
+            elif self.opts.kwargs_mode=="all":
+                model_kwargs_use = list(model_kwargs.keys())
+            elif self.opts.kwargs_mode=="only_image":
+                model_kwargs = ["image"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
+            elif self.opts.kwargs_mode=="classes":
+                model_kwargs = ["image","classes"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
+            elif self.opts.kwargs_mode.find(",")>=0:
+                model_kwargs_use = self.opts.kwargs_mode.split(",")
+            else:
+                raise ValueError(f"Unknown kwargs_mode: {self.opts.kwargs_mode}")
+            if not all([k in model_kwargs.keys() for k in model_kwargs_use]):
+                not_found_kwargs = [k for k in model_kwargs_use if k not in model_kwargs.keys()]
+                raise ValueError(f"Could not find the following requested kwargs from the dataloader: {not_found_kwargs}")
+            model_kwargs = {k: model_kwargs[k] for k in model_kwargs_use}
+        if "points" in model_kwargs.keys():
+            ab = self.trainer.cgd.ab
+            model_kwargs["points"] = model_kwargs["points"]*ab.int2bit(x)
+            if ab.shuffle:
+                raise NotImplementedError("Shuffling of points is not implemented for sampling with points.")
         return x,model_kwargs,info
             
     def form_next_batch(self):

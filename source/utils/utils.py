@@ -20,6 +20,7 @@ import copy
 from PIL import Image
 from jlc import (shaprint,MatplotlibTempBackend,quantile_normalize,
                  TemporarilyDeterministic,load_state_dict_loose)
+import warnings
 
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
@@ -628,7 +629,7 @@ def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
 
     return all_acc, iou
 
-def wildcard_match(pattern, text):
+def wildcard_match(pattern, text, warning_on_star_in_text=True):
     """
     Perform wildcard pattern matching.
 
@@ -639,6 +640,8 @@ def wildcard_match(pattern, text):
 
     Returns:
         bool: True if the text matches the pattern, False otherwise."""
+    if '*' in text and warning_on_star_in_text:
+        warnings.warn("Wildcard pattern matching with '*' in text is not recommended.")
     pattern = re.escape(pattern)
     pattern = pattern.replace(r'\*', '.*')
     regex = re.compile(pattern)
@@ -1073,7 +1076,7 @@ def get_named_datasets(datasets,datasets_info=None):
 def prettify_classname(classname,dataset_name):
     foreground_with_number = ["sa1b","hrsod","dram"]
     no_map_required = ["visor","pascal","msra","fss","ecssd","duts","dis","coift","cityscapes","ade20k"]
-    has_underscores = ["totseg","to5k","monu4","monu"]
+    has_underscores = ["totseg","to5k","monu4","monu","lvis"]
     coco_like = ["coco"]
     if dataset_name in foreground_with_number:
         assert classname.find("foreground")>=0 or classname.find("background")>=0, "classname must contain foreground or background"
@@ -1086,6 +1089,13 @@ def prettify_classname(classname,dataset_name):
         return classname.split("/")[-1].replace("-other","").replace("-"," ")
     else:
         raise NotImplementedError(f"dataset_name {dataset_name} not implemented")
+
+def fix_clip_matrix_in_state_dict(ckpt_model,model):
+    if "vit.class_names_embed.0.weight" in ckpt_model.keys():
+        if ckpt_model["vit.class_names_embed.0.weight"].shape[0]!=model.vit.class_names_embed[0].weight.shape[0]:
+            print("WARNING: class_names_embed weight shape mismatch. Ignoring.")
+            ckpt_model["vit.class_names_embed.0.weight"] = model.vit.class_names_embed[0].weight
+    return ckpt_model
 
 def main():
     import argparse

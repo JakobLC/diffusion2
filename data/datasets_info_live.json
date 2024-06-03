@@ -338,5 +338,25 @@
         ],
         "thin_bg": "never",
         "quality": "high"
+    },
+    {
+        "dataset_name": "lvis",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 119979,
+        "num_classes": 1204,
+        "file_format": "jpg",
+        "rel_weight": 1.0,
+        "aug": "pictures",
+        "bg_prob": 0.1,
+        "overlap": false,
+        "samples_per_split": [
+            100170,
+            19809,
+            0
+        ],
+        "thin_bg": "never",
+        "quality": "medium"
     }
 ]

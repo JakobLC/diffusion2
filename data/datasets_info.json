@@ -673,5 +673,29 @@
             2914,
             4732
         ]
+    },
+    {
+        "dataset_name": "lvis",
+        "urls": [],
+        "num_samples": 119014,
+        "num_classes": 1204,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            119014,
+            0,
+            0
+        ]
+    },
+    {
+        "dataset_name": "lvis",
+        "urls": [],
+        "num_samples": 119979,
+        "num_classes": 1204,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            100170,
+            19809,
+            0
+        ]
     }
 ]

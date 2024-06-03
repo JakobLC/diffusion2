@@ -672,6 +672,63 @@ class DatasetDownloader:
                 info = {"split_idx": filename_to_split[filename],
                         "classes": [0,int(class_dict_inv[class_name])]}
                 return image,label,info
+        elif name=="lvis":
+            val_data = load_json_to_dict_list("./data/lvis/lvis_v1_val.json")
+            train_data = load_json_to_dict_list("./data/lvis/lvis_v1_train.json")
+
+            train_ids = [item["id"] for item in train_data["images"]]
+            val_ids = [item["id"] for item in val_data["images"]]
+
+            assert len(set(train_ids).intersection(set(val_ids)))==0
+
+            idx_to_class = {d["id"]: d["name"] for d in train_data["categories"]}
+            idx_to_class[0] = "background"
+            class_dict = idx_to_class
+
+            coco_info = load_json_to_dict_list(f"./data/coco/info.jsonl")
+            coco_i_to_id = {item["i"]: item["fn"] for item in coco_info}
+            coco_id_to_i = {int(v): k for k,v in coco_i_to_id.items()}
+            def loadpath_from_coco_id(image_id):
+                return f"./data/coco/f{coco_id_to_i[image_id]//1000}/{coco_id_to_i[image_id]}_im.jpg"
+
+            annotation_dict = {k: [] for k in train_ids+val_ids}
+            for annotation in train_data["annotations"]+val_data["annotations"]:
+                annotation_dict[annotation["image_id"]].append(annotation)
+            #sort all annotations by size (biggest first)
+            for k in list(annotation_dict.keys()):
+                v = annotation_dict[k]
+                v.sort(key=lambda x: -x["area"])
+                annotation_dict[k] = v
+
+            file_name_list = [loadpath_from_coco_id(k) for k in annotation_dict.keys()]
+
+            def load_image_label_info(image_path):
+                dl_id = int(image_path.split("/")[-1].split("_")[0])
+                image_id = int(coco_i_to_id[dl_id])
+                if image_id in train_ids:
+                    split = 0
+                else:
+                    assert image_id in val_ids, f"Could not match image_id {image_id}"
+                    split = 1
+                image = np.array(Image.open(image_path))
+                h,w = image.shape[:2]
+                label = np.zeros((h,w),dtype=np.uint8)
+                info = {"split_idx": split,
+                        "classes": [0]}
+                k = 0
+                for annotation in annotation_dict[image_id]:
+                    k += 1
+                    if k>255:
+                        break
+                    idx = annotation["category_id"]
+                    info["classes"].append(idx)
+                    x = annotation["segmentation"][0][::2]
+                    y = annotation["segmentation"][0][1::2]
+                    mask = skimage.draw.polygon2mask((h,w), np.array([y,x]).T)
+                    label[mask] = k
+                label = Image.fromarray(label)
+                image = Image.fromarray(image)
+                return image,label,info
         else:
             raise ValueError(f"Dataset {name} not supported.")
         if do_step["delete_f_before"]:
@@ -1404,6 +1461,9 @@ def main():
     elif args.process==15:
         print("PROCESS 15: show CLIP vectors")
         show_clip_vectors()
+    elif args.process==16:
+        print("PROCESS 16: embed single dataset CLIP vectors")
+        save_clip_vectors(args.dataset)
     else:
         raise ValueError(f"Unknown process: {args.process}")
     
