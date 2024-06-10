@@ -24,6 +24,7 @@ from jlc import (RenderMatplotlibAxis, darker_color,
                  get_mask,render_axis_ticks,darker_color,get_matplotlib_color,
                  add_text_axis_to_image,to_xy_anchor,render_text_gridlike,
                  item_to_rect_lists)
+from sklearn.cluster import KMeans
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
@@ -917,6 +918,60 @@ def visualize_cond_batch(args,
                                                 bottom=bottom_text,
                                                 xtick_kwargs=xtick_kwargs)
     return montage_im
+
+def visualize_tensor(x,
+                     k=3,
+                     color_method="RGB",
+                     use_mask=1,
+                     sim_func=None,
+                     quantile_normalize=0.05):
+    """
+    Creates RGB images with shape (B,3,H,W) from a tensor with 
+    shape (B,C,H,W) by the k-means clustering of the C channels.
+    """
+    if sim_func is None:
+        sim_func = lambda vectors,center: np.dot(vectors,center)/(np.linalg.norm(vectors)*np.linalg.norm(center))
+    assert color_method in ["RGB","nc","random"]
+    if torch.is_tensor(x):
+        x = x.detach().cpu().numpy()
+        was_torch = 1
+    else:
+        was_torch = 0
+    assert len(x.shape)==4, "Input tensor must have shape (B,C,H,W)"
+    B,C,H,W = x.shape
+    if color_method == "RGB":
+        colors = np.array([[1,0,0],[0,1,0],[0,0,1]])
+    elif color_method == "nc":
+        colors = jlc.nc.large_colors/255
+    elif color_method == "random":
+        colors = np.random.rand(k,3)
+    else:
+        raise ValueError("Invalid color_method: "+color_method)
+    #repeat colors if k is larger than the number of colors
+    colors = np.tile(colors,(k//len(colors)+1,1))[:k]
+    out_image = np.zeros((B,3,H,W))
+    for i in range(B):
+        vectors = x[i].reshape((C,H*W)).T
+        kmeans = KMeans(n_clusters=k, random_state=0).fit(vectors)
+        centers = kmeans.cluster_centers_
+        labels = kmeans.labels_
+        for j in range(k):
+            if use_mask:
+                mask = labels==j
+            else:
+                mask = 1
+            #add corr wrt. center
+            sim = sim_func(vectors,centers[j])
+            corr_j = (sim*mask).reshape((H,W))
+            if quantile_normalize>0:
+                corr_j = jlc.quantile_normalize(corr_j,quantile_normalize)
+            for c_i in range(3):
+                out_image[i,c_i] += corr_j*colors[j,c_i]
+    if quantile_normalize>0:
+        out_image = jlc.quantile_normalize(out_image,quantile_normalize)
+    if was_torch:
+        out_image = torch.tensor(out_image)
+    return out_image
 
 def main():
     import argparse

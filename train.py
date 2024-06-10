@@ -31,6 +31,11 @@ from source.training import DiffusionModelTrainer
 # [5] add parameter to NOT give timesteps to ViT
 # [8] conditioned saving of light stats
 
+# [9] decouple get_kwargs from trainer
+# [10] add sam encoder to dataloader
+# [10] make all probabilities get sampled with the dataset (with option for generation mode)'
+# [10] make unfified framework for probabilities
+
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)
     if isinstance(args,list):

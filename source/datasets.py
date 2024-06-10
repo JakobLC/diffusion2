@@ -326,7 +326,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
             assert all([k in cond_image_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())
         self.ignore_sam_idx = ignore_sam_idx
+        if isinstance(sam_features_idx,str):
+            sam_strs = ['none','sam_vit_b','sam_vit_l','sam_vit_h']
+            assert sam_features_idx in sam_strs, "sam_features_idx must be one of "+str(sam_strs)+", got "+sam_features_idx
+            sam_features_idx = sam_features_idx.index(sam_features_idx)-1
         self.sam_features_idx = sam_features_idx
+        if sam_features_idx>=0:
+            assert torch.cuda.is_available(), "sam_features_idx requires a GPU"
+            self.sam_image_encoder = get_sam_image_encoder(sam_features_idx,device="cuda")
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -348,6 +355,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         if crop_method.startswith("sam"):
             self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx)
             self.sam_aug_big = get_sam_aug(1024,padval=padding_idx)
+        else:
+            raise NotImplementedError("crop_method not implemented for non-sam")
         self.crop_method = crop_method
         assert map_excess_classes_to in ["largest","random_different","random_same","zero","same","nearest_expensive"]
         self.map_excess_classes_to = map_excess_classes_to
@@ -914,6 +923,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             label = label[crop_y[0]:crop_y[1],crop_x[0]:crop_x[1]]
             image = cv2.resize(image,(self.image_size,self.image_size),interpolation=cv2.INTER_AREA)
             label = cv2.resize(label,(self.image_size,self.image_size),interpolation=cv2.INTER_NEAREST)
+        
         return image,label
 
     def augment(self,image,label,item):
@@ -992,7 +1002,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 raise NotImplementedError("sam not implemented for cond calls")
             return label,image,info
         label,info = self.map_label_to_valid_bits(label,info)
-        if not self.crop_method.startswith("sam"): #TODO
+        if not self.crop_method.startswith("sam"): #TODO, not implemented
             image,label = self.augment(image,label,info)
             image = image.astype(np.float32)*(2/255)-1
         
@@ -1280,8 +1290,8 @@ def get_dataset_from_args(args_or_model_id,
                                         crop_method=args.crop_method,
                                         padding_idx=255 if args.ignore_padded else 0,
                                         split_method=args.split_method,
-                                        sam_features_idx=['none','sam_vit_b','sam_vit_l','sam_vit_h'].index(args.image_encoder)-1,
-                                        semantic_prob=args.semantic_prob,
+                                        sam_features_idx=args.image_encoder,
+                                        semantic_prob=args.semantic_dl_prob,
                                         conditioning=args.vit_unet_cond_mode!="no_vit",
                                         load_cond_probs=load_cond_probs,
                                         save_matched_items=args.dataloader_save_processing

@@ -1,0 +1,96 @@
+[
+    {
+    "input_name": "image",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_image"},
+    "input_description": "The image to be segmented",
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "image_features",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_image_features"},
+    "input_description": "Features extracted from the image to be segmented (from e.g. SAM)",
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "sample",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_sample"},
+    "input_description": "The diffusion sample (noisy segmentation)",
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "points",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_sample"},
+    "input_description": "An image ",
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "bbox",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_sample"},
+    "input_description": "",
+    "support": []
+    },
+    {
+    "input_name": "self_cond",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_sample"},
+    "input_description": "",
+    "support": ["vit"]
+    },
+    {
+    "input_name": "same_vol",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": false, "channels": "#c_image+c_sample"},
+    "input_description": "",
+    "support": ["vit"]
+    },
+    {
+    "input_name": "same_classes",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": false, "channels": "#c_image+c_sample"},
+    "input_description": "",
+    "support": ["vit"]
+    },
+    {
+    "input_name": "same_dataset",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": false, "channels": "#c_image+c_sample"},
+    "input_description": "",
+    "support": ["vit"]
+    },
+    {
+    "input_name": "adjacent",
+    "input_type": "image",
+    "input_dependent_info": {"spatial": true, "channels": "#c_image+c_sample"},
+    "input_description": "",
+    "support": ["vit"]
+    },
+    {
+    "input_name": "time",
+    "input_type": "scalar_continuous",
+    "input_dependent_info": {"min": 0.0, "max": 1.0},
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "num_classes",
+    "input_type": "scalar_discrete",
+    "input_dependent_info": {"size": "2**c_sample"},
+    "support": ["unet","vit"]
+    },
+    {
+    "input_name": "class_names",
+    "input_type": "vocabulary",
+    "input_dependent_info": {"size": "num_class_names"},
+    "support": ["vit"]
+    },
+    {
+    "input_name": "is_semantic",
+    "input_type": "scalar_discrete",
+    "input_dependent_info": {"size": 2},
+    "support": ["vit"]
+    }
+]

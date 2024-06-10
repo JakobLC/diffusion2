@@ -46,6 +46,9 @@ from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_
                                     pd_table_of_inputs)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
+VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
+                    "dummymodel","unet_print","token_info_overview"
+                    ""]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -56,6 +59,8 @@ class DiffusionModelTrainer:
         self.init()
 
     def init(self):
+        if self.args.debug_run not in VALID_DEBUG_RUNS:
+            assert self.args.debug_run=="", "debug_run must be one of "+str(VALID_DEBUG_RUNS)+", found: "+self.args.debug_run
         if self.args.debug_run=="print_model_name_and_exit":
             print(self.args.model_name)
             self.exit_flag = True
@@ -198,8 +203,8 @@ class DiffusionModelTrainer:
             self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
-            save_args(self.args)
-            self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}")
+            save_args(self.args, do_nothing=self.args.debug_run!="")
+            self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}", do_nothing=self.args.debug_run!="")
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
             self.args.model_id = json.loads((Path(self.args.save_path)/"args.json").read_text())[0]["model_id"]
@@ -242,7 +247,7 @@ class DiffusionModelTrainer:
             elif self.args.debug_run=="only_dl":
                 for _ in tqdm(dataloader):
                     pass
-            elif self.args.debug_run=="cond_vit_info":
+            elif self.args.debug_run=="cond_vit_info" and split=="vali":
                 pprint(is_valid_cond_vit_setup(self.args.cond_vit_setup,long_names_instead=1))
                 print(pd_table_of_inputs(self.args.__dict__).to_string())
                 self.exit_flag = True
@@ -314,7 +319,7 @@ class DiffusionModelTrainer:
         model_kwargs = {k: [] for k in model_kwargs}
         bs = x.shape[0]
         for i in range(bs):
-            if np.random.rand()<self.args.image_prob or gen:
+            if np.random.rand()<=self.args.image_prob or gen:
                 model_kwargs["image"].append(info[i]["image"])
             else:
                 model_kwargs["image"].append(None)
@@ -331,14 +336,14 @@ class DiffusionModelTrainer:
                         model_kwargs["points"].append(None)
             if self.args.class_type!="none":
                 if self.args.class_type=="num_classes" and self.args.classes_prob>0:
-                    if np.random.rand()<self.args.classes_prob or gen:
+                    if np.random.rand()<=self.args.classes_prob or gen:
                         model_kwargs["classes"].append(torch.tensor(info[i]["num_classes"],dtype=torch.long))
                     else:
                         model_kwargs["classes"].append(None)
                 else:
                     raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
-            if self.args.class_names_prob>0:
-                if np.random.rand()<self.args.class_names_prob or gen:
+            if self.args.class_names_prob>0.0:
+                if np.random.rand()<=self.args.class_names_prob or gen:
                     class_names = list(info[i]["idx_to_class_name"].values())
                     if "padding" in class_names:
                         class_names.remove("padding")
@@ -353,11 +358,13 @@ class DiffusionModelTrainer:
                     model_kwargs[k].append(info[i]["cond"].get(k,None))
                 else:
                     model_kwargs[k].append(None)
-            if 0.0<self.args.semantic_prob and self.args.semantic_prob<1.0:
-                model_kwargs["semantic"].append(torch.tensor([info[i]["is_semantic"]],dtype=torch.long))
+            if 0.0<self.args.semantic_dl_prob<1.0 and self.args.semantic_kwarg_prob>0.0:
+                if np.random.rand()<=self.args.semantic_kwarg_prob or gen:
+                    model_kwargs["semantic"].append(torch.tensor([info[i]["is_semantic"]],dtype=torch.long))
+                else:
+                    model_kwargs["semantic"].append(torch.tensor([-1]))
         if self.args.image_encoder!="none":
             assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
-            
             image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
             if len(image_idx)>0:
                 image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
@@ -615,18 +622,20 @@ class DiffusionModelTrainer:
             self.update_training_history(f"event=finished, step={self.step}, time={get_time()}")
             self.log("Training loop finished.")
         
-    def update_training_history(self,event):
-        if not isinstance(self.args.training_history,list):
-            self.args.training_history = []
-        self.args.training_history.append(event)
-        overwrite_existing_args(self.args)
+    def update_training_history(self,event,do_nothing=False):
+        if not do_nothing:
+            if not isinstance(self.args.training_history,list):
+                self.args.training_history = []
+            self.args.training_history.append(event)
+            overwrite_existing_args(self.args)
         
     def log(self, msg, filename="log.txt", also_print=True):
         """logs any string to a file"""
         filepath = Path(self.args.save_path)/filename
         if self.args.save_path!="" and self.args.mode!="data":
             if not filepath.exists():
-                if not self.exit_flag:
+                create_save = (not self.exit_flag) and (self.args.debug_run=="")
+                if create_save:
                     self.check_save_path(self.args.save_path)
                     os.makedirs(self.args.save_path, exist_ok=True)
                     with open(str(filepath), "w") as f:
@@ -780,64 +789,6 @@ class DiffusionModelTrainer:
                                         only_keep_keys=None if self.args.best_ckpt_full else [model_key])
             self.dump_kvs_gen()
             gen_setup_idx += 1
-
-"""def dataset_from_modelname(model_name="vit128[T3]",
-                           bs=None,
-                           image_size=None,
-                           datasets=None,
-                           semantic_prob=None,
-                           split="train",
-                           return_type="dli",
-                           args_modifier={}):
-    raise ValueError("This function is deprecated. Use source.datasets.get_dataset_from_args instead.")
-    assert return_type in ["dli","dl","ds"]
-    splits = ["train","vali","test","all"]
-    if not isinstance(split,str):
-        assert isinstance(split,int)
-        assert split>=0 and split<=3
-        split = splits[split]
-    else:
-        assert split in splits
-    if not isinstance(split,list):
-        split = [split]
-    args = TieredParser().get_args(alt_parse_args=["--model_name", model_name])
-
-    if bs is not None:
-        args.train_batch_size = bs
-    if datasets is not None:
-        args.datasets = datasets
-    if image_size is not None:
-        args.image_size = image_size
-    if semantic_prob is not None:
-        args.semantic_prob = semantic_prob
-    args.__dict__.update(args_modifier)
-    dli = DiffusionModelTrainer.create_datasets(None,split_list=split,args=args,use_training_sampler=True)
-    if return_type=="dli":
-        return dli
-    elif return_type=="dl":
-        return dli.dataloader
-    elif return_type=="ds":
-        return dli.dataloader.dataset
-
-def dummy_dataset_args():
-    args = argparse.Namespace(datasets="ade20k",
-                                split_ratio="0.8,0.1,0.1",
-                                image_size=64,
-                                min_label_size=0.0,
-                                max_num_classes=64,
-                                shuffle_zero=True,
-                                geo_aug_prob=0.0,
-                                crop_method="sam_big",
-                                ignore_padded=True,
-                                split_method="native",
-                                train_batch_size=8,
-                                vali_batch_size=-1,
-                                dl_num_workers=4,
-                                seed=-1,
-                                debug_run="",
-                                image_encoder="none",
-                                semantic_prob=0.0)
-    return args"""
 
 def main():
     import argparse

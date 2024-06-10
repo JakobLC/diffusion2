@@ -46,7 +46,7 @@
             "13": {"loss_weights": "SNR_trunc", "predict": "eps"},
             "14": {"loss_weights": "SNR_trunc", "predict": "v"},
             "15": {"loss_weights": "SNR_trunc", "predict": "both"},
-            "points_test": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true}
+            "points_test": {"p_bbox": 0.0, "p_points": 0.5, "weak_signals": true}
             },
         "loss_weights": "uniform",
         "predict": "x",
@@ -67,7 +67,7 @@
     },
     "large": {
         "versions": {
-            "ws": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true}
+            "ws": {"p_bbox": 0.0, "p_points": 0.5, "weak_signals": true}
         },
         "num_channels": 128,
         "loss_weights": "SNR_trunc",
@@ -92,11 +92,11 @@
         "train_batch_size": 16,
         "num_save_samples": 16,
         "max_iter": 10000,
-        "weak_bbox_prob": 0.0,
-        "weak_points_prob": 0.6667,
+        "p_bbox": 0.0,
+        "p_points": 0.6667,
         "weak_signals": true,
         "max_num_classes": 64,
-        "image_prob": 0.95
+        "p_image": 0.95
     },
     "weak30k": {
         "versions": {
@@ -112,9 +112,9 @@
         "loss_weights": "SNR_trunc",
         "max_iter": 30000,
         "gen_interval": 2500,
-        "image_prob": 0.95,
-        "weak_bbox_prob": 0.0,
-        "weak_points_prob": 0.6667,
+        "p_image": 0.95,
+        "p_bbox": 0.0,
+        "p_points": 0.6667,
         "weak_signals": true,
         "num_channels": 128,
         "image_size": 128
@@ -134,8 +134,8 @@
         "seed": 53155,
         "loss_weights": "SNR_trunc",
         "max_iter": 100000,
-        "weak_bbox_prob": 0.0,
-        "weak_points_prob": 0.6667,
+        "p_bbox": 0.0,
+        "p_points": 0.6667,
         "weak_signals": true,
         "max_num_classes": 64,
         "deeper_net": true,
@@ -144,7 +144,7 @@
     },
     "long": {
         "versions": {
-            "weak": {"weak_bbox_prob": 0.0, "weak_points_prob": 0.5, "weak_signals": true, "self_cond": true, "gen_setups": "vali-ts10,train-ts10,self_cond_gw2"}
+            "weak": {"p_bbox": 0.0, "p_points": 0.5, "weak_signals": true, "self_cond": true, "gen_setups": "vali-ts10,train-ts10,self_cond_gw2"}
         },
         "predict": "x",
         "loss_weights": "SNR_trunc",
@@ -175,8 +175,8 @@
         "num_channels": 128,
         "image_size": 256,
         "input_scale": 0.003,
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true, 
         "self_cond": true, 
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
@@ -188,8 +188,8 @@
         "max_iter": 30000,
         "max_num_classes": 64,
         "deeper_net": true,
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true, 
         "self_cond": true, 
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
@@ -210,8 +210,8 @@
         "image_size": 256,
         "input_scale": 0.003,
         "train_batch_size": 4,
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true, 
         "self_cond": true,   
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema",
@@ -231,8 +231,8 @@
         "num_channels": 128,
         "image_size": 128,
         "input_scale": "0.01;0.008;0.006;0.004;0.002;0.001;0.015",
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true, 
         "gen_setups": "vali,train,ema_vali-ts10_gw2",
         "class_type": "num_classes"
@@ -244,8 +244,8 @@
         "num_channels": 128,
         "image_size": 64,
         "input_scale": 0.1,
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true, 
         "gen_setups": "vali-ts10"
     },
@@ -276,8 +276,8 @@
         "image_size": 64,
         "train_batch_size": 4,
         "input_scale": 0.01,
-        "weak_bbox_prob": 0.0, 
-        "weak_points_prob": 0.5, 
+        "p_bbox": 0.0, 
+        "p_points": 0.5, 
         "weak_signals": true,
         "self_cond": true,
         "gen_setups": "vali-ts10,train-ts10,self_cond_gw2_ema"
@@ -348,8 +348,8 @@
         "versions": {
             "also_med": {"datasets": "non-low-qual"},
             "vit": {},
-            "vit_T2": {"vit_unet_cond_mode": "both_spatial_vit"},
-            "vit_T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"}
+            "vit_T2": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3"},
+            "vit_T3": {"unet_spatialness": "", "vit_spatialness": "0,1,2,3", "cond_vit_setup": "1b2ac3c4c"}
         },
         "datasets": "high-qual",
         "image_size": 128,
@@ -360,37 +360,39 @@
         "class_type": "num_classes"
     },
     "+allcond": {
-        "semantic_prob": 0.125,
-        "adjacent_prob": 0.125,
-        "same_vol_prob": 0.125,
-        "same_classes_prob": 0.125,
-        "same_dataset_prob": 0.125,
-        "class_names_prob": 0.125,
-        "classes_prob": 0.125
+        "semantic_dl_prob": 0.5,
+        "p_semantic": 0.125,
+        "p_adjacent": 0.125,
+        "p_same_vol": 0.125,
+        "p_same_classes": 0.125,
+        "p_same_dataset": 0.125,
+        "p_class_names": 0.125,
+        "p_classes": 0.125
     },
     "+ALLCOND": {
-        "semantic_prob": 0.5,
-        "adjacent_prob": 0.5,
-        "same_vol_prob": 0.5,
-        "same_classes_prob": 0.5,
-        "same_dataset_prob": 0.5,
-        "class_names_prob": 0.5,
-        "classes_prob": 0.5
+        "semantic_dl_prob": 0.5,
+        "p_semantic": 0.5,
+        "p_adjacent": 0.5,
+        "p_same_vol": 0.5,
+        "p_same_classes": 0.5,
+        "p_same_dataset": 0.5,
+        "p_class_names": 0.5,
+        "p_classes": 0.5
     },
     "vit128": {
         "versions": {
             "64": {"image_size": 64},
             "128": {"image_size": 128,"input_scale": 0.006},
-            "T0": {"vit_unet_cond_mode": "no_vit"},
-            "T1": {"vit_unet_cond_mode": "both_spatial_unet"},
-            "T2": {"vit_unet_cond_mode": "both_spatial_vit"},
-            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c","lr": 0.001,"cond_patch_size": 8},
-            "T2debug": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1b2a3a4a"},
-            "T2_spatial_all": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4d"},
-            "T2_spatial_once": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4c"},
-            "T2_spatial_resize": {"vit_unet_cond_mode": "both_spatial_vit", "cond_vit_setup": "1a2abcde3c4e"},
-            "T3_tiny": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 2, "image_size": 32,"input_scale": 1.0},
-            "T3_med": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 4, "image_size": 64,"input_scale": 0.2}
+            "T0": {"unet_spatialness": "2,3","vit_spatialness": ""},
+            "T1": {"unet_spatialness": "2,3", "vit_spatialness": "0,1,2,3"},
+            "T2": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3"},
+            "T3": {"unet_spatialness": "", "vit_spatialness": "0,1,2,3", "cond_vit_setup": "1b2ac3c4c","lr": 0.001,"cond_patch_size": 8},
+            "T2debug": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3", "cond_vit_setup": "1b2a3a4a"},
+            "T2_spatial_all": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3", "cond_vit_setup": "1a2abcde3c4d"},
+            "T2_spatial_once": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3", "cond_vit_setup": "1a2abcde3c4c"},
+            "T2_spatial_resize": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3", "cond_vit_setup": "1a2abcde3c4e"},
+            "T3_tiny": {"unet_spatialness": "", "vit_spatialness": "0,1,2,3", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 2, "image_size": 32,"input_scale": 1.0},
+            "T3_med": {"unet_spatialness": "", "vit_spatialness": "0,1,2,3", "cond_vit_setup": "1a2eacbe3c4c","lr": 0.001,"cond_patch_size": 4, "image_size": 64,"input_scale": 0.2}
         },
         "image_size": 128,
         "input_scale": 0.006,
@@ -400,7 +402,7 @@
         "log_train_metrics": "loss,grad_norm,num_tokens"
     },
     "vit_cont": {
-        "vit_unet_cond_mode": "both_spatial_unet",
+        "unet_spatialness": "2,3", "vit_spatialness": "0,1,2,3",
         "mode": "load",
         "ckpt_name": "*hq_1*",
         "load_state_dict_loose": true,
@@ -420,11 +422,11 @@
     "qual": {
         "versions": {
             "cond_data": {"datasets": "visor,totseg"},
-            "T0": {"vit_unet_cond_mode": "no_vit"},
+            "T0": {"unet_spatialness": "2,3","vit_spatialness": ""},
             "T1v0": {},
             "T1v1": {"cond_vit_setup": "1b2ac3a4a"},
-            "T2": {"vit_unet_cond_mode": "both_spatial_vit"},
-            "T3": {"vit_unet_cond_mode": "no_unet", "cond_vit_setup": "1b2ac3c4c"}
+            "T2": {"unet_spatialness": "3","vit_spatialness": "0,1,2,3"},
+            "T3": {"unet_spatialness": "", "vit_spatialness": "0,1,2,3", "cond_vit_setup": "1b2ac3c4c"}
         },
         "datasets": "non-low-qual",
         "lr_warmup_steps": 10000,
@@ -432,11 +434,24 @@
         "max_iter": 100000
     },
     "+32": {
+        "train_batch_size": 32,
         "cond_patch_size": 4,
         "image_size": 32,
         "input_scale": 0.5,
         "max_iter": 20000,
         "lr_warmup_steps": 0,
         "lr_decay_steps": 0
-    }
+    },
+    "vittest": {
+        "versions": {
+            "v1": {"cond_vit_setup": "1b2abe3c4c"},
+            "v2": {"cond_vit_setup": "1b2b3c4c"}
+        },
+        "unet_spatialness": "", 
+        "vit_spatialness": "0,1,2,3",
+        "datasets": "binary",
+        "cond_sam_idx": -2,
+        "cond_vit_setup": "1b2ac3c4c"
+    },
+    "samvit": {"image_encoder": "sam_vit_b"}
 }

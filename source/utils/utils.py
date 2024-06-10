@@ -1061,7 +1061,8 @@ def get_named_datasets(datasets,datasets_info=None):
                                     "medical": lambda d: d["type"]=="medical",
                                     "all": lambda d: True,
                                     "high-qual": lambda d: d["quality"]=="high",
-                                    "non-low-qual": lambda d: d["quality"]!="low"}
+                                    "non-low-qual": lambda d: d["quality"]!="low",
+                                    "binary": lambda d: d["num_classes"]==2,}
     dataset_list = copy.deepcopy(datasets)
     if len(datasets)==1:
         if datasets[0] in named_datasets_criterion:

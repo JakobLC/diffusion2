@@ -119,6 +119,7 @@ def eval_version_condition(version_condition=">0.1.2",x="1.0.0"):
     """
     assert isinstance(version_condition,str), f"type(version_condition)={type(version_condition)}."
     #first replace > with >> but only if it is not followed by =, and < with << but only if it is not followed by =
+    version_condition = version_condition.replace("=>",">=").replace("=<","<=") #switch order for affected soft inequalities
     version_condition = version_condition.replace(">",">>").replace("<","<<")
     version_condition = version_condition.replace(">>>>",">>").replace("<<<<","<<") #replace if it was already doubled
     version_condition = version_condition.replace(">>=",">=").replace("<<=","<=") #replace for affected soft inequalities
@@ -289,7 +290,7 @@ class TieredParser():
             tier_name = tiers_dict_inv[tier_num]
             for k,v in tiers[tier_name].items():
                 if k not in self.type_dict.keys():
-                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closest known matches: {get_closest_matches(k,self.id_dict.keys(),n=3)}")
+                    raise ValueError(f"Recieved unrecognized argument k={k} from source: {tier_name}. Closest known matches: {get_closest_matches(k,self.type_dict.keys(),n=3)}")
             args.update(tiers[tier_name])
             origin.update({k: tier_name for k in tiers[tier_name].keys()})
         tfo = [tiers_dict_inv[k] for k in tiers_for_origin]
@@ -612,7 +613,9 @@ def overwrite_existing_args(args,delete_instead_of_overwrite=False):
             break
     save_dict_list_to_json(dict_list,local_path,append=False)
 
-def save_args(args, local_path=None, global_path=None, dry=False):
+def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=False):
+    if do_nothing:
+        return local_path, global_path
     if hasattr(args,"model_name"):
         if local_path is None:
             local_path = args.save_path+"/args.json"

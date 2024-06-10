@@ -4,6 +4,11 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import sys, os
+
+if __name__=="__main__":
+    sys.path.append(os.path.abspath("./"))
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,8 +22,167 @@ from source.utils.utils import get_named_datasets
 from argparse import Namespace
 from source.utils.argparse_utils import TieredParser
 
-cond_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
-new_prob_keys = "semantic_prob,adjacent_prob,same_vol_prob,same_classes_prob,same_dataset_prob,class_names_prob".split(",")
+class ModelInputKwargs:
+    """
+    Class to manage kwargs for both model (ViT and UNet),
+    as well as the dataset
+    """
+    def __init__(self,args,construct_args=False,assert_valid=True):
+        if isinstance(args,Namespace):
+            args = copy.deepcopy(args.__dict__)
+        else:
+            args = copy.deepcopy(args)
+        self.args = args
+        self.columns = ["name","type","spatialness","unet","vit","support"]
+        if construct_args:
+            self.construct_kwarg_table()
+            if assert_valid:
+                self.assert_inputs_are_valid()
+                
+    def compute_hyper_params(self):
+        self.hyper_params = {}
+        self.hyper_params["diff_channels"] = int(torch.log2(torch.tensor(self.args["max_num_classes"])).ceil().item())
+        self.hyper_params["image_channels"] = 3
+
+    def use_input_criteria(self):
+        #a=self.args
+        inputs = {
+            "sample":         lambda a: True,
+            "time":           lambda a: True,
+            "image":          lambda a: a["p_image"]>0,
+            "image_features": lambda a: a["p_image"]>0 and a["image_encoder"]!="none",
+            "points":         lambda a: a["p_points"]>0,
+            "bbox":           lambda a: a["p_bbox"]>0,
+            "self_cond":      lambda a: a["p_self_cond"]>0,
+            "num_classes":    lambda a: a["class_type"]=="num_classes" and a["p_classes"]>0,
+            "same_vol":       lambda a: a["p_same_vol"]>0,
+            "same_classes":   lambda a: a["p_same_classes"]>0,
+            "same_dataset":   lambda a: a["p_same_dataset"]>0,
+            "adjacent":       lambda a: a["p_adjacent"]>0,
+            "class_names":    lambda a: a["p_class_names"]>0,
+            "semantic":       lambda a: (0<a["p_semantic"]) and (0<a["semantic_dl_prob"]<1)
+            }
+        return inputs
+    
+    def supported_inputs(self):
+        unet_support = "time,sample,image,image_features,points,self_cond,num_classes".split(",")
+        vit_support = unet_support+("same_vol,same_classes,same_dataset,adjacent,num_classes,class_names,semantic".split(","))
+        vit_support.remove("image_features")
+        return unet_support, vit_support
+
+    def construct_kwarg_table(self,return_df=False):
+        if not hasattr(self,"hyper_params"):
+            self.compute_hyper_params()
+        
+        im_d = {"img_size": self.args["image_size"], 
+                "patch_size": self.args["cond_patch_size"],
+                "type": "image"}
+        c_diff = self.hyper_params["diff_channels"]
+        c_im = self.hyper_params["image_channels"]
+        c_im_d = c_diff+c_im
+        
+        inputs = {
+            "sample":         {**im_d, "in_chans": c_diff},
+            "image":          {**im_d, "in_chans": c_im  },
+            "image_features": {**im_d, "in_chans": c_diff},
+            "points":         {**im_d, "in_chans": c_diff},
+            "bbox":           {**im_d, "in_chans": c_diff},
+            "self_cond":      {**im_d, "in_chans": c_diff},
+            "same_vol":       {**im_d, "in_chans": c_im_d},
+            "same_classes":   {**im_d, "in_chans": c_im_d},
+            "same_dataset":   {**im_d, "in_chans": c_im_d},
+            "adjacent":       {**im_d, "in_chans": c_im_d},
+            "time":           {"type": "scalar_continuous", "min": 0.0, "max": 1.0},#X
+            "num_classes":    {"type": "scalar_discrete", "size": 64},#(X)
+            "class_names":    {"type": "vocabulary", "size": -1},#X
+            "semantic":       {"type": "scalar_discrete", "size": 2}
+            }
+        #add spatialness
+        spatialness = {0: ["num_classes","class_names","semantic"], #non-spatial
+                       1: ["same_vol","same_classes","same_dataset"], #style-like spatial inputs (images)
+                       2: ["image","image_features","bbox","points","self_cond","adjacent"], #pixelwise spatial inputs (images)
+                       3: ["sample","time"]} #minimum required diffusion args
+        #check that spatialness is defined for all inputs
+        all_spatialness = sum([v for v in spatialness.values()],[])
+        assert all([k in all_spatialness for k in inputs.keys()]), "Not all inputs have spatialness defined. Missing: "+str([k for k in inputs.keys() if k not in all_spatialness])
+        assert all([k in inputs.keys() for k in all_spatialness]), "Not all spatialness values have inputs defined. Missing: "+str([k for k in all_spatialness if k not in inputs.keys()])
+        for k,v in spatialness.items():
+            for k2 in v:
+                inputs[k2]["spatialness"] = k
+        #add supports
+        unet_support, vit_support = self.supported_inputs()
+        for k in inputs.keys():
+            inputs[k]["support"] = []
+            if k in unet_support:
+                inputs[k]["support"].append("unet")
+            if k in vit_support:
+                inputs[k]["support"].append("vit")
+
+        input_criteria = self.use_input_criteria()
+
+        self.kwarg_table = pd.DataFrame(columns=self.columns+["etc"])
+        for name,v in inputs.items():
+            append_dict = {"name": name,"etc": {}}
+            for k2,v2 in v.items():
+                if k2 in self.columns:
+                    append_dict[k2] = v2
+                else:
+                    append_dict["etc"][k2] = v2
+            use_input = input_criteria[name](self.args)
+            unet_spatial_input = str(v["spatialness"]) in self.args["unet_spatialness"].split(",")
+            vit_spatial_input = str(v["spatialness"]) in self.args["vit_spatialness"].split(",")
+            append_dict["unet"] = use_input and unet_spatial_input
+            append_dict["vit"] = use_input and vit_spatial_input
+
+            self.kwarg_table.loc[len(self.kwarg_table)] = append_dict
+
+        if return_df:
+            return self.kwarg_table
+
+    def get_input_probs(self,only_nonzero=False,only_used_inputs=False):
+        probs = {k: v for k,v in self.args.items() if k.startswith("p_")}
+        if only_nonzero:
+            probs = {k: v for k,v in probs.items() if v>0}
+        if only_used_inputs:
+            unet = self.kwarg_table["unet"]
+            vit = self.kwarg_table["vit"]
+            used_inputs = self.kwarg_table[unet|vit]["name"]
+            probs = {k: v for k,v in probs.items() if k[2:] in used_inputs}
+        return probs
+
+    def get_vit_input_dict(self):
+        input_dict = {}
+        for row in self.kwarg_table.iterrows():
+            if row[1]["vit"]:
+                input_dict[row[1]["name"]] = {**row[1]["etc"],"input_type": row[1]["type"]}
+        return input_dict
+    
+    def get_unet_input_dict(self):
+        raise NotImplementedError
+
+    def assert_inputs_are_valid(self,raise_error=True):
+        try:
+            assert len(self.kwarg_table)>0, "Need to construct kwarg table first, before checking validity"
+            name_to_row_idx = {k: i for i,k in enumerate(self.kwarg_table["name"])}
+            #assert image is an actual input
+            assert len(self.kwarg_table.loc[name_to_row_idx["image"]]["support"])>=0, "Image has to be supported by either unet or vit"
+            #check availability of all inputs
+            for row in self.kwarg_table.iterrows():
+                if row[1]["unet"]:
+                    assert "unet" in row[1]["support"], "Unet input found, but not supported by unet. name: "+row[1]["name"]
+                if row[1]["vit"]:
+                    assert "vit" in row[1]["support"], "ViT input found, but not supported by ViT. name: "+row[1]["name"]
+                if row[1]["type"].startswith("image"):
+                    im_s = row[1]["etc"]["img_size"]
+                    pa_s = row[1]["etc"].get("patch_size",1)
+                    #assert img_size is divisible by patch_size
+                    assert im_s%pa_s==0, f"Image size must be divisible by patch size. Found image_size={im_s} and patch_size={pa_s}"
+            return True
+        except AssertionError as e:
+            if raise_error:
+                raise e
+            else:
+                return False
 
 vit_seperate_params = { 'num_params':          [5113088, 28510720, 89670912, 308278272, 637026048],
                         'model_name':          ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
@@ -37,7 +201,9 @@ vit_shared_params = {'out_chans':   256,
                 'use_rel_pos':      True,
                 'window_size':      14,
                 'mlp_ratio':        4}
-
+non_fancy_vit_shared_keys = "input_dict,img_size,patch_size,global_attn_indexes,block_types".split(",")
+fancy_vit_shared_keys = ""
+default_input_dict = {"image": {"input_type": "image", "img_size": 1024, "patch_size": 16, "in_chans": 3}}
 
 def vit_args_from_idx(idx):
     args = copy.deepcopy(vit_shared_params)
@@ -52,15 +218,28 @@ def fancy_vit_from_idx(idx,del_keys=["global_attn_indexes","img_size","patch_siz
     args = vit_args_from_idx(idx)
     args["block_types"] = ["global" if i in args["global_attn_indexes"] else "window" for i in range(args["depth"])]
     args["input_dict"] = {"image": {"input_type": "image", "img_size": 1024, "patch_size": 16, "in_chans": 3}}
-    args["max_seq_len"] = None#64**2
     for k in del_keys:
         del args[k]
     return args
 
+def fancy_vit_from_args(args=None,mik=None):
+    assert int(args is None) + int(mik is None) == 1, "Exactly one of args or mik must be None"
+    if args is not None:
+        assert isinstance(args,(Namespace,dict)), "Expected Namespace instance, found: "+str(type(args))
+        if isinstance(args,Namespace):
+            args = copy.deepcopy(args.__dict__)
+        mik = ModelInputKwargs(args)
+        mik.construct_kwarg_table()
+        mik.assert_inputs_are_valid()
+    else:
+        assert isinstance(mik,ModelInputKwargs), "Expected ModelInputKwargs instance, found: "+str(type(mik))
+    vit_args = fancy_vit_from_idx(mik.args["cond_sam_idx"])
+    vit_args["input_dict"] = mik.get_vit_input_dict()
+    return vit_args
+
 def sam_vit_from_idx(idx):
     args = vit_args_from_idx(idx)
     return ImageEncoderViT(**args)
-
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -143,89 +322,6 @@ class ContinuousVariable(nn.Module):
         return self.layers(torch.cat([torch.cos(args), torch.sin(args)], dim=-1))
 
 
-def default_input_dict(img_size=1024,patch_size=16,image_channels=3,diff_channels=6):
-    #input types: ["image","scalar_continuous","scalar_discrete","vocabulary"]
-    im_dict = {"input_type": "image",
-               "img_size": img_size, 
-               "patch_size": patch_size, 
-               "in_chans": image_channels+diff_channels}
-    inputs = {"sample":       {**im_dict, "in_chans": diff_channels},#X
-            "image":          {**im_dict, "in_chans": 3},#X
-            "points":         {**im_dict, "in_chans": diff_channels},#X
-            "bbox":           {**im_dict, "in_chans": diff_channels},#X
-            "self_cond":      {**im_dict, "in_chans": diff_channels},#(X)
-            "same_vol":       im_dict,#X
-            "same_classes":   im_dict,#X
-            "same_dataset":   im_dict,#X
-            "adjacent":       im_dict,#X
-            "time":           {"input_type": "scalar_continuous", "min": 0.0, "max": 1.0},#X
-            "num_classes":    {"input_type": "scalar_discrete", "size": 64},#(X)
-            "class_names":    {"input_type": "vocabulary", "size": -1},#X
-            "semantic":       {"input_type": "scalar_discrete", "size": 2},#X
-    }
-    return inputs
-
-def unet_vit_input_dicts_from_args(args):
-    diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
-    out_channels = diff_channels
-    no_diffusion = False
-    image_channels = 3
-    weak_signals = args["weak_signals"]
-    self_cond = args["self_cond"]
-    
-    full_unet_input_dict = {"sample": out_channels if not no_diffusion else 0,
-                        "image": image_channels,
-                        "bbox": int(weak_signals),
-                        "points": out_channels*int(weak_signals),
-                        "self_cond": out_channels if self_cond else 0
-                        }
-    task_name = args["vit_unet_cond_mode"]
-    if task_name=="no_vit": #T0: no ViT
-        unet_input_keys = list(full_unet_input_dict.keys())
-    elif task_name=="both_spatial_unet": #T1: The unet gets the image
-        unet_input_keys = ["sample","image","bbox","points","self_cond"]
-    elif task_name=="both_spatial_vit": #T2: The unet does not get the image and other spatial-directly conditionable inputs (bbox,points)
-        unet_input_keys = ["sample"]
-    elif task_name=="no_unet": #T3: full ViT, no unet
-        unet_input_keys = []
-    else:
-        raise ValueError("Invalid task_name: "+task_name)
-    unet_input_dict = {k: full_unet_input_dict[k] for k in unet_input_keys}
-
-    vit_input_dict = fancy_vit_from_args(args,return_input_dict_instead=True)
-    
-    return unet_input_dict,vit_input_dict
-
-def pd_table_of_inputs(args):
-    if isinstance(args,Namespace):
-        args = copy.deepcopy(args.__dict__)
-    elif isinstance(args,str):
-        args = TieredParser().get_args(alt_parse_args=["--model_name","hq"]).__dict__
-    else:
-        assert isinstance(args,dict), "Expected Namespace or dict, str (as model name) or Namespace found: "+str(type(args))
-    unet_input_dict,vit_input_dict = unet_vit_input_dicts_from_args(args)
-    if args["vit_unet_cond_mode"]!="no_unet":
-        unet_input_dict["time"] = 1
-        if args["image_encoder"]!="none":
-            unet_input_dict["image_features"] = 1
-        if args["classes_prob"]>0 and args["class_type"]!="none":
-            unet_input_dict["num_classes"] = 1
-    df = pd.DataFrame(columns=["name","input_type","is_spatial","where"])
-    #types: "image-non-spatial", "image-spatial", ""
-    uq_keys = list(set(list(unet_input_dict.keys())+list(vit_input_dict.keys())))
-    spatial_image_keys = ["image","bbox","points","self_cond","sample","image_features"]
-    d = default_input_dict()
-    d["image_features"] = {"input_type": "image"}
-    for key in uq_keys:
-        assert key in d, "Key "+key+" not found in default input dict. Found only: "+str(d.keys())
-        where = str(int(key in unet_input_dict.keys()))+str(int(key in vit_input_dict.keys()))
-        where = {"00": " ", "10": "UNet", "01": "ViT", "11": "Unet,ViT"}[where]
-        input_type = d[key]["input_type"]
-        is_spatial = key in spatial_image_keys
-        df.loc[len(df)] = [key,input_type,"X" if is_spatial else " ",where]
-    df = df.sort_values(by=["where","is_spatial","input_type","name"])
-    return df
-
 cond_vit_setup_long = {1: {"option_name": "preprocess" ,
                            "a": "Stack channels spatially",
                            "b": "No reduction"},
@@ -260,83 +356,6 @@ def get_appropriate_block_types(depth=12,block_types="ae",transform_to_names=Tru
         block_types = [cond_vit_setup_long[2][b] for b in block_types]
     return block_types
 
-spatial_input_keys = ["image","bbox","points","self_cond"]
-
-def fancy_vit_from_args(args,return_input_dict_instead=False):
-    keys = ["cond_vit_setup",
-            "max_num_classes",
-            "cond_img_size",
-            "cond_patch_size",
-            "cond_sam_idx",
-            "vit_unet_cond_mode",
-            "weak_bbox_prob",
-            "weak_points_prob",
-            "weak_signals",
-            "class_names_prob",
-            "datasets"]
-    keys += new_prob_keys
-    if not isinstance(args,dict):
-        args = copy.deepcopy(args.__dict__)
-    assert all([k in args.keys() for k in keys]), "Missing keys in args: "+str([k for k in keys if k not in args.keys()])
-    if args["vit_unet_cond_mode"]=="no_vit":
-        assert not any([args[k]>0 for k in new_prob_keys]), "No ViT, so new probabilities should be 0. found: "+str({k: args[k] for k in new_prob_keys if args[k]>0})
-        return {}
-    index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
-
-
-
-    img_size = args["cond_img_size"] if args["cond_img_size"]>0 else args["image_size"]
-    
-    diff_channels = int(torch.log2(torch.tensor(args["max_num_classes"])).round().item())
-    del_keys = "max_seq_len,input_dict,img_size,patch_size,global_attn_indexes,block_types"
-    fancy_vit_args = fancy_vit_from_idx(args["cond_sam_idx"],del_keys=del_keys.split(","))
-    fancy_vit_args["input_dict"] = default_input_dict(img_size=img_size, 
-                                                        patch_size=args["cond_patch_size"],
-                                                        image_channels=3,
-                                                        diff_channels=diff_channels)
-    
-    fancy_vit_args["diff_channels"] = diff_channels
-    del_keys2 = []
-    for k in new_prob_keys:
-        if args[k]<=0 or (k=="semantic_prob" and args[k]==1):
-            del_keys2.append(k.replace("_prob",""))
-    
-    #remove keys from the input dict based on args
-    if args["weak_points_prob"]<=0 or not args["weak_signals"]:
-        del_keys2.append("points")
-
-    if args["weak_bbox_prob"]<=0 or not args["weak_signals"]:
-        del_keys2.append("bbox")
-
-    if args["class_names_prob"]<=0:
-        del_keys2.append("class_names")
-    else:
-        fancy_vit_args["input_dict"]["class_names"]["class_names_datasets"] = get_named_datasets(args["datasets"])
-        
-    if args["vit_unet_cond_mode"]=="both_spatial_unet":
-        del_keys2.extend(spatial_input_keys)
-    elif not args["vit_unet_cond_mode"]=="no_unet":
-        del_keys2.append("sample")
-    else:
-        assert args["vit_unet_cond_mode"] in ["both_spatial_vit","no_unet"], "Invalid vit_unet_cond_mode: "+args["vit_unet_cond_mode"]
-
-    for k in del_keys2:
-        if k in fancy_vit_args["input_dict"].keys():
-            del fancy_vit_args["input_dict"][k]
-
-    fancy_vit_args["injection_type"] = index_to_opt[4]
-    fancy_vit_args["pre_reduction"] = {"a": "spatial", "b": "none"}[index_to_opt[1]]
-    fancy_vit_args["post_reduction"] = {"a": "cls_token", "b": "mean_token", "c": "spatial", "d": "none"}[index_to_opt[3]]
-    if args["vit_unet_cond_mode"]=="no_unet":
-        assert index_to_opt[3]=="c", "Only option 3c is allowed for no_unet, found: 3"+index_to_opt[3]
-        fancy_vit_args["post_reduction"] = "diffusion_sample"
-    block_types = get_appropriate_block_types(depth=fancy_vit_args["depth"],block_types=index_to_opt[2])
-    fancy_vit_args["block_types"] = block_types
-    if return_input_dict_instead:
-        return fancy_vit_args["input_dict"]
-    else:
-        return fancy_vit_args
-
 def get_opt4_from_cond_vit_setup(cond_vit_setup):
     index_to_opt = is_valid_cond_vit_setup(cond_vit_setup)
     return index_to_opt[4]
@@ -359,7 +378,8 @@ def is_valid_cond_vit_setup(cond_vit_setup,long_names_instead=False):
         for letter in letters:
             assert letter in v.keys(), "Invalid option for "+str(k)+": "+letter+" not in "+str([k for k in v.keys() if len(k)==1])
             if long_names_instead:
-                val = "\n".join([cond_vit_setup_long[k]["option_name"]+": "+cond_vit_setup_long[k][v] for v in letters])
+                val = cond_vit_setup_long[k]["option_name"]+": "
+                val += ",".join([cond_vit_setup_long[k][v] for v in letters])
             else:
                 val = letters
             index_to_opt2[k] = val
@@ -387,7 +407,7 @@ class FancyViT(nn.Module):
         block_types: list = [],
         share_image_rel_pos: bool = True,
         share_image_patch_embed: bool = True,
-        input_dict: dict = default_input_dict(),
+        input_dict: dict = default_input_dict,
         max_seq_len: int = None,
         pre_reduction: str = "none",
         post_reduction: str = "spatial",
@@ -519,7 +539,7 @@ class FancyViT(nn.Module):
                 qkv_bias=qkv_bias,
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                use_rel_pos=use_rel_pos if attention_type in use_rel_pos_attention_types else False,
+                use_rel_pos=use_rel_pos and (attention_type in use_rel_pos_attention_types),
                 rel_pos_zero_init=rel_pos_zero_init,
                 )
             self.blocks.append(block)
@@ -1307,7 +1327,7 @@ def ungroup_window_multi(x,z,group_inv_multi):
     return x
 
 class WindowedAttention(Attention):
-    def __init__(self, *args, is_shifted=False, is_cyclical=False, full_image_is_window=False, **kwargs):
+    def __init__(self, *args, is_shifted=False, is_cyclical=False, full_image_is_window=False, **kwargs): #TODO: add support for cyclical
         super().__init__(*args, **kwargs)
         self.full_image_is_window = full_image_is_window
         self.window_size = self.input_size[0]
@@ -1338,10 +1358,14 @@ class WindowedAttention(Attention):
     def forward_wrapped(self, x, token_info = None):
         assert len(x.shape)==3, "Expected tokens to be stored in a (B,L,C) tensor when using the token_info argument, found size: "+str(x.shape)
         y,group_inv_multi = group_window_multi(x,token_info,self.window_size,self.window_delta,full_image_is_window=self.full_image_is_window)
-        if y is None: return x #fix for when we have no images in x
-        y = self.forward(y)
-        x = ungroup_window_multi(x,y,group_inv_multi)
-        return x
+        if y is None: 
+            #y is None when there are no images in x
+            #fix for when we have no images in x
+            return x 
+        else:
+            y = self.forward(y)
+            x = ungroup_window_multi(x,y,group_inv_multi)
+            return x
 
 def extract_image_from_tokens(x_i,token_info_i,input_name,pad_if_missing=False):
     idx_x = [i for i in range(len(token_info_i)) if token_info_i[i]["input_name"]==input_name]
@@ -1882,6 +1906,34 @@ def main():
                     token_info = model.tokenize_inputs(input_dict)[1]
                     print("token_info_overview:")
                     print(token_info_overview(token_info,as_df=1))
+    elif args.unit_test==4:
+        print("UNIT TEST 4: debug transposed image problem")
+        from pprint import pprint
+        set_random_seed(123)
+        args = TieredParser().get_args(alt_parse_args=["--model_name", "vittest[v2]","--cond_vit_setup", "1a2b3c4b"])
+        mik = ModelInputKwargs(args)
+        t = mik.construct_kwarg_table(True)
+        model = FancyViT(**fancy_vit_from_args(args))
+        print(t)
+        pprint(is_valid_cond_vit_setup(args.cond_vit_setup,long_names_instead=1))
+    elif args.unit_test==5:
+        print("UNIT TEST 5: model input kwargs")
+        set_random_seed(123)
+        args = TieredParser().get_args(alt_parse_args=["--model_name", "vit128[T0]"])
+        mik = ModelInputKwargs(args)
+        t = mik.construct_kwarg_table(True)
+        print(t)
+        mik.assert_inputs_are_valid()
+    elif args.unit_test==6:
+        print("UNIT TEST 6: model input kwargs, probs")
+        set_random_seed(123)
+        args = TieredParser().get_args(alt_parse_args=["--model_name", "vit128[T0]+allcond"])
+        mik = ModelInputKwargs(args)
+        t = mik.construct_kwarg_table(True)
+        print(t)
+        #mik.assert_inputs_are_valid()
+        probs = mik.get_input_probs()
+        print(probs)
     else:
         raise ValueError("Invalid unit test")
     

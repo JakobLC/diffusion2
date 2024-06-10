@@ -695,6 +695,17 @@ class SavedSamplesManager:
         plt.tight_layout()
         return 
     
+    def get_concat_ss(self,ss_idx=None,duplicate_join_mode="err"):
+        assert duplicate_join_mode in ["both","new","old","err"], f"expected duplicate_join_mode to be one of ['both','new','old'], found {duplicate_join_mode}"
+        self.raise_error_on_no_ss()
+        if ss_idx is None:
+            ss_idx = list(range(len(self.saved_samples)))
+        assert len(ss_idx)>0, "expected at least one ss_idx to be present"
+        ss = copy.deepcopy(self.saved_samples[ss_idx[0]])
+        for i in ss_idx[1:]:
+            ss = ss.join_saved_samples(self.saved_samples[i],duplicate_join_mode=duplicate_join_mode)
+        return ss
+
     def metrics_for_plotting(self,metric_names=None,ss_idx=None,intersection_only=True,transpose_metric_ss=False):
         self.raise_error_on_no_ss()
         if ss_idx is None:
@@ -1158,7 +1169,6 @@ class SavedSamples:
         self.mem_threshold = load_dict["mem_threshold"]
         self.postprocess_kwargs = load_dict["postprocess_kwargs"]
         self.add_samples(didx=load_dict["didx"],light_data=load_dict["light_data"],heavy_data=load_dict["heavy_data"])
-        
 
     def reset(self):
         self.name = "unnamed"
@@ -1185,10 +1195,10 @@ class SavedSamples:
         didx_other = [d for d in didx_other if d in self.didx]
         return didx_other
 
-    def join_saved_samples(self,other,err_on_duplicates=True,duplicate_join_mode="both"):
-        assert duplicate_join_mode in ["both","new","old"], f"expected duplicate_join_mode to be one of ['both','new','old'], found {duplicate_join_mode}"
+    def join_saved_samples(self,other,duplicate_join_mode="err"):
+        assert duplicate_join_mode in ["both","new","old","err"], f"expected duplicate_join_mode to be one of ['both','new','old'], found {duplicate_join_mode}"
         assert isinstance(other,SavedSamples), "expected other to be an instance of SavedSamples"
-        if err_on_duplicates:
+        if duplicate_join_mode=="err":
             assert len(self.intersection_didx(other))==0, "expected no overlap between didx"
         if duplicate_join_mode=="both":
             new_didx = self.didx+other.didx

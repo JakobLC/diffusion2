@@ -8,8 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
-from segment_anything.modeling import ImageEncoderViT
-from source.models.cond_vit import FancyViT, fancy_vit_from_args, unet_vit_input_dicts_from_args, new_prob_keys
+from source.models.cond_vit import (FancyViT, ModelInputKwargs,
+                                    token_info_overview)
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
 from source.utils.utils import model_arg_is_trivial
 from source.models.nn import (
@@ -384,7 +384,7 @@ class UNetModel(nn.Module):
         self_cond=False,
         cond=False,
         is_pred_both=False,
-        debug_flag=False,
+        debug_run="",
         final_act="none",
         image_encoder_shape=(256,64,64),
         image_encoder_depth=-1,
@@ -394,7 +394,7 @@ class UNetModel(nn.Module):
         vit_feature_depth=1,
     ):
         super().__init__()
-        self.debug_flag = debug_flag
+        self.debug_run = debug_run
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         self.vit_args = vit_args
@@ -722,7 +722,29 @@ class UNetModel(nn.Module):
             h = h.type(sample.dtype)
         else:
             h = vit_output
+        if self.debug_run=="unet_print":
+            import jlc
+            from utils.plot_utils import visualize_tensor
+            import matplotlib 
+            #switch to qt5
+            matplotlib.use('Qt5Agg')
+            print("sample:",sample.shape)
+            print("timesteps:",timesteps.shape)
+            for k,v in kwargs.items():
+                print(f"{k}: ")
+                jlc.shaprint(v)
+            print("vit_output:",vit_output.shape)
+            print("h1:",h.shape)
+            jlc.montage(visualize_tensor(h))
+        elif self.debug_run=="token_info_overview":
+            print("token_info_overview:")
+            print([m.abs().sum().item() for m in kwargs["image"]])
+            print(token_info_overview(self.last_token_info,as_df=1))
+            exit()
         h = self.out(h)
+        if self.debug_run=="unet_print":
+            print("h2:",h.shape)
+            exit()
         return h
     
     def prepare_inputs(self, sample, timesteps, **kwargs):
@@ -819,11 +841,13 @@ def create_unet_from_args(args):
     else:
         raise ValueError(f"unknown class_type: {args['class_type']}")
     if args["debug_run"]=="dummymodel":
+        raise NotImplementedError("DummyModel not implemented")
         unet = DummyModel(out_channels)
     else:
         unet_input_dict,_ = unet_vit_input_dicts_from_args(args)
         vit_args = fancy_vit_from_args(args)
         if len(vit_args)==0:
+            raise NotImplementedError("prob_dict")
             vit_args = None
             prob_dict = {k: args[k] for k in new_prob_keys}
             assert all([p==0.0 for p in list(prob_dict.values())]), "cond_vit_mode was set to no_vit, but some prob keys which require vit were not set to 0. prob_dict="+str(prob_dict)
@@ -842,7 +866,7 @@ def create_unet_from_args(args):
                     weak_signals=args["weak_signals"],
                     self_cond=args["self_cond"],
                     cond=args["cond_type"]!="none",
-                    debug_flag=args["debug_run"],
+                    debug_run=args["debug_run"],
                     final_act=args["final_activation"],
                     image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
                     vit_args=vit_args,

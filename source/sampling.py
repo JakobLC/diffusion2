@@ -286,6 +286,13 @@ class DiffusionSampler(object):
                                                     for k,v in model_kwargs.items()},
                            "metrics": dict(metrics),
                            "has_raw_sample": has_raw_sample}
+            for k,v in model_kwargs.items():
+                if not torch.is_tensor(v):
+                    import jlc
+                    print("model_kwargs for k="+k)
+                    jlc.shaprint(v)
+                    raise ValueError(f"model_kwargs[{k}] is not a tensor.")
+
             self.light_stats.append(light_stats)
         return metrics
     
