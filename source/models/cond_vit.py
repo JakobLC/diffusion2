@@ -18,9 +18,22 @@ import copy
 import math
 import warnings
 import pandas as pd
-from source.utils.utils import get_named_datasets
+from source.utils.utils import get_named_datasets,nice_split
 from argparse import Namespace
 from source.utils.argparse_utils import TieredParser
+
+arg_items = TieredParser().get_args(alt_parse_args=["--model_name","default"]).__dict__.items()
+cond_image_prob_keys = [k for k,v in arg_items if k.startswith("p_")]
+cond_image_keys =[k[2:] for k in cond_image_prob_keys]
+
+#dynamic_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
+
+def assert_one_to_one_list_of_str(list1,list2):
+    assert isinstance(list1,list) and isinstance(list2,list), "Expected list, found: "+str(type(list1))+" and "+str(type(list2))
+    for k in list1+list2:
+        assert isinstance(k,str), "Expected str, found: "+str(type(k))
+        assert k in list1, "Expected "+k+" from list2 to be in list1="+str(list1)
+        assert k in list2, "Expected "+k+" from list1 to be in list2="+str(list2)
 
 class ModelInputKwargs:
     """
@@ -38,11 +51,13 @@ class ModelInputKwargs:
             self.construct_kwarg_table()
             if assert_valid:
                 self.assert_inputs_are_valid()
-                
+
     def compute_hyper_params(self):
         self.hyper_params = {}
         self.hyper_params["diff_channels"] = int(torch.log2(torch.tensor(self.args["max_num_classes"])).ceil().item())
         self.hyper_params["image_channels"] = 3
+        self.hyper_params["image_encoder"] = 256
+        self.hyper_params["class_names_datasets"] = get_named_datasets(self.args["datasets"])
 
     def use_input_criteria(self):
         #a=self.args
@@ -65,9 +80,11 @@ class ModelInputKwargs:
         return inputs
     
     def supported_inputs(self):
-        unet_support = "time,sample,image,image_features,points,self_cond,num_classes".split(",")
-        vit_support = unet_support+("same_vol,same_classes,same_dataset,adjacent,num_classes,class_names,semantic".split(","))
-        vit_support.remove("image_features")
+        unet_support = ["time","sample","image","image_features",
+                        "points","bbox","self_cond","num_classes",
+                        "semantic","adjacent","same_vol","same_classes",
+                        "same_dataset"]
+        vit_support = unet_support+["class_names"]
         return unet_support, vit_support
 
     def construct_kwarg_table(self,return_df=False):
@@ -80,11 +97,13 @@ class ModelInputKwargs:
         c_diff = self.hyper_params["diff_channels"]
         c_im = self.hyper_params["image_channels"]
         c_im_d = c_diff+c_im
-        
+        c_im_enc = self.hyper_params["image_encoder"]
+        cnd = self.hyper_params["class_names_datasets"]
+
         inputs = {
             "sample":         {**im_d, "in_chans": c_diff},
             "image":          {**im_d, "in_chans": c_im  },
-            "image_features": {**im_d, "in_chans": c_diff},
+            "image_features": {**im_d, "in_chans": c_im_enc},
             "points":         {**im_d, "in_chans": c_diff},
             "bbox":           {**im_d, "in_chans": c_diff},
             "self_cond":      {**im_d, "in_chans": c_diff},
@@ -92,20 +111,28 @@ class ModelInputKwargs:
             "same_classes":   {**im_d, "in_chans": c_im_d},
             "same_dataset":   {**im_d, "in_chans": c_im_d},
             "adjacent":       {**im_d, "in_chans": c_im_d},
-            "time":           {"type": "scalar_continuous", "min": 0.0, "max": 1.0},#X
-            "num_classes":    {"type": "scalar_discrete", "size": 64},#(X)
-            "class_names":    {"type": "vocabulary", "size": -1},#X
+            "time":           {"type": "scalar_continuous", "min": 0.0, "max": 1.0},
+            "num_classes":    {"type": "scalar_discrete", "size": 64},
+            "class_names":    {"type": "vocabulary", "size": -1, "class_names_datasets": cnd},
             "semantic":       {"type": "scalar_discrete", "size": 2}
             }
+        #add what is needed to load each input
+        load_type =  {"dynamic": ["adjacent","same_vol","same_classes","same_dataset"], #dynamic loading
+                      "unique": ["image_features","time","sample","num_classes","semantic"], #unique processing required
+                      "info": ["class_names","semantic","num_classes","image"]#ready as-is: simply take from info
+                      } 
+        
+        need_int2bit = ["same_classes","same_dataset","same_vol","adjacent","bbox","points","sample"]
+        #               (im,gt)         (im,gt)        (im,gt)    (im,gt)    (gt)   (gt)     (gt)
+        for k in need_int2bit:
+            inputs[k]["int2bit"] = True
         #add spatialness
         spatialness = {0: ["num_classes","class_names","semantic"], #non-spatial
                        1: ["same_vol","same_classes","same_dataset"], #style-like spatial inputs (images)
                        2: ["image","image_features","bbox","points","self_cond","adjacent"], #pixelwise spatial inputs (images)
                        3: ["sample","time"]} #minimum required diffusion args
         #check that spatialness is defined for all inputs
-        all_spatialness = sum([v for v in spatialness.values()],[])
-        assert all([k in all_spatialness for k in inputs.keys()]), "Not all inputs have spatialness defined. Missing: "+str([k for k in inputs.keys() if k not in all_spatialness])
-        assert all([k in inputs.keys() for k in all_spatialness]), "Not all spatialness values have inputs defined. Missing: "+str([k for k in all_spatialness if k not in inputs.keys()])
+        assert_one_to_one_list_of_str(list(inputs.keys()),sum([v for v in spatialness.values()],[]))
         for k,v in spatialness.items():
             for k2 in v:
                 inputs[k2]["spatialness"] = k
@@ -139,7 +166,7 @@ class ModelInputKwargs:
         if return_df:
             return self.kwarg_table
 
-    def get_input_probs(self,only_nonzero=False,only_used_inputs=False):
+    def get_input_probs(self,only_nonzero=False,only_used_inputs=False,only_dynamic=True):
         probs = {k: v for k,v in self.args.items() if k.startswith("p_")}
         if only_nonzero:
             probs = {k: v for k,v in probs.items() if v>0}
@@ -148,17 +175,16 @@ class ModelInputKwargs:
             vit = self.kwarg_table["vit"]
             used_inputs = self.kwarg_table[unet|vit]["name"]
             probs = {k: v for k,v in probs.items() if k[2:] in used_inputs}
+        if only_dynamic:
+            probs = {k: v for k,v in probs.items() if k[2:] in dynamic_image_keys}
         return probs
 
-    def get_vit_input_dict(self):
+    def get_input_dict(self,model_type="vit"):
         input_dict = {}
         for row in self.kwarg_table.iterrows():
-            if row[1]["vit"]:
+            if row[1][model_type.lower()]:
                 input_dict[row[1]["name"]] = {**row[1]["etc"],"input_type": row[1]["type"]}
         return input_dict
-    
-    def get_unet_input_dict(self):
-        raise NotImplementedError
 
     def assert_inputs_are_valid(self,raise_error=True):
         try:
@@ -169,9 +195,9 @@ class ModelInputKwargs:
             #check availability of all inputs
             for row in self.kwarg_table.iterrows():
                 if row[1]["unet"]:
-                    assert "unet" in row[1]["support"], "Unet input found, but not supported by unet. name: "+row[1]["name"]
+                    assert "unet" in row[1]["support"], "The input "+row[1]["name"]+" is not supported by the unet"
                 if row[1]["vit"]:
-                    assert "vit" in row[1]["support"], "ViT input found, but not supported by ViT. name: "+row[1]["name"]
+                    assert "vit" in row[1]["support"], "The input "+row[1]["name"]+" is not supported by the vit"
                 if row[1]["type"].startswith("image"):
                     im_s = row[1]["etc"]["img_size"]
                     pa_s = row[1]["etc"].get("patch_size",1)
@@ -222,20 +248,32 @@ def fancy_vit_from_idx(idx,del_keys=["global_attn_indexes","img_size","patch_siz
         del args[k]
     return args
 
-def fancy_vit_from_args(args=None,mik=None):
-    assert int(args is None) + int(mik is None) == 1, "Exactly one of args or mik must be None"
-    if args is not None:
-        assert isinstance(args,(Namespace,dict)), "Expected Namespace instance, found: "+str(type(args))
-        if isinstance(args,Namespace):
-            args = copy.deepcopy(args.__dict__)
+def fancy_vit_from_args(mik_or_args):
+    if isinstance(mik_or_args,(Namespace,dict)):
+        if isinstance(mik_or_args,Namespace):
+            args = copy.deepcopy(mik_or_args.__dict__)
+        else:
+            args = copy.deepcopy(mik_or_args)
         mik = ModelInputKwargs(args)
         mik.construct_kwarg_table()
         mik.assert_inputs_are_valid()
     else:
-        assert isinstance(mik,ModelInputKwargs), "Expected ModelInputKwargs instance, found: "+str(type(mik))
-    vit_args = fancy_vit_from_idx(mik.args["cond_sam_idx"])
-    vit_args["input_dict"] = mik.get_vit_input_dict()
-    return vit_args
+        assert isinstance(mik_or_args,ModelInputKwargs), "Expected ModelInputKwargs (mik) instance or dict/Namespace (args), found: "+str(type(mik))
+        mik = copy.deepcopy(mik_or_args)
+    args = mik.args
+    fancy_vit_args = fancy_vit_from_idx(args["cond_sam_idx"])
+    fancy_vit_args["input_dict"] = mik.get_input_dict("vit")
+    index_to_opt = is_valid_cond_vit_setup(args["cond_vit_setup"])
+    fancy_vit_args["injection_type"] = index_to_opt[4]
+    fancy_vit_args["pre_reduction"] = {"a": "spatial", "b": "none"}[index_to_opt[1]]
+    fancy_vit_args["post_reduction"] = {"a": "cls_token", "b": "mean_token", "c": "spatial", "d": "none"}[index_to_opt[3]]
+    block_types = get_appropriate_block_types(depth=fancy_vit_args["depth"],block_types=index_to_opt[2])
+    fancy_vit_args["block_types"] = block_types
+    no_unet = len(nice_split(args["unet_spatialness"]))==0
+    if no_unet:
+        assert index_to_opt[3]=="c", "Only option 3c is allowed for models with no inputs for the unet, found: 3"+index_to_opt[3]+". cond_vit_setup="+args["cond_vit_setup"]
+        fancy_vit_args["post_reduction"] = "diffusion_sample"
+    return fancy_vit_args
 
 def sam_vit_from_idx(idx):
     args = vit_args_from_idx(idx)
@@ -446,7 +484,7 @@ class FancyViT(nn.Module):
             elif t=="scalar_discrete":
                 setattr(self, input_name+"_embed", nn.Embedding(input_info["size"], embed_dim))
             elif t=="vocabulary":
-                if "class_names_datasets" in input_info.keys():
+                if len(input_info.get("class_names_datasets","")):
                     assert "class_names"==input_name, "Must have class_names key if class_names_datasets is specified"
                     assert input_info["size"]<=0, "Size must be non-positive (since it isn't used) for vocabulary based on class names. Found: "+str(input_info[input_name]["size"])
                     clip_matrix, dataset_idx_to_clip_idx, pretty_name_to_clip_idx = get_clip_matrix(input_info["class_names_datasets"])
@@ -486,6 +524,8 @@ class FancyViT(nn.Module):
 
         self.token_img_size = None
         if self.share_image_patch_embed:
+            if "image_features" in input_dict.keys():
+                warnings.warn("share_image_patch_embed is pretty ineffecient when using image_features since it has many channels")
             if len(self.img_sizes)>0:
                 #assert we have same patch_size and image_size
                 assert len(set(self.img_sizes))==1, "Image sizes must be the same for shared patch embed. found: "+str(self.img_size)
@@ -518,7 +558,7 @@ class FancyViT(nn.Module):
 
         if not has_image_input:
             for bt in ["grouped","window","window_shifted","image"]:
-                assert bt not in block_types, "No image input, so cannot have "+bt+" attention. Found: "+str(block_types)
+                assert bt not in block_types, "No image input, so cannot have "+bt+" attention which requires image-like inputs."
         attn_size_dict = {"global": None,
                         "image": self.token_img_size,
                         "window": window_size,
@@ -1727,9 +1767,6 @@ class PatchEmbed(nn.Module):
         x = x.permute(0, 2, 3, 1)
         return x
 
-def load_cond_image_probs_from_args(args):
-    return {k: args.__dict__[k+"_prob"] for k in cond_image_keys}
-
 def num_tokens_from_token_info(token_info,count_padding=False,sum_batch=True):
     toi = token_info_overview(token_info)
     num_tokens = []
@@ -1934,6 +1971,19 @@ def main():
         #mik.assert_inputs_are_valid()
         probs = mik.get_input_probs()
         print(probs)
+    elif args.unit_test==7:
+        import jlc
+        print("UNIT TEST 7: forward pass with NAN pixel to test information flow")
+        set_random_seed(123)
+        args = TieredParser().get_args(alt_parse_args=["--model_name", "vit128[T0]+allcond"])
+        args.cond_vit_setup = "1a2e3c4b"
+        args.vit_spatialness = "0,1,2,3"
+        vit_args = fancy_vit_from_args(args)
+        print(vit_args)
+        vit = FancyViT(**vit_args)
+        inputs = {"image": torch.randn(1,3,128,128)}
+        outputs = vit(inputs)
+        jlc.shaprint(outputs)
     else:
         raise ValueError("Invalid unit test")
     

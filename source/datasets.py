@@ -1,9 +1,7 @@
 import torch
 import numpy as np
 import torch
-from scipy.ndimage import gaussian_filter, sobel
-import jsonlines
-import json
+from scipy.ndimage import gaussian_filter
 from PIL import Image
 from pathlib import Path
 import os
@@ -20,10 +18,11 @@ if not str(Path(__file__).parent.parent) in sys.path:
     sys.path.append(str(Path(__file__).parent.parent))
 from source.models.unet import get_sam_image_encoder
 import tqdm
-from source.models.cond_vit import cond_image_keys
+from source.models.cond_vit import ModelInputKwargs, cond_image_keys, cond_image_prob_keys, dynamic_image_keys
 from source.utils.utils import (load_json_to_dict_list, save_dict_list_to_json,
-                                sam_resize_index,is_nan_float,get_named_datasets)
-from source.utils.argparse_utils import get_current_default_version,load_existing_args
+                                sam_resize_index,is_nan_float,get_named_datasets, 
+                                nice_split,str_to_seed)
+from source.utils.argparse_utils import get_current_default_version,load_existing_args,TieredParser
 import shutil
 import pandas as pd
 
@@ -31,7 +30,10 @@ turbo_jpeg = TurboJPEG()
 
 required_class_table_info_keys = ["i","imshape","classes","class_counts","dataset_name"]
 
-def points_image_from_label(label,num_points=None,padding_idx=255):
+def bbox_image_from_label(label,num_bbox=None,padding_idx=255,fill_val=-1):
+    return points_image_from_label(label,num_points=num_bbox,padding_idx=padding_idx,bbox_instead=True,fill_val=fill_val)
+
+def points_image_from_label(label,num_points=None,padding_idx=255,bbox_instead=False,fill_val=0):
     assert torch.is_tensor(label)
     assert len(label.shape)==3
     assert label.shape[0]==1
@@ -45,17 +47,39 @@ def points_image_from_label(label,num_points=None,padding_idx=255):
         counts[padding_idx] = 0
     nonzero_counts_idx = torch.where(counts>0)[0].cpu().numpy()
     label_indices = np.random.choice(nonzero_counts_idx,size=num_points,replace=True)
-    D1 = torch.zeros(num_points,dtype=torch.int64)
-    D2 = torch.zeros(num_points,dtype=torch.int64)
-    for i in np.unique(label_indices):
-        mask_i = label_indices==i
-        _,d1,d2 = torch.where(label==i)
-        d1,d2 = d1.cpu(),d2.cpu()
-        index = torch.randint(0,len(d1),(mask_i.sum().item(),))
-        D1[mask_i] = d1[index]
-        D2[mask_i] = d2[index]
-    points_image = torch.zeros_like(label,dtype=torch.float32)
-    points_image[:,D1,D2] = 1
+    
+    if bbox_instead:
+        #constructs bounding boxes as squares around masks with the same index.
+        #non bbox pixels are set to padding
+        bbox_image = torch.ones_like(label,dtype=int)*fill_val
+        for i in np.unique(label_indices):
+            mask_i = label_indices==i
+            mask = label==i
+            if mask.sum()==0:
+                continue
+            _,d1,d2 = torch.nonzero(mask,as_tuple=True)
+            d1,d2 = d1.cpu(),d2.cpu()
+            d1_min = d1.min()
+            d1_max = d1.max()
+            d2_min = d2.min()
+            d2_max = d2.max()
+            bbox_image[:,d1_min:d1_max+1,d2_min] = i
+            bbox_image[:,d1_min:d1_max+1,d2_max] = i
+            bbox_image[:,d1_min,d2_min:d2_max+1] = i
+            bbox_image[:,d1_max,d2_min:d2_max+1] = i
+        return bbox_image.to(label.device)
+    else:
+        D1 = torch.zeros(num_points,dtype=torch.int64)
+        D2 = torch.zeros(num_points,dtype=torch.int64)
+        for i in np.unique(label_indices):
+            mask_i = label_indices==i
+            _,d1,d2 = torch.where(label==i)
+            d1,d2 = d1.cpu(),d2.cpu()
+            index = torch.randint(0,len(d1),(mask_i.sum().item(),))
+            D1[mask_i] = d1[index]
+            D2[mask_i] = d2[index]
+        points_image = torch.zeros_like(label,dtype=torch.float32)
+        points_image[:,D1,D2] = 1
     return points_image.to(label.device)
 
 class AnalogBits(object):
@@ -324,16 +348,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.load_cond_probs = load_cond_probs
         if self.load_cond_probs is not None:
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
-            assert all([k in cond_image_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())
+            assert all([k in cond_image_prob_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())+" expected "+str(cond_image_prob_keys)
         self.ignore_sam_idx = ignore_sam_idx
         if isinstance(sam_features_idx,str):
             sam_strs = ['none','sam_vit_b','sam_vit_l','sam_vit_h']
             assert sam_features_idx in sam_strs, "sam_features_idx must be one of "+str(sam_strs)+", got "+sam_features_idx
             sam_features_idx = sam_features_idx.index(sam_features_idx)-1
-        self.sam_features_idx = sam_features_idx
-        if sam_features_idx>=0:
-            assert torch.cuda.is_available(), "sam_features_idx requires a GPU"
-            self.sam_image_encoder = get_sam_image_encoder(sam_features_idx,device="cuda")
+        self.sfi = sam_features_idx
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
         self.use_pretty_data = use_pretty_data
@@ -366,7 +387,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.downscale_thresholding_factor = 3
         self.datasets_info = load_json_to_dict_list(str(Path(data_root) / "datasets_info_live.json"))
         self.dataset_list = get_named_datasets(self.datasets,datasets_info=self.datasets_info)
-        
         if split in ["train","vali","test","all"]:
             split = {"train": 0,"vali": 1, "test": 2, "all": 3}[split]
         assert split in list(range(-1,4)), "invalid split input. must be one of [0,1,2,3] or ['train','vali','test','all'], found "+str(split)
@@ -391,9 +411,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
             if self.ignore_sam_idx>=0:
                 info_json = [info for info in info_json if not info.get("sam",[0,0,0])[self.ignore_sam_idx]]
             N = len(info_json)
-            previous_seed = np.random.get_state()[1][0]
             if self.shuffle_datasets:
-                dataset_specific_seed = sum([ord(l) for l in dataset_name])
+                previous_seed = np.random.get_state()[1][0]
+                dataset_specific_seed = str_to_seed(dataset_name)
                 self.datasets_info[dataset_name]["dataset_specific_seed"] = dataset_specific_seed           
                 np.random.seed(seed=dataset_specific_seed)
                 randperm = np.random.permutation(N)
@@ -527,7 +547,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         if "conditioning" not in item.keys():
             item["conditioning"] = {}
         item["conditioning"]["same_dataset"] = np.random.choice(use_idx,min(keep_atmost,len(use_idx)),replace=False).tolist()
-        for key in cond_image_keys:
+        for key in dynamic_image_keys:
             if key in item["conditioning"] and key!="same_dataset":
                 good_idx = np.flatnonzero(np.isin(item["conditioning"][key],use_idx))
                 if len(good_idx)>keep_atmost:
@@ -724,8 +744,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         class_table["idx_dataset"] = info["classes"]
         class_table["name"] = [self.idx_to_class[info["dataset_name"]][str(c)] for c in info["classes"]]
         class_table["key_origin"] = [origin for _ in range(len(counts))]
-        assert origin in ["image"]+cond_image_keys, f"origin must be 'image' or in cond_image_keys={cond_image_keys}, got {origin}"
-        origin_int = len(cond_image_keys) if origin=="image" else cond_image_keys.index(origin)
+        assert origin in ["image"]+dynamic_image_keys, f"origin must be 'image' or in dynamic_image_keys={dynamic_image_keys}, got {origin}"
+        origin_int = len(dynamic_image_keys) if origin=="image" else dynamic_image_keys.index(origin)
         class_table["key_int"] = [origin_int for _ in range(len(counts))]
         class_table["rel_area"] = class_table["count"]/sum(class_table["count"])
         class_table["rel_area_big_enough"] = (class_table["rel_area"]>=self.min_rel_class_area).astype(int)
@@ -734,13 +754,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
             class_table = class_table.to_dict()
         return class_table
 
-    def process_class_table(self,class_table,is_semantic,delete_empty_from_class_table=True,info=None):
+    def process_class_table(self,class_table,semantic,delete_empty_from_class_table=True,info=None):
         assert self.map_excess_classes_to in ["largest","random_different","random_same","zero","same","nearest_expensive"], f"expected map_excess_classes_to to be one of ['largest','random_different','random_same','zero','same','nearest_expensive'], got {self.map_excess_classes_to}"
         mnc = self.max_num_classes
         sort_keys = ["is_main_image_zero","rel_area_big_enough","key_int","count"]
         sorted_indices = np.argsort(class_table.copy().sort_values(sort_keys,ascending=False).index)
         class_table["priority"] = sorted_indices
-        if is_semantic:
+        if semantic:
             #each unique class has its lowest priority index assigned to it
             minimum_class_priority = {}
             for row in class_table.iterrows():
@@ -779,7 +799,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     print("class_table: ",class_table)
                     raise
             elif self.map_excess_classes_to=="random_different": #all labels are randomly associated with 
-                if is_semantic:
+                if semantic:
                     random_classes = np.random.choice(mnc,size=len(excess_idx))
                     dataset_idx_of_excess = class_table.loc[excess_idx,"idx_dataset"].to_numpy()
                     for uq in np.unique(dataset_idx_of_excess):
@@ -850,23 +870,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
         keeps track of which classes correspond to idx and adds this 
         dict to info.""" 
         has_cond = len(info.get("cond",{}))>0
-        is_semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
-        info["is_semantic"] = is_semantic
+        semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
+        info["semantic"] = semantic
         class_table = self.class_table_from_info(info)
         if has_cond:
             for k in list(info["cond"].keys()):
                 delta = len(class_table)
-                """
-                if len(info["cond"][k][-1]["classes"])+delta>=255:#to avoid uint8 issues. 255 reserved for padding
-                    warnings.warn("too many classes in cond images, some inputs will be ignored")
-                    del info["cond"][k]
-                else:"""
                 class_table_v = self.class_table_from_info(info["cond"][k][-1],origin=k)
                 class_table_v["idx_old"] += delta
                 info["cond"][k][0] = padding_to_val(info["cond"][k][0],padding_idx=self.padding_idx,val=-1)
                 info["cond"][k][0] += delta
                 class_table = pd.concat([class_table,class_table_v],axis=0,ignore_index=True)
-        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,is_semantic,info=info)
+        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic,info=info)
         
         label = padding_to_val(label,padding_idx=self.padding_idx,val=-1)
         label = np.vectorize(old_to_new.get)(label)
@@ -887,11 +902,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
         type_of_load = []
         didx_to_load = []
         illegal_idx = [info["i"]]
-        for key in cond_image_keys:
-            if np.random.rand()<probs.get(key,0):
-                idx = sample_from_list_in_dict(dict_=info["conditioning"], key=key, num_samples=1, illegal_idx=illegal_idx)
-                type_of_load.extend([key for _ in range(len(idx))])
-                didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
+        for key in dynamic_image_keys:
+            p = probs.get(key,0)
+            if p>0:
+                if np.random.rand()<=p:
+                    idx = sample_from_list_in_dict(dict_=info["conditioning"], key="p_"+key, num_samples=1, illegal_idx=illegal_idx)
+                    type_of_load.extend([key for _ in range(len(idx))])
+                    didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
         if len(didx_to_load)>0:
             info["cond"] = {}
             for t,didx in zip(type_of_load,didx_to_load):
@@ -986,6 +1003,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                                 v[2]] for k,v in info["cond"].items()}
         return image,label,info
     
+
+
     def __getitem__(self, idx):
         idx,load_cond,load_cond_probs,is_cond_call = self.process_input(idx)
         info = copy.deepcopy(self.items[idx])
@@ -995,11 +1014,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
         label_path = os.path.join(self.data_root,dataset_name,info["label_path"])
         image = open_image_fast(image_path,num_channels=3)
-        label = open_image_fast(label_path,num_channels=0)
+        label = open_image_fast(label_path,num_channels=0) #num_channels=0 means 2D
         image,label = self.preprocess(image,label,info)
         if is_cond_call:
             if not self.crop_method.startswith("sam"):
-                raise NotImplementedError("sam not implemented for cond calls")
+                raise NotImplementedError("Conditional calls are only implemented for sam copping method")
             return label,image,info
         label,info = self.map_label_to_valid_bits(label,info)
         if not self.crop_method.startswith("sam"): #TODO, not implemented
@@ -1009,11 +1028,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image,label,info = self.images_to_torch(image,label,info)
         
         info["image"] = image
-        j = self.sam_features_idx
-        if j>=0:
-            if info["sam"][j]:
+        if self.sfi>=0:
+            if info["sam"][self.sfi]:
                 i = info["i"]
-                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{j}.pt"))
+                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{self.sfi}.pt"))
             else:
                 info["image_features"] = None
         return label,info
@@ -1256,13 +1274,17 @@ def padding_to_val(label,padding_idx,val=-1):
     label[label==padding_idx] = val
     return label
 
-def get_dataset_from_args(args_or_model_id,
+def get_dataset_from_args(args_or_model_id=None,
                           split="vali",
                           prioritized_didx=None,
                           mode="training",
                           return_type="dli",
-                          load_cond_probs_overide=None,
+                          load_cond_probs_override=None,
                           ):
+    if args_or_model_id is None:
+        #use default args with data
+        args_or_model_id = TieredParser().get_args(alt_parse_args=["--model_name","default"])
+        args_or_model_id.datasets = "all"
     assert split in ["train","vali","test","all",0,1,2,3], f"split must be in ['train','vali','test','all'], got {split}"
     split = {0:"train",1:"vali",2:"test",3:"all"}.get(split,split)
     assert return_type in ["dli","dl","ds"], f"return_type must be in ['dli','dl','ds'], got {return_type}"
@@ -1274,11 +1296,20 @@ def get_dataset_from_args(args_or_model_id,
     else:
         assert isinstance(args_or_model_id,Namespace)
         args = args_or_model_id
-    if load_cond_probs_overide is None:
-        load_cond_probs = {k: args.__dict__[k+"_prob"] for k in cond_image_keys}
+    cond_mode = len(nice_split(args.vit_spatialness))>0
+    if cond_mode:
+        if load_cond_probs_override is not None:
+            assert isinstance(load_cond_probs_override,float), f"load_cond_probs_override must be a float, got {load_cond_probs_override}"
+            load_cond_probs = {k: load_cond_probs_override for k in dynamic_image_keys}
+        else:
+            mik = ModelInputKwargs(args)
+            load_cond_probs = mik.get_input_probs()
+            if max(load_cond_probs.values())==0:
+                cond_mode = False
+                load_cond_probs = None
     else:
-        assert isinstance(load_cond_probs_overide,float), f"load_cond_probs_overide must be a float, got {load_cond_probs_overide}"
-        load_cond_probs = {k: load_cond_probs_overide for k in cond_image_keys}
+        load_cond_probs = None
+    
     ds = SegmentationDataset(split=split,
                                         split_ratio=[float(item) for item in args.split_ratio.split(",")],
                                         image_size=args.image_size,
@@ -1286,13 +1317,12 @@ def get_dataset_from_args(args_or_model_id,
                                         min_rel_class_area=args.min_label_size,
                                         max_num_classes=args.max_num_classes,
                                         shuffle_zero=args.shuffle_zero,
-                                        geo_aug_p=args.geo_aug_prob,
                                         crop_method=args.crop_method,
                                         padding_idx=255 if args.ignore_padded else 0,
                                         split_method=args.split_method,
                                         sam_features_idx=args.image_encoder,
                                         semantic_prob=args.semantic_dl_prob,
-                                        conditioning=args.vit_unet_cond_mode!="no_vit",
+                                        conditioning=cond_mode,
                                         load_cond_probs=load_cond_probs,
                                         save_matched_items=args.dataloader_save_processing
                                         )
@@ -1323,6 +1353,23 @@ def get_dataset_from_args(args_or_model_id,
     elif return_type=="dli":
         return jlc.DataloaderIterator(dl)
     
+def dummy_label(n=128,num_classes=10,as_torch=True):
+    """
+    Constructs a segmentation mask by choosing a set of center points
+    for the classes and then labeling each pixel with the class of the
+    nearest center point. 
+    """
+    points = np.random.rand(num_classes,2)*n
+    X,Y = np.meshgrid(np.arange(n),np.arange(n))
+    dist = []
+    for i in range(num_classes):
+        dist.append(np.sqrt((X-points[i,0])**2+(Y-points[i,1])**2))
+    label = np.argmin(np.stack(dist,axis=2),axis=2)
+    if as_torch:
+        return torch.tensor(label).unsqueeze(0)
+    else:
+        return label
+
 
 def main():
     import argparse
@@ -1466,6 +1513,16 @@ def main():
     elif args.unit_test==6:
         print("UNIT TEST 6: remove matched items")
         delete_all_matched_items(dry=False,verbose=True)
-        
+    elif args.unit_test==7:
+        print("UNIT TEST 7: bbox_image_from_label")
+        import matplotlib.pyplot as plt
+        random_label = dummy_label()
+        bbox = bbox_image_from_label(random_label).numpy()
+        plt.subplot(1,2,1)
+        plt.imshow(random_label.numpy()[0])
+        plt.subplot(1,2,2)
+        plt.imshow(bbox[0])
+        plt.show()
+
 if __name__=="__main__":
     main()

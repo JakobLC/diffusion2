@@ -13,3 +13,4 @@ jsonlines==4.0.0
 scipy==1.10.1
 attrs==23.1.0
 pprint==0.4.0
+rarfile==4.0

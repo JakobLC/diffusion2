@@ -35,6 +35,7 @@ from source.training import DiffusionModelTrainer
 # [10] add sam encoder to dataloader
 # [10] make all probabilities get sampled with the dataset (with option for generation mode)'
 # [10] make unfified framework for probabilities
+# [10] add support for all kwargs
 
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)

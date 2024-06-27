@@ -17,7 +17,7 @@ from source.datasets import get_dataset_from_args
 import cv2
 import pandas as pd
 import scipy.ndimage as nd
-from models.cond_vit import cond_image_keys
+from models.cond_vit import dynamic_image_keys
 from datasets import load_raw_image_label
 from jlc import (RenderMatplotlibAxis, darker_color,
                  distance_transform_edt_border,mask_overlay_smooth,
@@ -768,7 +768,7 @@ def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,lon
     jlc.zoom()
     return image_overlays
 
-def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,show_border=1,**kwargs):
+def visualize_batch(batch,with_text_didx=False,class_text_size=12,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,show_border=1,**kwargs):
     bs = len(batch[-1])
     
     images = [b["image"].permute(1,2,0).numpy() for b in batch[-1]]
@@ -789,7 +789,9 @@ def visualize_batch(batch,with_text_didx=False,with_class_names=True,imagenet_in
         class_names = [info["idx_to_class_name"] for info in batch[-1]]
     else:
         class_names = [None]*bs
-    jlc.montage([mask_overlay_smooth(im,lab,alpha_mask=alpha_mask,class_names=class_names.pop(0),show_border=show_border) for im,lab in zip(images,labels)],**kwargs)
+    jlc.montage([
+        mask_overlay_smooth(im,lab,fontsize=class_text_size,alpha_mask=alpha_mask,class_names=class_names.pop(0),show_border=show_border) 
+        for im,lab in zip(images,labels)],**kwargs)
 
 def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
             "border_color": "black",
@@ -877,10 +879,10 @@ def visualize_cond_batch(args,
                          fontsize=None):
     if fontsize is not None:
         overlay_kwargs["fontsize"] = fontsize
-    all_image_keys = ["image"]+cond_image_keys
-    n_col = len(cond_image_keys)+1
+    all_image_keys = ["image"]+dynamic_image_keys
+    n_col = len(dynamic_image_keys)+1
     n_row = num_images
-    image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(cond_image_keys)}}
+    image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(dynamic_image_keys)}}
     image_overlays = []
     #dataloader = dataset_from_modelname(model_name,bs=num_images,split="vali",datasets=dataset_name,args_modifier=args_modifier)
     dataloader = get_dataset_from_args(args,split="vali",mode="training")
@@ -911,7 +913,7 @@ def visualize_cond_batch(args,
     if text:
         xtick_kwargs = {"fontsize": overlay_kwargs["fontsize"]} if fontsize is not None else {}
         left_text = [f"image {i}" for i in range(num_images)]
-        bottom_text = ["image"]+cond_image_keys
+        bottom_text = ["image"]+dynamic_image_keys
         bottom_text = [b+"\n" for b in bottom_text]
         montage_im = jlc.add_text_axis_to_image(montage_im,n_horz=n_col,n_vert=n_row,
                                                 left=left_text,

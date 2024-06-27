@@ -15,8 +15,8 @@
         "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
         "input_scale": [0.01,                       "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float. "],
-        "logsnr_min": [-20.0,                       "Minimum value for logsnr. TYPE: float. DEFAULT: -10.0. "],
-        "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 10.0. "]
+        "logsnr_min": [-20.0,                       "Minimum value for logsnr. TYPE: float. DEFAULT: -20.0. "],
+        "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 20.0. "]
     },
     "model": {
         "use_checkpoint": [false,                   "Should gradient checkpointing be used (reduced memory usage, more flops)? TYPE: boolean. DEFAULT: false. "],
@@ -61,7 +61,7 @@
         "p_class_names": [0.0,                      "Probability of class name clip vectors being given as input. TYPE: float. DEFAULT: 0.0. "]
     },
     "training": {
-        "semantic_dl_prob": [0.0,                      "Probability of the label from the dataloader being semantic, otherwise instance. TYPE: float. DEFAULT: 0.0. "],
+        "semantic_dl_prob": [0.0,                   "Probability of the label from the dataloader being semantic, otherwise instance. TYPE: float. DEFAULT: 0.0. "],
         "lr": [0.0001,                              "Learning rate. TYPE: float. DEFAULT: 0.0001. "],
         "loss_weights": ["SNR_plus1",               "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc']. DEFAULT: 'SNR'. "],
         "loss_type": ["mse",                        "Which loss type to use? TYPE: One of ['mse','ce1','ce2']. DEFAULT: 'mse'. "],
@@ -126,7 +126,6 @@
         "gen_setups": {"<1.1.0": "vali,train"},
         "max_class_names": {"<=1.2.0": 16},
         "cond_patch_size": {"<=1.2.0": 16},
-        "semantic_kwarg_prob": {"<=1.2.1": 1.0},
         "semantic_dl_prob": {"<=1.2.1": 0.5}
     },
     "deprecated": {
@@ -163,6 +162,7 @@
         "weak_signals": [true,                      "Should weak signals (bbox,points) be used? TYPE: boolean. DEFAULT: true. "],
         "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false. "],
         "vit_unet_cond_mode": ["both_spatial_unet", "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_spatial_unet'. "],
-        "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"}
+        "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"},
+        "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0}
     }
 }

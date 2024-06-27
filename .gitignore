@@ -1,7 +1,10 @@
 __pycache__/
 saves/
 saves_old/
-/data/*/
+/data/
+!/data/download_datasets.py
+!/data/datasets_info_live.json
+!/data/data_utils.py
 !/data/*/idx_to_class.json
 !/data/*/info.jsonl
 /jsons/sample_opts_ids.json

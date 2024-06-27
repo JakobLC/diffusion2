@@ -17,7 +17,7 @@ import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
-from source.utils.utils import quantile_normalize, prettify_classname
+from source.utils.utils import quantile_normalize, prettify_classname, str_to_seed
 import cv2
 from source.datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
@@ -1374,6 +1374,90 @@ def show_clip_vectors(save_path = f"./data/CLIP_emb.pth"):
         else:
             print(f"Dataset {dataset_name} was not saved correctly.")
 
+def extract_data_subsets(dataset_names=None,subset_size=200,save_name="info_subset.jsonl"):
+    """Saves a random subset of the dataset info jsonl file to a new file"""
+    
+    if dataset_names is None:
+        #do it fo all live datasets
+        live_info = load_json_to_dict_list("./data/datasets_info_live.json")
+        dataset_names = [d["dataset_name"] for d in live_info if d["live"]]
+    if isinstance(dataset_names,str):
+        dataset_names = [dataset_names]
+    for dataset_name in dataset_names:
+        info_jsonl_path = f"./data/{dataset_name}/info.jsonl"
+        info_list = load_json_to_dict_list(info_jsonl_path)
+        n = len(info_list)
+        if isinstance(subset_size,float):
+            n_use = np.ceil(subset_size*n).astype(int)
+        else:
+            n_use = min(subset_size,n)
+        dataset_specific_seed = str_to_seed(dataset_name)
+        previous_seed = np.random.get_state()[1][0]
+        np.random.seed(seed=dataset_specific_seed)
+        indices = np.random.permutation(n)[:n_use]
+        np.random.seed(previous_seed)
+        subset_info = [info_list[i] for i in indices]
+
+        save_filename = f"./data/{dataset_name}/{save_name}"
+        save_dict_list_to_json(subset_info,save_filename)
+        print(f"Saved {n_use} sample infos from {dataset_name} to {save_filename}")
+        
+
+def zip_data_subsets(dataset_names=None,
+                     save_path="./data/data_subset_[info_name].zip",
+                     info_name="info_subset.jsonl",
+                     same_folder=True,
+                     include_info=True,
+                     include_idx_to_class=True,
+                     include_datasets_info_live=True):
+    """
+    Zips all data in in specified info file into a zip file
+    while retaining structure of folders
+    """
+    if dataset_names is None:
+        #do it fo all live datasets
+        live_info = load_json_to_dict_list("./data/datasets_info_live.json")
+        dataset_names = [d["dataset_name"] for d in live_info if d["live"]]
+    if isinstance(dataset_names,str):
+        dataset_names = [dataset_names]
+    datasets_info_path = "./data/datasets_info_live.json"
+    datasets_info = load_json_to_dict_list(datasets_info_path)
+    dataset_name_to_fmt = {d["dataset_name"]: d["file_format"] for d in datasets_info if d["live"]}
+    save_path = save_path.replace("[info_name]",info_name.split(".")[0])
+    with zipfile.ZipFile(save_path, 'w') as zipf:
+        for dataset_name in dataset_names:
+            dataset_fmt = dataset_name_to_fmt[dataset_name]
+            info_jsonl_path = f"./data/{dataset_name}/{info_name}"
+            if not Path(info_jsonl_path).exists():
+                print(f"File {info_jsonl_path} does not exist. Skipping.")
+                continue
+            info_list = load_json_to_dict_list(info_jsonl_path)
+            for info in info_list:
+                folder_i = np.floor(info["i"]/1000).astype(int)
+                filename_im = f"./data/{dataset_name}/f{folder_i}/{info['i']}_im."+dataset_fmt
+                filename_la = f"./data/{dataset_name}/f{folder_i}/{info['i']}_la.png"
+                assert Path(filename_im).exists(), f"File {filename_im} does not exist."
+                assert Path(filename_la).exists(), f"File {filename_la} does not exist."
+                if same_folder:
+                    savename_im = f"./data/{dataset_name}/files/{info['i']}_im."+dataset_fmt
+                    savename_la = f"./data/{dataset_name}/files/{info['i']}_la.png"
+                else:
+                    savename_im = f"./data/{dataset_name}/f{folder_i}/{info['i']}_im."+dataset_fmt
+                    savename_la = f"./data/{dataset_name}/f{folder_i}/{info['i']}_la.png"
+                zipf.write(filename_im,savename_im)
+                zipf.write(filename_la,savename_la)
+            if include_info:
+                zipf.write(info_jsonl_path)
+            if include_idx_to_class:
+                idx_to_class_path = f"./data/{dataset_name}/idx_to_class.json"
+                if Path(idx_to_class_path).exists():
+                    zipf.write(idx_to_class_path)
+            print(f"Saved {len(info_list)} samples from {dataset_name} to {save_path}")
+        if include_datasets_info_live:
+            zipf.write(datasets_info_path)
+    save_path = save_path.replace("[info_name]",info_name)
+
+
 def main():
     import argparse
     
@@ -1464,6 +1548,12 @@ def main():
     elif args.process==16:
         print("PROCESS 16: embed single dataset CLIP vectors")
         save_clip_vectors(args.dataset)
+    elif args.process==17:
+        print("PROCESS 17: extract data subsets")
+        extract_data_subsets()
+    elif args.process==18:
+        print("PROCESS 18: zip data subsets")
+        zip_data_subsets()
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

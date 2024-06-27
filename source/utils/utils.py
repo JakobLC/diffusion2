@@ -1035,14 +1035,19 @@ def model_arg_is_trivial(model_arg_k):
             out = True
     return out
     
-def nice_split(s,split_s=","):
+def nice_split(s,split_s=",",remove_empty_str=True):
     assert isinstance(s,str), "expected s to be a string"
     assert isinstance(split_s,str), "expected split_s to be a string"
     if len(s)==0:
         out = []
     else:
         out = s.split(split_s)
+    if remove_empty_str:
+        out = [item for item in out if len(item)>0]
     return out
+
+def str_to_seed(s):
+    return int("".join([str(ord(l)) for l in s]))%2**32
 
 def is_nan_float(x):
     out = False

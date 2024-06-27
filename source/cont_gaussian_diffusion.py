@@ -6,12 +6,19 @@ import torch
 from datasets import AnalogBits
 from source.utils.utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
-from source.models.cond_vit import cond_image_keys
+from source.models.cond_vit import dynamic_image_keys
 
-def cond_kwargs_int2bit(kwargs,ab,keys=cond_image_keys):
-    union_keys = set(kwargs.keys()).intersection(set(keys))
-    for key in union_keys:
-        kwargs[key] = [(torch.cat([ab.int2bit(x[0][None])[0],x[1]]) if (x is not None) else None) for x in kwargs[key]]
+def cond_kwargs_int2bit(kwargs,ab,keys=dynamic_image_keys):
+    """loops over dynamic image keys and converts the label part to bits"""
+    pesent_dynamic_keys = set(kwargs.keys()).intersection(set(keys))
+    for key in pesent_dynamic_keys:
+        #x should be a tuple of (label, image). verify this
+        assert all([isinstance(x,(tuple,list)) for x in kwargs[key]]), f"expected a tuple of (label,image) for key={key}. got type(x[0])={type(kwargs[key][0])}"
+        assert all([len(x)==2 for x in kwargs[key]]), f"expected a tuple of (label,image), i.e. len 2 for key={key}. got len(x[0])={len(kwargs[key][0])}"
+        kwargs[key] = [(torch.cat([ab.int2bit(x[0][None])[0],x[1]]) 
+                        if (x is not None) else None) 
+                       for x in kwargs[key]]
+        
     return kwargs
 
 def add_(coefs,x,batch_dim=0,flat=False):

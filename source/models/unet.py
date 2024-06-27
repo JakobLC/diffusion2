@@ -9,9 +9,10 @@ import torch.nn.functional as F
 from segment_anything import sam_model_registry
 import os
 from source.models.cond_vit import (FancyViT, ModelInputKwargs,
-                                    token_info_overview)
+                                    token_info_overview,ModelInputKwargs,
+                                    fancy_vit_from_args)
 from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
-from source.utils.utils import model_arg_is_trivial
+from source.utils.utils import model_arg_is_trivial, nice_split
 from source.models.nn import (
     SiLU,
     conv_nd,
@@ -366,7 +367,6 @@ class UNetModel(nn.Module):
         self,
         image_size=32,
         out_channels=1,
-        image_channels=3,
         model_channels=64,
         num_res_blocks=3,
         attention_resolutions="-2,-1",
@@ -379,17 +379,13 @@ class UNetModel(nn.Module):
         num_heads=1,
         num_heads_upsample=-1,
         use_scale_shift_norm=False,
-        weak_signals=False,#TODO, remove unused inputs
         no_diffusion=False,
-        self_cond=False,
-        cond=False,
-        is_pred_both=False,
         debug_run="",
         final_act="none",
         image_encoder_shape=(256,64,64),
         image_encoder_depth=-1,
+        class_keys="num_classes",
         vit_args=None,
-        no_unet=False,
         unet_input_dict=None,
         vit_feature_depth=1,
     ):
@@ -399,27 +395,30 @@ class UNetModel(nn.Module):
             num_heads_upsample = num_heads
         self.vit_args = vit_args
         self.image_size = image_size
-        time_embed_dim = model_channels * 4
+        time_embed_dim = model_channels*4
         self.legal_keys = list(unet_input_dict.keys())
         self.vit_feature_depth = vit_feature_depth
+
+        self.class_keys = nice_split(class_keys)
+        self.has_unet = len(unet_input_dict)>0
+        self.has_vit = False
+        self.vit = None
+        self.vit_injection_type="none"
         if vit_args is not None:
-            self.vit = FancyViT(**self.vit_args)
-            self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all", "e": "spatial_after_resize"}[self.vit_args["injection_type"]]
-            self.legal_keys += list(self.vit_args["input_dict"].keys())
-        else:
-            assert unet_input_dict is not None, "unet_input_dict must be provided if vit_args is None"
-            unet_input_dict = unet_input_dict
-            self.vit = None
-            self.vit_injection_type="none"
+            if len(vit_args["input_dict"])>0:
+                self.has_vit = True
+                self.vit = FancyViT(**self.vit_args)
+                self.vit_injection_type = {"a": "emb", "b": "xattn", "c": "spatial_once", "d": "spatial_all", "e": "spatial_after_resize"}[self.vit_args["injection_type"]]
+                self.legal_keys += list(self.vit_args["input_dict"].keys())          
         
-        
-        if no_unet:
-            assert self.vit_args is not None, "vit_args must be provided if no_unet is True"
-            self.has_unet = False
+        if not self.has_vit:
+            assert self.has_unet, "either vit_args (with non-empty input dict) or unet_input_dict must be provided"
+
+        if not self.has_unet:
+            assert self.vit_args is not None, "vit_args must be provided if there is no unet"
             ch = self.vit_args["out_chans"]
             self.fp16_attrs = []
         else:
-            self.has_unet = True
             self.model_channels = model_channels
             self.num_res_blocks = num_res_blocks
             
@@ -433,7 +432,21 @@ class UNetModel(nn.Module):
             self.dropout = dropout
             self.channel_mult = channel_mult
             self.conv_resample = conv_resample
-            self.num_classes = None if num_classes==0 else num_classes
+            if num_classes is None:
+                self.use_class_emb = False
+            elif isinstance(num_classes, int):
+                assert len(self.class_keys)==1, "if num_classes is an int, then class_keys must be a single key"
+                if num_classes<=0:
+                    self.use_class_emb = False
+                    self.num_classes = None
+                else:
+                    self.use_class_emb = True
+                    self.num_classes = [num_classes]
+            else:
+                assert isinstance(num_classes,list), "num_classes must be an int or a list of ints or None"
+                assert all([isinstance(nc,int) for nc in num_classes]), "num_classes must be an int or a list of ints or None"
+                assert len(num_classes)==len(self.class_keys), "num_classes must have the same length as class_keys if num_classes!=None"
+                self.num_classes = num_classes
             self.use_checkpoint = use_checkpoint
             self.num_heads = num_heads
             self.num_heads_upsample = num_heads_upsample
@@ -441,7 +454,7 @@ class UNetModel(nn.Module):
             self.image_encoder_depth = image_encoder_depth
             self.use_image_features = image_encoder_depth >= 0
             self.fp16_attrs = ["input_blocks","middle_block","output_blocks"]
-
+            
             if self.use_image_features:
                 self.fp16_attrs.append("preprocess_img_enc")
 
@@ -464,10 +477,15 @@ class UNetModel(nn.Module):
                 self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
             self.unet_input_dict = unet_input_dict
+            self.input_to_channels = {}
             self.in_channels = 0
             for k,v in self.unet_input_dict.items():
-                self.unet_input_dict[k] = [i+self.in_channels for i in range(v)]
-                self.in_channels += v
+                c = v.get("in_chans",0)
+                imsize = v.get("img_size",self.image_size)
+                if c>0:
+                    self.input_to_channels[k] = slice(self.in_channels,self.in_channels+c)
+                    self.in_channels += c
+                assert imsize==self.image_size, "all image sizes must be the same. kwarg "+k+" has image size "+str(imsize)+" while the model has image size "+str(self.image_size)
             
             self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
@@ -476,9 +494,11 @@ class UNetModel(nn.Module):
                 linear(time_embed_dim, time_embed_dim),
             )
             
-            if self.num_classes is not None:
+            if self.use_class_emb:
                 self.fp16_attrs.append("class_emb")
-                self.class_emb = nn.Embedding(num_classes, time_embed_dim)
+                self.class_emb = nn.ModuleDict()
+                for k,nc in zip(self.class_keys,self.num_classes):
+                    self.class_emb[k] = nn.Embedding(nc+1, time_embed_dim)
             
             self.input_blocks = nn.ModuleList([TimestepEmbedSequential(conv_nd(dims, self.in_channels, model_channels, 3, padding=1))])
             input_block_chans = [model_channels]
@@ -568,14 +588,13 @@ class UNetModel(nn.Module):
             else:
                 assert self.vit_injection_type=="none", "vit_injection_type must be one of 'emb','xattn','spatial_once','spatial_all','spatial_after_resize', or 'none'"
                 self.vit_injection_depths = []
-        both_mult = 2 if is_pred_both else 1
         final_act_dict = {"none": nn.Identity(),
                         "softmax": nn.Softmax(dim=1),
                         "tanh": nn.Tanh()}
         self.out = nn.Sequential(
             normalization(ch),
             SiLU(),
-            zero_module(conv_nd(dims, ch, out_channels*both_mult, 3, padding=1)),
+            zero_module(conv_nd(dims, ch, out_channels, 3, padding=1)),
             final_act_dict[final_act.lower()]
         )
 
@@ -669,6 +688,12 @@ class UNetModel(nn.Module):
                 out = None
         return out
 
+    def apply_class_emb(self, classes):
+        emb = 0
+        for i,k in enumerate(self.class_keys):
+            emb += self.class_emb[k](classes[:,i])
+        return emb
+
     def forward(self, sample, timesteps, **kwargs):
         """
         Apply the model to an input batch.
@@ -697,8 +722,8 @@ class UNetModel(nn.Module):
                 emb *= 0
             if self.vit_injection_type=="emb":
                 emb = emb + self.vit_to_unet_map(vit_output)
-            if self.num_classes is not None:
-                emb = emb + self.class_emb(classes)
+            if self.use_class_emb:
+                emb = emb + self.apply_class_emb(classes)
             hs = []
             depth = 0
             for module in self.input_blocks:
@@ -765,9 +790,25 @@ class UNetModel(nn.Module):
         bs = sample.shape[0]
         shape = [bs,self.in_channels,self.image_size,self.image_size]
         h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
+        if self.use_class_emb:
+            classes = torch.zeros((bs,len(self.class_keys)),dtype=torch.long,device=sample.device)
+        else:
+            classes = None
+        image_features = None
         for k,v in kwargs.items():
-            if k not in ["classes","image_features"]:
-                assert (k in self.legal_keys) or (v is None), f"k={k} with type {type(v)} is not a legal input for the model: {str(self.legal_keys)}"
+            if k not in self.unet_input_dict.keys():
+                continue
+            if k in self.class_keys:
+                assert self.use_class_emb, "classes provided but model has no class embedding"
+                if v.numel() == 1:
+                    v = v.expand(bs)
+                assert v.shape == (bs,), "image_features must be a vector of length batch size"
+                assert 0<=v.min() and v.max()<=self.num_classes[self.class_keys.index(k)], "class index out of range. for class "+k+" expected range [0,"+str(self.num_classes[self.class_keys.index(k)])+"), got: "+str(v.min())+" to "+str(v.max())
+                classes[:,self.class_keys.index(k)] = v
+            elif k=="image_features":
+                assert self.use_image_features, "image_features provided but model has does not use image features"
+                image_features = v
+            else:
                 if k in self.unet_input_dict.keys():
                     if torch.is_tensor(v):
                         assert len(self.unet_input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.unet_input_dict.keys() if len(self.unet_input_dict[k])>0])
@@ -777,22 +818,12 @@ class UNetModel(nn.Module):
                         h[:,self.unet_input_dict[k],:,:] = v.type(self.inner_dtype)
                     else:
                         assert v is None, "input "+k+" must be a tensor or None"
-        has_nontrivial_classes = kwargs["classes"] is not None if "classes" in kwargs.keys() else False
-        if has_nontrivial_classes:
-            assert self.num_classes is not None, "num_classes must be specified if classes are provided"
-            classes = kwargs["classes"]
-            if classes.numel() == 1:
-                classes = classes.expand(bs)
-            assert 0<=classes.min() and classes.max()<self.num_classes, "classes must be in range [0,"+str(self.num_classes)+"). classes: "+str(classes)
-            assert classes.shape == (bs,)
-        else:
-            #no classes (embedding 0)
-            if self.num_classes is not None:
-                classes = torch.zeros(bs,dtype=torch.long,device=sample.device)
-            else:
-                classes = None
+
+        if self.use_class_emb:
+            classes = [item if item is not None else 0 for item in classes]
+            classes = torch.tensor(classes,dtype=torch.long,device=sample.device)
         if "image_features" in kwargs.keys():
-            assert self.use_image_features, "image_features provided but model has does not use image features"
+            
             image_features = kwargs["image_features"]
         else:
             image_features = None
@@ -830,48 +861,45 @@ def create_unet_from_args(args):
             raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
+
     if args["onehot"]:
         out_channels = args["max_num_classes"]
     else:
         out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
+
+    if args["predict"]=="both":
+        out_channels *= 2
+
     if args["class_type"]=="none":
         num_classes = None
     elif args["class_type"]=="num_classes":
-        num_classes = args["max_num_classes"]+1
+        num_classes = args["max_num_classes"]
     else:
         raise ValueError(f"unknown class_type: {args['class_type']}")
+    
     if args["debug_run"]=="dummymodel":
         raise NotImplementedError("DummyModel not implemented")
         unet = DummyModel(out_channels)
-    else:
-        unet_input_dict,_ = unet_vit_input_dicts_from_args(args)
-        vit_args = fancy_vit_from_args(args)
-        if len(vit_args)==0:
-            raise NotImplementedError("prob_dict")
-            vit_args = None
-            prob_dict = {k: args[k] for k in new_prob_keys}
-            assert all([p==0.0 for p in list(prob_dict.values())]), "cond_vit_mode was set to no_vit, but some prob keys which require vit were not set to 0. prob_dict="+str(prob_dict)
-        unet = UNetModel(image_size=args["image_size"],
-                    is_pred_both=args["predict"]=="both",
-                    out_channels=out_channels,
-                    image_channels=1 if args["cat_ball_data"] else 3,
-                    num_res_blocks=args["num_res_blocks"],
-                    model_channels=args["num_channels"],
-                    attention_resolutions=args["attention_resolutions"],
-                    dropout=args["dropout"],
-                    channel_mult=channel_mult,
-                    num_classes=num_classes,
-                    num_heads=args["num_heads"],
-                    num_heads_upsample=args["num_heads_upsample"],
-                    weak_signals=args["weak_signals"],
-                    self_cond=args["self_cond"],
-                    cond=args["cond_type"]!="none",
-                    debug_run=args["debug_run"],
-                    final_act=args["final_activation"],
-                    image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
-                    vit_args=vit_args,
-                    unet_input_dict=unet_input_dict,
-                    no_unet=args["vit_unet_cond_mode"]=="no_unet")
+    
+    mik = ModelInputKwargs(args)
+    mik.construct_kwarg_table()
+    unet_input_dict = mik.get_input_dict("unet")
+    vit_args = fancy_vit_from_args(mik)
+    unet = UNetModel(image_size=args["image_size"],
+                out_channels=out_channels,
+                num_res_blocks=args["num_res_blocks"],
+                model_channels=args["num_channels"],
+                attention_resolutions=args["attention_resolutions"],
+                dropout=args["dropout"],
+                channel_mult=channel_mult,
+                num_classes=num_classes,
+                num_heads=args["num_heads"],
+                num_heads_upsample=args["num_heads_upsample"],
+                debug_run=args["debug_run"],
+                final_act=args["final_activation"],
+                image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
+                vit_args=vit_args,
+                unet_input_dict=unet_input_dict)
     return unet
 
 def get_sam_image_encoder(model_type="vit_b",device="cuda"):
@@ -958,7 +986,7 @@ def main():
     args = parser.parse_args()
     if args.unit_test==0:
         print("UNIT TEST: try forward pass on cuda")
-        model = UNetModel(num_classes=5, num_heads=4, num_heads_upsample=-1, weak_signals=1, no_diffusion=False, self_cond=1, cond=1)
+        model = UNetModel(num_classes=5, num_heads=4, num_heads_upsample=-1, no_diffusion=False)
         model.to("cuda")
         print(model.input_dict)
         imsize = 32
@@ -977,7 +1005,7 @@ def main():
         print("output.shape:",output.shape)
     elif args.unit_test==1:
         print("UNIT TEST: try forward pass on cuda, with ugly kwargs")
-        model = UNetModel(num_classes=5, num_heads=4, num_heads_upsample=-1, weak_signals=1, no_diffusion=False, self_cond=1, cond=1)
+        model = UNetModel(num_classes=5, num_heads=4, num_heads_upsample=-1, no_diffusion=False)
         model.to("cuda")
         print(model.input_dict)
         imsize = 32

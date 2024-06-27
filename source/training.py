@@ -28,7 +28,8 @@ from source.utils.argparse_utils import (save_args, TieredParser,load_existing_a
 from sampling import DiffusionSampler
 from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
 from datasets import (CatBallDataset, custom_collate_with_info, 
-                      SegmentationDataset, points_image_from_label,get_dataset_from_args)
+                      SegmentationDataset, points_image_from_label,
+                      bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
@@ -41,9 +42,9 @@ from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
                    fix_clip_matrix_in_state_dict)
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
-                                    cond_image_keys, load_cond_image_probs_from_args,
+                                    dynamic_image_keys,
                                     num_tokens_from_token_info, is_valid_cond_vit_setup,
-                                    pd_table_of_inputs)
+                                    ModelInputKwargs)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
@@ -128,17 +129,13 @@ class DiffusionModelTrainer:
 
         self.log("Saving to: "+self.args.save_path)
 
-        if self.args.cat_ball_data:
-            raise NotImplementedError("cat_ball_data not implemented")
-            """train_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=10000,size=args.image_size)
-            vali_ds = CatBallDataset(max_num_classes=args.max_num_classes,dataset_len=1000,seed_translation=len(train_ds),size=args.image_size)"""
         if self.args.save_best_ckpt:
             n_setups = len(self.args.gen_setups.split(","))
             assert -n_setups < self.args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
             
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
-
+        
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
@@ -148,9 +145,8 @@ class DiffusionModelTrainer:
             self.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
 
         #init models, optimizers etc
-        assert self.args.vit_unet_cond_mode in ['no_vit','both_spatial_unet','both_spatial_vit','no_unet'], "vit_unet_cond_mode must be one of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']"
         
-        if self.args.vit_unet_cond_mode=="no_unet":
+        if not self.model.has_unet:
             opt4 = get_opt4_from_cond_vit_setup(self.args.cond_vit_setup)
             assert opt4 in ["c","d"], "opt4 must be one of ['c','d'] when using no_unet. found: "+opt4
 
@@ -232,6 +228,7 @@ class DiffusionModelTrainer:
             self.log("Data mode, no training loop.")
             self.step = 0
             self.fixed_batch = None
+
         self.restart_flag = False
         self.log("Init complete.")
 
@@ -249,7 +246,7 @@ class DiffusionModelTrainer:
                     pass
             elif self.args.debug_run=="cond_vit_info" and split=="vali":
                 pprint(is_valid_cond_vit_setup(self.args.cond_vit_setup,long_names_instead=1))
-                print(pd_table_of_inputs(self.args.__dict__).to_string())
+                print(ModelInputKwargs(self.args,construct_args=True).kwarg_table)
                 self.exit_flag = True
             else:
                 setattr(self,split+"_dl",dataloader)
@@ -311,39 +308,38 @@ class DiffusionModelTrainer:
     def get_kwargs(self, batch, gen=False, del_none=False):
         x,info = batch
         if self.args.image_encoder!="none":
-            x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
+            if self.args.image_size!=x.shape[-1]:
+                raise ValueError("image_size must be equal to the image size of the image encoder. Found "+str(self.args.image_size)+" vs "+str(x.shape[-1]))
+                x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
         else:
             x = x.to(self.device)
-        model_kwargs = "image,bbox,points,classes,class_names,semantic".split(",")
-        model_kwargs += cond_image_keys
-        model_kwargs = {k: [] for k in model_kwargs}
+        model_kwargs = {k: [] for k in self.model.legal_keys}
         bs = x.shape[0]
         for i in range(bs):
-            if np.random.rand()<=self.args.image_prob or gen:
+            if np.random.rand()<=self.args.p_image or gen:
                 model_kwargs["image"].append(info[i]["image"])
             else:
                 model_kwargs["image"].append(None)
-            if self.args.weak_signals:
-                if self.args.weak_bbox_prob>0:
-                    if np.random.rand()<=self.args.weak_bbox_prob or gen:
-                        raise NotImplementedError("bbox not implemented")
-                    else:
-                        model_kwargs["bbox"].append(None)
-                if self.args.weak_points_prob>0:
-                    if np.random.rand()<=self.args.weak_points_prob or gen:
-                        model_kwargs["points"].append(points_image_from_label(x[i]))
-                    else:
-                        model_kwargs["points"].append(None)
-            if self.args.class_type!="none":
-                if self.args.class_type=="num_classes" and self.args.classes_prob>0:
-                    if np.random.rand()<=self.args.classes_prob or gen:
+            if self.args.p_bbox>0:
+                if np.random.rand()<=self.args.p_bbox or gen:
+                    model_kwargs["bbox"].append(bbox_image_from_label(x[i]))
+                else:
+                    model_kwargs["bbox"].append(None)
+            if self.args.p_points>0:
+                if np.random.rand()<=self.args.p_points or gen:
+                    model_kwargs["points"].append(points_image_from_label(x[i]))
+                else:
+                    model_kwargs["points"].append(None)
+            if self.args.class_type not in ["none",""]:
+                if self.args.class_type=="num_classes" and self.args.p_classes>0:
+                    if np.random.rand()<=self.args.p_classes or gen:
                         model_kwargs["classes"].append(torch.tensor(info[i]["num_classes"],dtype=torch.long))
                     else:
                         model_kwargs["classes"].append(None)
                 else:
                     raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
-            if self.args.class_names_prob>0.0:
-                if np.random.rand()<=self.args.class_names_prob or gen:
+            if self.args.p_class_names>0:
+                if np.random.rand()<=self.args.p_class_names or gen:
                     class_names = list(info[i]["idx_to_class_name"].values())
                     if "padding" in class_names:
                         class_names.remove("padding")
@@ -353,55 +349,70 @@ class DiffusionModelTrainer:
                 else:
                     model_kwargs["class_names"].append(None)
             
-            for k in cond_image_keys:
-                if "cond" in info[i].keys():
-                    model_kwargs[k].append(info[i]["cond"].get(k,None))
+            for k in dynamic_image_keys:
+                model_kwargs[k].append(info[i].get("cond",{}).get(k,None))
+
+            if 0<self.args.p_semantic and 0.0<self.args.semantic_dl_prob<1.0:
+                if np.random.rand()<=self.args.p_semantic or gen:
+                    model_kwargs["semantic"].append(torch.tensor([info[i]["semantic"]],dtype=torch.long))
                 else:
-                    model_kwargs[k].append(None)
-            if 0.0<self.args.semantic_dl_prob<1.0 and self.args.semantic_kwarg_prob>0.0:
-                if np.random.rand()<=self.args.semantic_kwarg_prob or gen:
-                    model_kwargs["semantic"].append(torch.tensor([info[i]["is_semantic"]],dtype=torch.long))
-                else:
-                    model_kwargs["semantic"].append(torch.tensor([-1]))
+                    model_kwargs["semantic"].append(None)
+            for k in model_kwargs.keys():
+                if k in ["image","bbox","points","semantic"]:
+                    if model_kwargs[k][-1] is not None:
+                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
+                elif k in ["classes"]:
+                    if model_kwargs[k][-1] is not None:
+                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
+                elif k in ["class_names"]:
+                    if model_kwargs[k][-1] is not None:
+                        model_kwargs[k][-1] = [cn.to(self.device) for cn in model_kwargs[k][-1]]
+                elif k in dynamic_image_keys:
+                    if model_kwargs[k][-1] is not None:
+                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
+        #end of bs loop
         if self.args.image_encoder!="none":
-            assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
-            image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
-            if len(image_idx)>0:
-                image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
-                if not image.shape[-1]==image.shape[-2]==1024:
-                    image = resize(image,(1024,1024),antialias=True)
-                with torch.no_grad():
-                    image_features = self.image_encoder(to_dev(image))
-                model_kwargs["image_features"] = torch.zeros(bs,*image_features.shape[1:],device=self.device)
-                model_kwargs["image_features"][image_idx] = image_features
-                if self.args.crop_method=="sam_big":
-                    model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
+            model_kwargs["image_features"] = self.get_image_features(model_kwargs)
         model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.cgd.ab)
         for k in list(model_kwargs.keys()):
-            if k in cond_image_keys:
-                model_kwargs[k] = to_dev(model_kwargs[k])
-            else:
-                model_kwargs[k] = unet_kwarg_to_tensor(model_kwargs[k],key=k,dev=self.device)
             if model_arg_is_trivial(model_kwargs[k]):
                 if del_none:
                     del model_kwargs[k]
                 else:
                     model_kwargs[k] = None
+            else:
+                model_kwargs[k] = to_dev(model_kwargs[k])
         return x,model_kwargs,info
     
+    def get_image_features(self,model_kwargs,bs):
+        assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
+        bs = len(model_kwargs["image"])
+        image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
+        if len(image_idx)>0:
+            image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
+            if not image.shape[-1]==image.shape[-2]==1024:
+                image = resize(image,(1024,1024),antialias=True)
+            with torch.no_grad():
+                image_features = self.image_encoder(to_dev(image))
+            model_kwargs["image_features"] = [None if i not in image_idx else image_features[j] 
+                                              for j,i in enumerate(range(bs))]
+            if self.args.crop_method=="sam_big":
+                model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
+        return image_features
+
     def get_self_cond(self,info):
-        if (not self.args.self_cond) or (self.args.self_cond_prob==0):
+        if (not self.args.self_cond) or (self.args.p_self_cond==0):
             self_cond = False
         else:
             if self.args.self_cond_batched:
-                if self.args.self_cond_prob>=np.random.rand():
+                if self.args.p_self_cond>=np.random.rand():
                     self_cond = True
                 else:
                     self_cond = False
             else:
                 self_cond = []
                 for _ in range(len(info)):
-                    self_cond.append(self.args.self_cond_prob>=np.random.rand())
+                    self_cond.append(self.args.p_self_cond>=np.random.rand())
         return self_cond
 
     def run_train_step(self, batch):
