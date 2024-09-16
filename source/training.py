@@ -15,7 +15,7 @@ import json
 import argparse
 import time
 from pprint import pprint
-from source.utils.fp16_util import (
+from source.utils.fp16_utils import (
     make_master_params,
     master_params_to_model_params,
     model_grads_to_master_grads,
@@ -27,24 +27,24 @@ from source.utils.argparse_utils import (save_args, TieredParser,load_existing_a
                             overwrite_existing_args,get_ckpt_name)
 from sampling import DiffusionSampler
 from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
-from datasets import (CatBallDataset, custom_collate_with_info, 
+from source.utils.data_utils import (CatBallDataset, custom_collate_with_info, 
                       SegmentationDataset, points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
 from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
-from source.utils.utils import (dump_kvs,get_all_metrics,MatplotlibTempBackend,
-                   fancy_print_kvs,bracket_glob_fix,format_relative_path,
-                   set_random_seed,is_infinite_and_not_none,get_time,
-                   AlwaysReturnsFirstItemOnNext,format_save_path,
-                   load_state_dict_loose,shaprint,to_dev,model_arg_is_trivial,
-                   nice_split,imagenet_preprocess,sam_resize_index, prettify_classname,
-                   fix_clip_matrix_in_state_dict)
+from source.utils.mixed_utils import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
+                   format_relative_path,set_random_seed,is_infinite_and_not_none,
+                   get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
+                   shaprint,to_dev,model_arg_is_trivial,nice_split,imagenet_preprocess,
+                   sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict)
+from jlc import load_state_dict_loose, MatplotlibTempBackend
+from source.utils.metric_and_loss_utils import get_all_metrics
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
                                     dynamic_image_keys,
                                     num_tokens_from_token_info, is_valid_cond_vit_setup,
-                                    ModelInputKwargs)
+                                    ModelInputKwargs,all_input_keys)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
@@ -134,6 +134,8 @@ class DiffusionModelTrainer:
             assert -n_setups < self.args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
             
         if self.args.mode in ["new","load","cont"]:
+            self.all_input_keys = all_input_keys
+            self.used_dynamic_image_keys = [k for k in dynamic_image_keys if k in self.model.legal_keys]
             self.create_datasets(["train","vali"])
         
         self.kvs_buffer = {}
@@ -313,6 +315,7 @@ class DiffusionModelTrainer:
                 x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
         else:
             x = x.to(self.device)
+        #model_kwargs = {k: [] for k in self.all_input_keys}
         model_kwargs = {k: [] for k in self.model.legal_keys}
         bs = x.shape[0]
         for i in range(bs):
@@ -349,7 +352,7 @@ class DiffusionModelTrainer:
                 else:
                     model_kwargs["class_names"].append(None)
             
-            for k in dynamic_image_keys:
+            for k in self.used_dynamic_image_keys:
                 model_kwargs[k].append(info[i].get("cond",{}).get(k,None))
 
             if 0<self.args.p_semantic and 0.0<self.args.semantic_dl_prob<1.0:

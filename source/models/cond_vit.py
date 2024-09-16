@@ -18,15 +18,17 @@ import copy
 import math
 import warnings
 import pandas as pd
-from source.utils.utils import get_named_datasets,nice_split
+from source.utils.mixed_utils import get_named_datasets,nice_split
 from argparse import Namespace
 from source.utils.argparse_utils import TieredParser
 
-arg_items = TieredParser().get_args(alt_parse_args=["--model_name","default"]).__dict__.items()
+tp = TieredParser()
+arg_items = tp.get_args(alt_parse_args=["--model_name","default"]).__dict__.items()
 cond_image_prob_keys = [k for k,v in arg_items if k.startswith("p_")]
 cond_image_keys =[k[2:] for k in cond_image_prob_keys]
 
 #dynamic_image_keys = ["same_classes","same_dataset","same_vol","adjacent"]
+#all_input_keys = cond_image_keys+dynamic_image_keys
 
 def assert_one_to_one_list_of_str(list1,list2):
     assert isinstance(list1,list) and isinstance(list2,list), "Expected list, found: "+str(type(list1))+" and "+str(type(list2))
@@ -41,6 +43,9 @@ class ModelInputKwargs:
     as well as the dataset
     """
     def __init__(self,args,construct_args=False,assert_valid=True):
+        if args is None:
+            #get default args
+            args = tp.get_args(alt_parse_args=["--model_name","default"]).__dict__
         if isinstance(args,Namespace):
             args = copy.deepcopy(args.__dict__)
         else:
@@ -101,12 +106,12 @@ class ModelInputKwargs:
         cnd = self.hyper_params["class_names_datasets"]
 
         inputs = {
-            "sample":         {**im_d, "in_chans": c_diff},
-            "image":          {**im_d, "in_chans": c_im  },
+            "sample":         {**im_d, "in_chans": c_diff},#6X
+            "image":          {**im_d, "in_chans": c_im  },#3X
             "image_features": {**im_d, "in_chans": c_im_enc},
-            "points":         {**im_d, "in_chans": c_diff},
+            "points":         {**im_d, "in_chans": c_diff},#6X
             "bbox":           {**im_d, "in_chans": c_diff},
-            "self_cond":      {**im_d, "in_chans": c_diff},
+            "self_cond":      {**im_d, "in_chans": c_diff},#6X
             "same_vol":       {**im_d, "in_chans": c_im_d},
             "same_classes":   {**im_d, "in_chans": c_im_d},
             "same_dataset":   {**im_d, "in_chans": c_im_d},
@@ -117,10 +122,15 @@ class ModelInputKwargs:
             "semantic":       {"type": "scalar_discrete", "size": 2}
             }
         #add what is needed to load each input
-        load_type =  {"dynamic": ["adjacent","same_vol","same_classes","same_dataset"], #dynamic loading
-                      "unique": ["image_features","time","sample","num_classes","semantic"], #unique processing required
+        load_type =  {"dynamic": ["adjacent","same_vol","same_classes","same_dataset"], #dynamic loading inside dataloader
+                      "unique": ["image_features","time","sample","num_classes","semantic","self_cond","points","bbox"], #unique processing required
                       "info": ["class_names","semantic","num_classes","image"]#ready as-is: simply take from info
-                      } 
+                      }
+        #check that load_type is defined for all inputs
+        assert_one_to_one_list_of_str(list(inputs.keys()),sum([v for v in load_type.values()],[]))
+        for k,v in load_type.items():
+            for k2 in v:
+                inputs[k2]["load_type"] = k
         
         need_int2bit = ["same_classes","same_dataset","same_vol","adjacent","bbox","points","sample"]
         #               (im,gt)         (im,gt)        (im,gt)    (im,gt)    (gt)   (gt)     (gt)
@@ -209,6 +219,11 @@ class ModelInputKwargs:
                 raise e
             else:
                 return False
+
+mik = ModelInputKwargs(args=None,construct_args=True,assert_valid=True)
+all_input_keys = mik.kwarg_table["name"].tolist()
+all_load_types = [item["load_type"] for item in mik.kwarg_table["etc"]]
+dynamic_image_keys = [k for k,lt in zip(all_input_keys,all_load_types) if lt=="dynamic"]
 
 vit_seperate_params = { 'num_params':          [5113088, 28510720, 89670912, 308278272, 637026048],
                         'model_name':          ['vit_tiny', 'vit_small', 'vit_b', 'vit_l', 'vit_h'],
@@ -1817,7 +1832,7 @@ def main():
     import argparse
     import sys, os
     sys.path.append(os.path.join(os.path.dirname(__file__), '..')) 
-    from utils.utils import set_random_seed
+    from source.utils.mixed_utils import set_random_seed
     parser = argparse.ArgumentParser()
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()

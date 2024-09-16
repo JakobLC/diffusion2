@@ -17,7 +17,7 @@ from datasets import (AnalogBits,load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func,get_dataset_from_args)
 import copy
-from utils.utils import (imagenet_preprocess, get_mse_metrics,
+from source.utils.mixed_utils import (imagenet_preprocess, get_mse_metrics,
                          get_segment_metrics, shaprint, 
                          load_json_to_dict_list,sam_resize_index, 
                          postprocess_list_of_segs,wildcard_match)
@@ -390,7 +390,7 @@ class SavedSamplesManager:
 
         if (opts_keys is None) or is_empty_list(opts_keys):
             ignore_keys = load_defaults(filename="jsons/sample_opts_default.json",
-                                                return_special_argkey="dynamic")
+                                                return_special_argkey="dynamic").keys()
             values_per_key = {}
             for i in ss_idx:
                 if hasattr(self.saved_samples[i],"sample_opts"):

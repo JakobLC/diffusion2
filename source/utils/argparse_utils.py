@@ -5,9 +5,12 @@ import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
-from source.utils.utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
+from source.utils.mixed_utils import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
 import copy
 from shutil import rmtree
+
+special_argkeys = ["deprecated","dynamic","version_backwards_compatability","renamed"]
+dont_load_argskeys = [k for k in special_argkeys if k!="dynamic"]
 
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     s_orig = copy.copy(s)
@@ -53,11 +56,10 @@ def list_wrap_type(t):
             return t(x)
     return list_wrap
 
-def load_defaults(idx=0,ordered_dict=False,filename="jsons/args_default.json",
+def load_defaults(idx=0,
+                  ordered_dict=False,
+                  filename="jsons/args_default.json",
                   return_special_argkey=None,
-                  deprecated_argkey="deprecated",
-                  dynamic_argkey="dynamic",
-                  backwards_comp_argkey="version_backwards_compatability",
                   version=None):
     if version is not None:
         assert idx==0, f"version={version} not supported with idx={idx}."
@@ -66,22 +68,21 @@ def load_defaults(idx=0,ordered_dict=False,filename="jsons/args_default.json",
         args_dicts = json.loads(default_path.read_text(), object_pairs_hook=OrderedDict)    
     else:
         args_dicts = json.loads(default_path.read_text())
-    special_argkeys = [deprecated_argkey,dynamic_argkey,backwards_comp_argkey]
     if return_special_argkey is not None:
         assert return_special_argkey in special_argkeys, f"return_special_argkey={return_special_argkey} not supported."
-        return args_dicts[return_special_argkey].keys()
+        return args_dicts[return_special_argkey]
     if version is not None:
         assert isinstance(version,str), f"version={version}."
     args_dict = {}
     for k,v in args_dicts.items():
         if isinstance(v,dict):
-            if k not in [deprecated_argkey,backwards_comp_argkey]:
+            if k not in dont_load_argskeys:
                 for k2,v2 in v.items():
                     args_dict[k2] = v2[idx]
         else:
             args_dict[k] = v[idx]
     if version is not None:
-        for k,v in args_dicts[backwards_comp_argkey].items():
+        for k,v in args_dicts["version_backwards_compatability"].items():
             for k2,v2 in v.items():
                 if eval_version_condition(k2,version):
                     args_dict[k] = v2
@@ -237,6 +238,7 @@ class TieredParser():
                     deprecated_argkey="deprecated",
                     backwards_comp_argkey="version_backwards_compatability",
                     dynamic_argkey="dynamic",
+                    rename_argkey="renamed",
                     key_to_type={"origin": dict,
                                  "name_match_str": lambda x: get_ckpt_name(x,return_multiple_matches=True),
                                  "model_name": str_with_semicolon_version,
@@ -253,15 +255,15 @@ class TieredParser():
         self.deprecated_argkey = deprecated_argkey
         self.backwards_comp_argkey = backwards_comp_argkey
         self.dynamic_argkey = dynamic_argkey
+        self.rename_argkey = rename_argkey
         self.defaults_func = partial(load_defaults,filename=self.filename_def)
         self.descriptions = self.defaults_func(idx=1)
 
-        self.deprecated_args = self.defaults_func(return_special_argkey=deprecated_argkey,
-                                                  deprecated_argkey=deprecated_argkey)
-        self.backwards_comp_args = self.defaults_func(return_special_argkey=backwards_comp_argkey,
-                                                      backwards_comp_argkey=backwards_comp_argkey)
-        self.dynamic_args = self.defaults_func(return_special_argkey=dynamic_argkey,
-                                               dynamic_argkey=dynamic_argkey)
+        self.deprecated_args = self.defaults_func(return_special_argkey="deprecated")
+        self.backwards_comp_args = self.defaults_func(return_special_argkey="version_backwards_compatability")
+        self.dynamic_args = self.defaults_func(return_special_argkey="dynamic")
+        self.renamed_args = self.defaults_func(return_special_argkey="renamed")
+
         self.parser = argparse.ArgumentParser()
         self.type_dict = {}
         for k, v in self.defaults_func().items():
@@ -278,6 +280,14 @@ class TieredParser():
                                      type=t, 
                                      help=self.get_description_from_key(k))
             self.type_dict[k] = t
+
+    def update_renamed_args(self,args):
+        for k,v in self.renamed_args.items():
+            if k in args.keys():
+                assert v not in args.keys(), f"Tried to rename {k} to {v}, but both keys are present in args (unexpected)."
+                args[v] = args[k]
+                del args[k]
+        return args
 
     def construct_args(self,tiers,tiers_dict=None,tiers_for_origin=list(range(4))):
         if tiers_dict is None:
@@ -303,6 +313,10 @@ class TieredParser():
             commandline_list = sys.argv[1:]
         else:
             commandline_list = alt_parse_args
+        if len(commandline_list)==1:
+            if commandline_list[0]=="--help":
+                self.parser.print_help()
+                sys.exit()
         assert len(commandline_list)%2==0, f"commandline_list={commandline_list} must have an even number of elements."
         assert all([x.startswith("--") for x in commandline_list[::2]]), f"All even elements of commandline_list={commandline_list} must start with --."
         assert all([not x.startswith("--") for x in commandline_list[1::2]]), f"All odd elements of commandline_list={commandline_list} must not start with --."
@@ -466,7 +480,9 @@ def load_existing_args(path_or_id,
                   verify_keys=True,
                   origin_replace_keys=["commandline","modified_args"],
                   use_loaded_dynamic_args=True,
+                  renamed_load_keys=True,
                   behavior_on_mismatch="raise"):
+    assert behavior_on_mismatch in ["raise","theo","loaded"], f"behavior_on_mismatch={behavior_on_mismatch} must be one of ['raise','theo','loaded']"
     tp = TieredParser(name_key)
     if str(path_or_id).endswith(".json"):
         args_loaded = json.loads(Path(path_or_id).read_text())
@@ -481,9 +497,10 @@ def load_existing_args(path_or_id,
         args_loaded["origin"] = {}
     if not tp.version_key in args_loaded.keys():
         args_loaded[tp.version_key] = "0.0.0"
+    args_loaded = tp.update_renamed_args(args_loaded)
     modified_args = {tp.name_key: args_loaded[tp.name_key],
                      tp.version_key: args_loaded[tp.version_key]}
-
+    
     for k,v in args_loaded["origin"].items():
         if v in origin_replace_keys:
             modified_args[k] = args_loaded[k]

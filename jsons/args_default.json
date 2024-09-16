@@ -32,7 +32,7 @@
         "image_size": [64,                          "Image resolution. TYPE: positive integer. DEFAULT: 64. "],
         "deeper_net": [false,                       "Should a deeper net be used? TYPE: boolean. DEFAULT: true. "],
         "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "],
-        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer or 0 (no maximum). DEFAULT: 64. "],
+        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
@@ -164,5 +164,17 @@
         "vit_unet_cond_mode": ["both_spatial_unet", "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_spatial_unet'. "],
         "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"},
         "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0}
+    },
+    "renamed": {
+        "image_prob": "p_image",
+        "same_dataset_prob": "p_same_dataset",
+        "weak_points_prob": "p_points",
+        "weak_bbox_prob": "p_bbox",
+        "classes_prob": "p_classes",
+        "adjacent_prob": "p_adjacent",
+        "same_classes_prob": "p_same_classes",
+        "class_names_prob": "p_class_names",
+        "same_vol_prob": "p_same_vol",
+        "self_cond_prob": "p_self_cond"
     }
 }

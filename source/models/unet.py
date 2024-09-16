@@ -11,8 +11,8 @@ import os
 from source.models.cond_vit import (FancyViT, ModelInputKwargs,
                                     token_info_overview,ModelInputKwargs,
                                     fancy_vit_from_args)
-from source.utils.fp16_util import convert_module_to_f16, convert_module_to_f32
-from source.utils.utils import model_arg_is_trivial, nice_split
+from source.utils.fp16_utils import convert_module_to_f16, convert_module_to_f32
+from source.utils.mixed_utils import model_arg_is_trivial, nice_split
 from source.models.nn import (
     SiLU,
     conv_nd,
@@ -486,7 +486,7 @@ class UNetModel(nn.Module):
                     self.input_to_channels[k] = slice(self.in_channels,self.in_channels+c)
                     self.in_channels += c
                 assert imsize==self.image_size, "all image sizes must be the same. kwarg "+k+" has image size "+str(imsize)+" while the model has image size "+str(self.image_size)
-            
+
             self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
                 linear(model_channels, time_embed_dim),

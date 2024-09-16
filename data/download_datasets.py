@@ -17,9 +17,9 @@ import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
-from source.utils.utils import quantile_normalize, prettify_classname, str_to_seed
+from source.utils.mixed_utils import quantile_normalize, prettify_classname, str_to_seed
 import cv2
-from source.datasets import SegmentationDataset, save_sam_features, get_all_valid_datasets
+from source.utils.data_utils import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
 import zipfile
 import skimage

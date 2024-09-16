@@ -3,14 +3,15 @@
 import enum
 import numpy as np
 import torch
-from datasets import AnalogBits
-from source.utils.utils import normal_kl,mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
+from source.utils.data_utils import AnalogBits
+from source.utils.mixed_utils import normal_kl
+from source.utils.metric_and_loss_utils import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
 from source.models.cond_vit import dynamic_image_keys
 
 def cond_kwargs_int2bit(kwargs,ab,keys=dynamic_image_keys):
     """loops over dynamic image keys and converts the label part to bits"""
-    pesent_dynamic_keys = set(kwargs.keys()).intersection(set(keys))
+    pesent_dynamic_keys = [key for key in keys if key in kwargs.keys()]
     for key in pesent_dynamic_keys:
         #x should be a tuple of (label, image). verify this
         assert all([isinstance(x,(tuple,list)) for x in kwargs[key]]), f"expected a tuple of (label,image) for key={key}. got type(x[0])={type(kwargs[key][0])}"
