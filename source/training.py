@@ -31,13 +31,14 @@ from source.utils.data_utils import (CatBallDataset, custom_collate_with_info,
                       SegmentationDataset, points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
-from source.models.unet import create_unet_from_args, unet_kwarg_to_tensor, get_sam_image_encoder
+from source.models.unet import create_unet_from_args, get_sam_image_encoder
 from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
 from source.utils.mixed_utils import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
                    format_relative_path,set_random_seed,is_infinite_and_not_none,
                    get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
                    shaprint,to_dev,model_arg_is_trivial,nice_split,imagenet_preprocess,
-                   sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict)
+                   sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict,
+                   format_model_kwargs,unet_kwarg_to_tensor)
 from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss_utils import get_all_metrics
 from torchvision.transforms.functional import resize
@@ -307,7 +308,7 @@ class DiffusionModelTrainer:
 
         return self.model, swap_pointers_func
 
-    def get_kwargs(self, batch, gen=False, del_none=False):
+    def get_kwargs(self, batch, gen=False, del_none=True):
         x,info = batch
         if self.args.image_encoder!="none":
             if self.args.image_size!=x.shape[-1]:
@@ -315,8 +316,7 @@ class DiffusionModelTrainer:
                 x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
         else:
             x = x.to(self.device)
-        #model_kwargs = {k: [] for k in self.all_input_keys}
-        model_kwargs = {k: [] for k in self.model.legal_keys}
+        model_kwargs = {k: [] for k in self.all_input_keys}
         bs = x.shape[0]
         for i in range(bs):
             if np.random.rand()<=self.args.p_image or gen:
@@ -333,6 +333,10 @@ class DiffusionModelTrainer:
                     model_kwargs["points"].append(points_image_from_label(x[i]))
                 else:
                     model_kwargs["points"].append(None)
+            if self.args.p_self_cond>0:
+                val = np.random.rand()<=self.args.p_self_cond or gen
+                model_kwargs["self_cond"].append(torch.tensor(val,dtype=torch.long))
+                    
             if self.args.class_type not in ["none",""]:
                 if self.args.class_type=="num_classes" and self.args.p_classes>0:
                     if np.random.rand()<=self.args.p_classes or gen:
@@ -356,35 +360,15 @@ class DiffusionModelTrainer:
                 model_kwargs[k].append(info[i].get("cond",{}).get(k,None))
 
             if 0<self.args.p_semantic and 0.0<self.args.semantic_dl_prob<1.0:
-                if np.random.rand()<=self.args.p_semantic or gen:
+                if np.random.rand()<=self.args.p_semantic:
                     model_kwargs["semantic"].append(torch.tensor([info[i]["semantic"]],dtype=torch.long))
                 else:
                     model_kwargs["semantic"].append(None)
-            for k in model_kwargs.keys():
-                if k in ["image","bbox","points","semantic"]:
-                    if model_kwargs[k][-1] is not None:
-                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
-                elif k in ["classes"]:
-                    if model_kwargs[k][-1] is not None:
-                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
-                elif k in ["class_names"]:
-                    if model_kwargs[k][-1] is not None:
-                        model_kwargs[k][-1] = [cn.to(self.device) for cn in model_kwargs[k][-1]]
-                elif k in dynamic_image_keys:
-                    if model_kwargs[k][-1] is not None:
-                        model_kwargs[k][-1] = model_kwargs[k][-1].to(self.device)
         #end of bs loop
         if self.args.image_encoder!="none":
             model_kwargs["image_features"] = self.get_image_features(model_kwargs)
         model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.cgd.ab)
-        for k in list(model_kwargs.keys()):
-            if model_arg_is_trivial(model_kwargs[k]):
-                if del_none:
-                    del model_kwargs[k]
-                else:
-                    model_kwargs[k] = None
-            else:
-                model_kwargs[k] = to_dev(model_kwargs[k])
+        model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
     
     def get_image_features(self,model_kwargs,bs):
@@ -403,27 +387,11 @@ class DiffusionModelTrainer:
                 model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
         return image_features
 
-    def get_self_cond(self,info):
-        if (not self.args.self_cond) or (self.args.p_self_cond==0):
-            self_cond = False
-        else:
-            if self.args.self_cond_batched:
-                if self.args.p_self_cond>=np.random.rand():
-                    self_cond = True
-                else:
-                    self_cond = False
-            else:
-                self_cond = []
-                for _ in range(len(info)):
-                    self_cond.append(self.args.p_self_cond>=np.random.rand())
-        return self_cond
-
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         x,model_kwargs,info = self.get_kwargs(batch)
-        self_cond = self.get_self_cond(info)
 
-        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs,self_cond=self_cond)
+        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
 
         output = {**output,**model_kwargs}
         

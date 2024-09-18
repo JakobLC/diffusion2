@@ -1,6 +1,6 @@
 {
     "gen_setup"                       : ["vali",          "name of the generation to use. TYPE: str. DEFAULT: 'vali'"],
-    "gen_version"                     : ["1.1.0",         "version of the generation to use. TYPE: str. DEFAULT: '1.1.0'"],
+    "gen_version"                     : ["1.1.1",         "version of the generation to use. TYPE: str. DEFAULT: '1.1.0'"],
     "dynamic": {
         "gen_id"                      : ["[gen_setup]_*", "Unique id of the generation. Replaces [key] with corrspnd str. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[gen_setup]_*'"],
         "model_id"                    : ["",              "Id of the model of the ckpt used sampling. TYPE: str. DEFAULT: ''"],
@@ -23,12 +23,11 @@
         "guidance_kwargs"             : ["",              "Keyword arguments which are passed to the guidance forward pass, empty for none. TYPE: str. DEFAULT: ''"],
         "eval_batch_size"             : [0,               "Batch size for evaluation. 0 for same as train. TYPE: int. DEFAULT: 0"],
         "sampler_type"                : ["ddpm",          "Type of sampler to use. One of ['ddpm','ddim']. TYPE: str. DEFAULT: 'ddpm'"],
-        "self_cond"                   : [false,           "Whether to use self conditioning. TYPE: bool. DEFAULT: false"],
         "ema_idx"                     : [-1,              "EMA model idx to use for sampling. negative for no EMA (normal model). TYPE: float. DEFAULT: -1"],
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
-        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. One of ['train', 'only_image', 'all']. TYPE: str. DEFAULT: 'train'"],
+        "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. Either a str of comma-sep key names to use or one of ['train', 'only_image', 'all', 'none', 'classes']. TYPE: str. DEFAULT: 'train'"],
         "postprocess"                 : ["none",          "Which postprocessing to use. One of ['none','area0.005']. TYPE: str. DEFAULT: 'none'"],
-        "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: true"],
+        "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],
         "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"]
     },
     "meta options": {
@@ -58,6 +57,7 @@
         "pure_eval_mode": {"<1.1.0": false}
     },
     "deprecated": {
+        "self_cond": false
         
     },
     "renamed": {

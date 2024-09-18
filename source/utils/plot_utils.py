@@ -12,7 +12,7 @@ from source.utils.argparse_utils import TieredParser
 from source.utils.mixed_utils import (bracket_glob_fix, save_dict_list_to_json, 
                                 imagenet_preprocess, 
                                 load_json_to_dict_list, wildcard_match,
-                                sam_resize_index)
+                                sam_resize_index,unet_kwarg_to_tensor)
 from source.utils.metric_and_loss_utils import get_likelihood
 from source.utils.data_utils import get_dataset_from_args, load_raw_image_label
 import cv2
@@ -370,7 +370,7 @@ def replace_nan_inf(x,replace_nan=0,replace_inf=0):
 def error_image(x):
     return cm.RdBu(replace_nan_inf(255*mean_dim0(x)).astype(np.uint8))[:,:,:3]
 
-def contains_key(key,dictionary,ignore_none=True):
+def contains_nontrivial_key_val(key,dictionary,ignore_none=True):
     has_key = key in dictionary.keys()
     if has_key:
         if ignore_none:
@@ -438,7 +438,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
                 "image": normal_image2,
                 "points": points_aboi}
     zero_image = np.zeros((image_size,image_size,3))
-    has_classes = contains_key("classes",model_kwargs)
+    has_classes = contains_nontrivial_key_val("classes",model_kwargs)
     if not os.path.exists(foldername):
         os.makedirs(foldername)
     filenames = []
@@ -447,8 +447,8 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
         ii = save_i_idx[i]
         images = [[map_dict["x"](sample_output["x"][ii],i)],
                   [map_dict["pred"](sample_output["pred"][ii],i)],
-                  [map_dict["image"](model_kwargs["image"][ii],i)] if contains_key("image",model_kwargs) else [zero_image]]
-        images[0].append(map_dict["points"](model_kwargs["points"][ii],i) if "points" in model_kwargs.keys() else zero_image)
+                  [map_dict["image"](model_kwargs["image"][ii],i)] if contains_nontrivial_key_val("image",model_kwargs) else [zero_image]]
+        images[0].append(map_dict["points"](model_kwargs["points"][ii],i) if contains_nontrivial_key_val("points",model_kwargs) else zero_image)
         images[1].append(zero_image)
         images[2].append(zero_image)
         text = [["x"],["final pred_x"],["image"]]
@@ -592,6 +592,8 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         if output.get(k,None) is None:
             show_keys.remove(k)
             continue
+        if isinstance(output[k],list):
+            output[k] = unet_kwarg_to_tensor(output[k])
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"

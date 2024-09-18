@@ -87,7 +87,6 @@
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
         "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
-        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
         "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "]
     },
     "meta": {
@@ -163,7 +162,8 @@
         "cat_ball_data": [false,                    "Should categorical ball data be used? TYPE: boolean. DEFAULT: false. "],
         "vit_unet_cond_mode": ["both_spatial_unet", "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_spatial_unet'. "],
         "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"},
-        "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0}
+        "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0},
+        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "]
     },
     "renamed": {
         "image_prob": "p_image",

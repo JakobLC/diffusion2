@@ -4,7 +4,7 @@ import enum
 import numpy as np
 import torch
 from source.utils.data_utils import AnalogBits
-from source.utils.mixed_utils import normal_kl
+from source.utils.mixed_utils import normal_kl, construct_points
 from source.utils.metric_and_loss_utils import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
 from source.models.cond_vit import dynamic_image_keys
@@ -242,12 +242,21 @@ class ContinuousGaussianDiffusion():
             raise NotImplementedError(self.sampler_type)
         return t
     
-    def train_loss_step(self, model, x, model_kwargs={}, eps=None, t=None, self_cond=False):
-        """compute one training step and return the loss"""
+    def convert_self_cond(self,model_kwargs,bs):
+        if "self_cond" in model_kwargs.keys():
+            self_cond = model_kwargs["self_cond"]
+            del model_kwargs["self_cond"]
+        else:
+            self_cond = False
         if isinstance(self_cond,bool):
-            self_cond = [self_cond for _ in range(len(x))]
-        assert isinstance(self_cond,list)
-        self_cond = torch.tensor(self_cond).view(-1,1,1,1).to(x.device)
+            self_cond = [self_cond for _ in range(bs)]
+        assert isinstance(self_cond,list) or torch.is_tensor(self_cond)
+        assert len(self_cond)==bs
+        return self_cond
+
+    def train_loss_step(self, model, x, model_kwargs={}, eps=None, t=None):
+        """compute one training step and return the loss"""
+        self_cond = self.convert_self_cond(model_kwargs,x.shape[0])
 
         if self.ab is not None:
             assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must be 1, got {x.shape[self.ab.bit_dim]}"
@@ -255,7 +264,7 @@ class ContinuousGaussianDiffusion():
             x = self.ab.int2bit(x)
         if "points" in model_kwargs.keys():
             if model_kwargs["points"] is not None:
-                model_kwargs["points"] = model_kwargs["points"]*x
+                model_kwargs["points"] = construct_points(model_kwargs["points"],x)
         if t is None:
             t = self.sample_t(x.shape[0]).to(x.device)
         if eps is None:
@@ -270,7 +279,7 @@ class ContinuousGaussianDiffusion():
             with torch.no_grad():
                 output = model(x_t, t, **model_kwargs)
                 pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
-                model_kwargs['self_cond'] = pred_x*self_cond #not the most effecient way to do this, but easy to implement TODO
+                model_kwargs['self_cond'] = [(pred_x[i] if self_cond[i] else None) for i in range(len(x))]
         else:
             model_kwargs['self_cond'] = None
     
@@ -369,8 +378,10 @@ class ContinuousGaussianDiffusion():
             return x_s_dist['mean'] + x_s_dist['std'] * torch.randn_like(x_t)
         
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
-                    guidance_weight=0.0, self_cond=False, progress_bar=False, save_i_steps=[], save_i_idx=[],
+                    guidance_weight=0.0, progress_bar=False, save_i_steps=[], save_i_idx=[],
                     guidance_kwargs="",save_entropy_score=False):
+        self_cond = self.convert_self_cond(model_kwargs,x_init.shape[0])
+
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -427,8 +438,8 @@ class ContinuousGaussianDiffusion():
             if save_entropy_score:
                 sample_output["entropy_score"].append(entropy_score_from_predx(pred_x))
 
-            if self_cond:
-                model_kwargs['self_cond'] = pred_x
+            if any(self_cond):
+                model_kwargs['self_cond'] = [(pred_x[i] if self_cond[i] else None) for i in range(len(x_t))]
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
 

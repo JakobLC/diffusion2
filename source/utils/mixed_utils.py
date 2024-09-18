@@ -779,6 +779,100 @@ def fix_clip_matrix_in_state_dict(ckpt_model,model):
             ckpt_model["vit.class_names_embed.0.weight"] = model.vit.class_names_embed[0].weight
     return ckpt_model
 
+def format_model_kwargs(model_kwargs,del_none=True,dev="cuda",list_instead=False):
+    """Formats a kwarg dictionary with list arguments as 
+    a tensor on the specified device"""
+    bs = None
+    for k in model_kwargs.keys():
+        if not model_arg_is_trivial(model_kwargs[k]):
+            if bs is None:
+                bs = len(model_kwargs[k])
+            else:
+                assert bs==len(model_kwargs[k]), f"expected same bs. Found {bs} and {len(model_kwargs[k])} for {k}"
+            model_kwargs[k] = unet_kwarg_to_tensor(model_kwargs[k],key=k,dev=dev,list_instead=list_instead)
+        else:
+            model_kwargs[k] = None
+
+    if del_none:
+        for k in list(model_kwargs.keys()):
+            if model_kwargs[k] is None:
+                del model_kwargs[k]
+    return model_kwargs
+
+def unet_kwarg_to_tensor(kwarg,key=None,non_tensor_exception_keys=["class_names"],dev=None,list_instead=False):
+    key_exception = False
+    if key is not None:
+        if key in non_tensor_exception_keys:
+            key_exception = True
+    if kwarg is None:
+        pass
+    elif torch.is_tensor(kwarg):
+        pass
+    elif key_exception:
+        crit = [isinstance(item,(str,tuple,int,torch.Tensor,list)) or (item is None) for item in kwarg]
+        assert all(crit), f"If kwarg for exception keys is a list, then all elements must be str, tuple, int, or torch.Tensor. kwarg={kwarg}"
+        if model_arg_is_trivial(kwarg):
+            kwarg = None
+        else:
+            kwarg = [[] if item is None else item for item in kwarg]
+    elif isinstance(kwarg, list):
+        assert all([(isinstance(kw, torch.Tensor) or kw is None) for kw in kwarg]), f"If kwarg is a list, all elements must be torch.Tensor or None. kwarg={kwarg}"
+        if all([kw is None for kw in kwarg]): #also return true for empty list
+            kwarg = None
+        elif all([isinstance(kw, torch.Tensor) for kw in kwarg]):
+            kwarg = torch.stack(kwarg)
+        else:
+            bs = len(kwarg)
+            shapes = [kw.shape for kw in kwarg if kw is not None]
+            s0 = [i for i in range(bs) if kwarg[i] is not None][0]
+            assert all([s==shapes[0] for s in shapes]), f"If kwarg is a list, all tensors must have the same shape. kwarg={kwarg}"
+            if list_instead:
+                full_kwarg = [None for _ in range(bs)]
+            else:
+                full_kwarg = torch.zeros((bs,)+shapes[0],
+                                     dtype=kwarg[s0].dtype,
+                                     device=kwarg[s0].device)
+            for i in range(bs):
+                if kwarg[i] is not None:
+                    full_kwarg[i] = kwarg[i]
+            kwarg = full_kwarg
+    else:
+        raise ValueError(f"kwarg={kwarg} is not a valid type. must be None, torch.Tensor, or list of torch.Tensor/None")
+    if (dev is not None) and torch.is_tensor(kwarg):
+        kwarg = kwarg.to(dev)
+    elif (dev is not None) and isinstance(kwarg, list):
+        kwarg = [(kw.to(dev) if kw is not None else None) for kw in kwarg]
+    return kwarg
+
+
+def construct_points(points,x,as_tensor=False):
+    """Generates point images from ground truth
+    
+    Args:
+        points (list): list of points images or None for batch 
+            indices not given points. Points images are torch.tensors 
+            of shape (H,W) with values in [0.0,1.0] representing
+            the presence of a point at that location if the value
+            is 1. 
+        x (torch.tensor): Ground truth with shape (bs,num_bits,H,W)
+        as_tensor (bool): If True, returns the points as torch.tensors.
+            Makes the items which are None into torch.zeros.
+
+    Returns:
+        list: list of points images with shape (num_bits,H,W) or None
+    """
+    assert not model_arg_is_trivial(points), "expected points to be non-trivial"
+    assert len(points)==len(x), f"len(points)={len(points)} must be equal to len(x)={len(x)}"
+    out = []
+    for i in range(len(x)):
+        if points[i] is None:
+            out.append(None)
+        else:
+            out.append(points[i]*x[i])
+    if as_tensor:
+        out = unet_kwarg_to_tensor(out)
+    return out
+
 def main():
     import argparse
     
@@ -810,6 +904,6 @@ def main():
             shaprint(postprocess_batch(batch,seg_kwargs={'mode':'gauss_raw'}))
     else:
         raise ValueError(f"Unknown unit test index: {args.unit_test}")
-        
+
 if __name__=="__main__":
     main()

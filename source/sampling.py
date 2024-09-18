@@ -5,10 +5,10 @@ from argparse import Namespace
 from collections import defaultdict
 import os
 import tqdm
-from source.models.unet import unet_kwarg_to_tensor
 from source.utils.mixed_utils import (get_time,save_dict_list_to_json,
                    check_keys_are_same,mask_from_imshape,postprocess_batch,
-                   sam_resize_index,apply_mask)
+                   sam_resize_index,apply_mask,unet_kwarg_to_tensor,construct_points,
+                   model_arg_is_trivial)
 from source.utils.metric_and_loss_utils import get_segment_metrics
 from source.utils.plot_utils import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from source.utils.argparse_utils import TieredParser, save_args, overwrite_existing_args
@@ -164,9 +164,10 @@ class DiffusionSampler(object):
                                             progress_bar=self.opts.progress_bar_timestep,
                                             save_i_steps=self.save_i_steps,
                                             save_i_idx=[bq["save_inter_steps"] for bq in batch_queue],
-                                            self_cond=self.opts.self_cond,
                                             guidance_kwargs=self.opts.guidance_kwargs,
                                             )
+                for k in model_kwargs.keys():
+                    model_kwargs[k] = unet_kwarg_to_tensor(model_kwargs[k],key=k)
                 self.run_on_single_batch(sample_output,batch_queue,x_init,x_true_bit,model_kwargs,batch_ite,info)
                 for i in range(sample_output["pred"].shape[0]):
                     votes.append(sample_output["pred"][i])
@@ -198,8 +199,31 @@ class DiffusionSampler(object):
         if not self.opts.return_samples:
             sample_output = None
         return sample_output, metric_output
-    
+
     def get_output_dict(self, metric_list, samples, info_keys_save=["dataset_name","i"]):
+        """for k in ["image","points","self_cond"]:
+            c = []
+            for s in samples:
+                if k in s["model_kwargs"].keys():
+                    if s["model_kwargs"][k] is None:
+                        c.append("n")
+                    elif model_arg_is_trivial(s["model_kwargs"][k]):
+                        c.append("t")
+                    else:
+                        c.append("1")
+                else:
+                    c.append("0") TODO: delete this
+            print(f"model_kwargs[{k}]: {c}")"""
+        model_kwargs_keys = []
+        for s in samples:
+            for k in s["model_kwargs"].keys():
+                if k not in model_kwargs_keys:
+                    model_kwargs_keys.append(k)
+        for k in model_kwargs_keys:
+            for i in range(len(samples)):
+                if k not in samples[i]["model_kwargs"].keys():
+                    samples[i]["model_kwargs"][k] = None
+
         sample_output = {}
         metric_output = {k: [m[k] for m in metric_list] for k in metric_list[0].keys()}
         #check for key conflicts
@@ -210,13 +234,11 @@ class DiffusionSampler(object):
                     sample_output[k] = [{sub_k: s[k][sub_k] for sub_k in info_keys_save} for s in samples]
                     continue
                 if isinstance(samples[0][k],dict):
-                    for sub_k in samples[0][k].keys():
-                        assert check_keys_are_same([s[k] for s in samples])
-                        
+                    assert check_keys_are_same([s[k] for s in samples]), f"Key conflict for key={k}"
+                    for sub_k in samples[0][k].keys():                        
                         sample_output[sub_k] = unet_kwarg_to_tensor([s[k][sub_k] for s in samples],key=sub_k)
-                elif torch.is_tensor(samples[0][k]):
+                elif torch.is_tensor(samples[0][k]) or isinstance(samples[0][k],list):
                     sample_output[k] = unet_kwarg_to_tensor([s[k] for s in samples],key=k)
-        
         return sample_output, metric_output
             
     def run_on_single_batch(self,sample_output,bq,x_init,x_true_bit,model_kwargs,batch_ite,info):
@@ -327,10 +349,6 @@ class DiffusionSampler(object):
         if self.opts.kwargs_mode=="train":
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
             x,model_kwargs,info = self.trainer.get_kwargs(batch)
-            if "points" in model_kwargs.keys():
-                if model_kwargs["points"] is None:
-                    model_kwargs["points"] = 0
-                model_kwargs["points"] = model_kwargs["points"]*self.trainer.cgd.ab.int2bit(x)
         else:
             x,info = batch
             x = x.to(self.device)
@@ -340,9 +358,9 @@ class DiffusionSampler(object):
             elif self.opts.kwargs_mode=="all":
                 model_kwargs_use = list(model_kwargs.keys())
             elif self.opts.kwargs_mode=="only_image":
-                model_kwargs = ["image"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
+                model_kwargs_use = ["image"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
             elif self.opts.kwargs_mode=="classes":
-                model_kwargs = ["image","classes"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
+                model_kwargs_use = ["image","classes"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
             elif self.opts.kwargs_mode.find(",")>=0:
                 model_kwargs_use = self.opts.kwargs_mode.split(",")
             else:
@@ -352,10 +370,9 @@ class DiffusionSampler(object):
                 raise ValueError(f"Could not find the following requested kwargs from the dataloader: {not_found_kwargs}")
             model_kwargs = {k: model_kwargs[k] for k in model_kwargs_use}
         if "points" in model_kwargs.keys():
-            ab = self.trainer.cgd.ab
-            model_kwargs["points"] = model_kwargs["points"]*ab.int2bit(x)
-            if ab.shuffle:
-                raise NotImplementedError("Shuffling of points is not implemented for sampling with points.")
+            model_kwargs["points"] = construct_points(model_kwargs["points"],self.trainer.cgd.ab.int2bit(x),as_tensor=False)
+            if self.trainer.cgd.ab.shuffle:
+                raise NotImplementedError("Shuffling of points is not implemented for sampling with points (since gt will be unmatched to the points).")
         return x,model_kwargs,info
             
     def form_next_batch(self):
@@ -364,7 +381,10 @@ class DiffusionSampler(object):
             for i in range(self.opts.num_samples):
                 for j in range(self.opts.num_votes):
                     save_inter_steps = (i<self.opts.num_inter_samples) and (j<self.opts.inter_votes_per_sample)
-                    self.queue.append({"sample":i,"vote":j,"save_inter_steps": save_inter_steps, "save_grid": (i<self.opts.num_grid_samples)})
+                    self.queue.append({"sample":i,
+                                       "vote":j,
+                                       "save_inter_steps": save_inter_steps, 
+                                       "save_grid": (i<self.opts.num_grid_samples)})
         
         bs = min(self.eval_batch_size,len(self.queue))
         if self.source_idx >= self.bss:
@@ -394,9 +414,8 @@ class DiffusionSampler(object):
                     self.bss = self.source_batch[0].shape[0]
                     self.source_idx = 0
 
-        for k in batch_kwargs.keys():
-            if (batch_kwargs[k] is not None):
-                batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k],key=k)
+        for k in list(batch_kwargs.keys()):
+            batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k],key=k,list_instead=True)
         batch_x = torch.stack(batch_x,dim=0)
         return batch_x, batch_kwargs, batch_info, batch_queue
     

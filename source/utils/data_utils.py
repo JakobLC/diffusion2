@@ -37,6 +37,8 @@ def points_image_from_label(label,num_points=None,padding_idx=255,bbox_instead=F
     assert torch.is_tensor(label)
     assert len(label.shape)==3
     assert label.shape[0]==1
+    if num_points == 0:
+        return torch.zeros_like(label,dtype=torch.float32)
     if num_points is None:
         num_points = np.random.choice([1,1,1,1,1,1,1,1,8,
                                        2,2,2,2,2,2,2,7,7,

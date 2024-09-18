@@ -12,7 +12,8 @@ from source.models.cond_vit import (FancyViT, ModelInputKwargs,
                                     token_info_overview,ModelInputKwargs,
                                     fancy_vit_from_args)
 from source.utils.fp16_utils import convert_module_to_f16, convert_module_to_f32
-from source.utils.mixed_utils import model_arg_is_trivial, nice_split
+from source.utils.mixed_utils import (model_arg_is_trivial, nice_split, 
+                                      unet_kwarg_to_tensor)
 from source.models.nn import (
     SiLU,
     conv_nd,
@@ -24,6 +25,7 @@ from source.models.nn import (
     checkpoint,
 )
 import pandas as pd
+import warnings
 
 class TimestepBlock(nn.Module):
     """
@@ -299,46 +301,6 @@ class QKVAttention(nn.Module):
         # the combination of the value vectors.
         matmul_ops = 2 * b * (num_spatial ** 2) * c
         model.total_ops += torch.DoubleTensor([matmul_ops])
-
-def unet_kwarg_to_tensor(kwarg,key=None,non_tensor_exception_keys=["class_names"],dev=None):
-    key_exception = False
-    if key is not None:
-        if key in non_tensor_exception_keys:
-            key_exception = True
-    if kwarg is None:
-        pass
-    elif torch.is_tensor(kwarg):
-        pass
-    elif key_exception:
-        crit = [isinstance(item,(str,tuple,int,torch.Tensor,list)) or (item is None) for item in kwarg]
-        assert all(crit), f"If kwarg for exception keys is a list, then all elements must be str, tuple, int, or torch.Tensor. kwarg={kwarg}"
-        if model_arg_is_trivial(kwarg):
-            kwarg = None
-        else:
-            kwarg = [[] if item is None else item for item in kwarg]
-    elif isinstance(kwarg, list):
-        assert all([(isinstance(kw, torch.Tensor) or kw is None) for kw in kwarg]), f"If kwarg is a list, all elements must be torch.Tensor or None. kwarg={kwarg}"
-        if all([kw is None for kw in kwarg]): #also return true for empty list
-            kwarg = None
-        elif all([isinstance(kw, torch.Tensor) for kw in kwarg]):
-            kwarg = torch.stack(kwarg)
-        else:
-            bs = len(kwarg)
-            shapes = [kw.shape for kw in kwarg if kw is not None]
-            s0 = [i for i in range(bs) if kwarg[i] is not None][0]
-            assert all([s==shapes[0] for s in shapes]), f"If kwarg is a list, all tensors must have the same shape. kwarg={kwarg}"
-            full_kwarg = torch.zeros((bs,)+shapes[0],
-                                     dtype=kwarg[s0].dtype,
-                                     device=kwarg[s0].device)
-            for i in range(bs):
-                if kwarg[i] is not None:
-                    full_kwarg[i] = kwarg[i]
-            kwarg = full_kwarg
-    else:
-        raise ValueError(f"kwarg={kwarg} is not a valid type. must be None, torch.Tensor, or list of torch.Tensor/None")
-    if (dev is not None) and torch.is_tensor(kwarg):
-            kwarg = kwarg.to(dev)
-    return kwarg
             
 class UNetModel(nn.Module):
     """
@@ -483,10 +445,9 @@ class UNetModel(nn.Module):
                 c = v.get("in_chans",0)
                 imsize = v.get("img_size",self.image_size)
                 if c>0:
-                    self.input_to_channels[k] = slice(self.in_channels,self.in_channels+c)
+                    self.unet_input_dict[k]["slice"] = slice(self.in_channels,self.in_channels+c)
                     self.in_channels += c
                 assert imsize==self.image_size, "all image sizes must be the same. kwarg "+k+" has image size "+str(imsize)+" while the model has image size "+str(self.image_size)
-
             self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
                 linear(model_channels, time_embed_dim),
@@ -788,8 +749,7 @@ class UNetModel(nn.Module):
         else:
             kwargs["sample"] = sample
         bs = sample.shape[0]
-        shape = [bs,self.in_channels,self.image_size,self.image_size]
-        h = torch.zeros(shape,device=sample.device).type(self.inner_dtype)
+        h = torch.zeros([bs,self.in_channels,self.image_size,self.image_size],device=sample.device).type(self.inner_dtype)
         if self.use_class_emb:
             classes = torch.zeros((bs,len(self.class_keys)),dtype=torch.long,device=sample.device)
         else:
@@ -797,6 +757,7 @@ class UNetModel(nn.Module):
         image_features = None
         for k,v in kwargs.items():
             if k not in self.unet_input_dict.keys():
+                warnings.warn(f"input {k} is not used by the model")
                 continue
             if k in self.class_keys:
                 assert self.use_class_emb, "classes provided but model has no class embedding"
@@ -808,25 +769,18 @@ class UNetModel(nn.Module):
             elif k=="image_features":
                 assert self.use_image_features, "image_features provided but model has does not use image features"
                 image_features = v
-            else:
-                if k in self.unet_input_dict.keys():
-                    if torch.is_tensor(v):
-                        assert len(self.unet_input_dict[k])>0, k+" is not an available kwarg for the model (unless None). Inputs which are allowed to be tensors: "+str([k for k in self.unet_input_dict.keys() if len(self.unet_input_dict[k])>0])
-                        assert len(v.shape) == 4, "Expected 4 dimensions for input "+k+", got: "+str(len(v.shape))+" instead."
-                        assert v.shape[1] == len(self.unet_input_dict[k]), "Expected "+str(len(self.unet_input_dict[k]))+" channels for input "+k+", got: "+str(v.shape[1])+" instead."
-                        assert v.shape[2] == v.shape[3] == self.image_size, "Expected last two dimensions to be "+str(self.image_size)+" for input "+k+", got: "+str(v.shape[2:])+" instead."
-                        h[:,self.unet_input_dict[k],:,:] = v.type(self.inner_dtype)
-                    else:
-                        assert v is None, "input "+k+" must be a tensor or None"
-
-        if self.use_class_emb:
-            classes = [item if item is not None else 0 for item in classes]
-            classes = torch.tensor(classes,dtype=torch.long,device=sample.device)
-        if "image_features" in kwargs.keys():
-            
-            image_features = kwargs["image_features"]
-        else:
-            image_features = None
+                continue
+            if model_arg_is_trivial(v):
+                assert v is None, f"Trivial inputs should be None, found: {v}"
+            if torch.is_tensor(v) or isinstance(v,list):
+                exp_shape = [bs,self.unet_input_dict[k]["in_chans"],self.image_size,self.image_size]
+                first_nontrivial_idx = [i for i,item in enumerate(v) if item is not None][0]
+                act_shape = [len(v)]+list(v[first_nontrivial_idx].shape)
+                assert act_shape == exp_shape, f"expected shape {exp_shape}, got {act_shape} for input {k}"
+                bs_index = [i for i,item in enumerate(v) if item is not None]
+                h[bs_index,self.unet_input_dict[k]["slice"],:,:] = torch.cat(
+                                                [v[i][None] for i in bs_index]
+                                                ,dim=0).type(self.inner_dtype)
         
         if timesteps.numel() == 1:
             timesteps = timesteps.expand(bs)
