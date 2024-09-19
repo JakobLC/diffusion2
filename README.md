@@ -11,7 +11,7 @@ pip install -U git+https://github.com/lilohuang/PyTurboJPEG.git
 pip install git+https://github.com/facebookresearch/segment-anything.git
 pip install git+https://github.com/openai/CLIP.git
 ```
-
+SAM2 evaluation also requires you to clone `https://github.com/facebookresearch/segment-anything-2.git` and add it to the python path in `sam.py`.
 Afterwards, training and sampling can respectively be done by running:
 ```
 python train.py

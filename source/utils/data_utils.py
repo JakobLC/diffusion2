@@ -1074,7 +1074,7 @@ def load_from_dataset_and_idx(dataset_name,i,im=True):
     else:
         possible_filesnames = ["_pla.png","_la.png"]
     root_name = f"f{str(i//1000)}{os.sep}{str(i)}"
-    root_dir = os.path.join(str(Path(__file__).parent.parent / "data"),dataset_name)
+    root_dir = os.path.join(str(Path(__file__).parent.parent.parent / "data"),dataset_name)
     for pf in possible_filesnames:
         if os.path.exists(os.path.join(root_dir,root_name)+pf):
             return root_name+pf
@@ -1083,7 +1083,7 @@ def load_from_dataset_and_idx(dataset_name,i,im=True):
 def load_raw_image_label(x,longest_side_resize=0,data_root=None):
     assert isinstance(x,dict), "x must be a info dictionary, got: "+str(x)
     if data_root is None:
-        data_root = str(Path(__file__).parent.parent / "data")
+        data_root = str(Path(__file__).parent.parent.parent / "data")
     return SegmentationDataset.load_raw_image_label(None,x,longest_side_resize,data_root)
 
 def load_raw_image_label_from_didx(didx,longest_side_resize=0,data_root=None):
