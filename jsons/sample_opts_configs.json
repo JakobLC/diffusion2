@@ -69,5 +69,13 @@
         "seed": 1,
         "kwargs_mode": "image,points;only_image",
         "save_light_stats": true
+    },
+    "vali-ts25": {
+        "num_timesteps": 25,
+        "split": "vali"
+    },
+    "train-ts25": {
+        "num_timesteps": 25,
+        "split": "train"
     }
 }

@@ -181,7 +181,12 @@ class SavedSamplesManager:
             warnings.warn(warning_msg)
         for gen_id in gen_id_loads:
             self.add_saved_samples(DiffSamples(gen_id=gen_id,load_heavy=load_heavy,load_light=load_light))
-        
+    
+    def sort_saved_samples(self,key=None):
+        if key is None:
+            key = lambda x: x.name
+        self.saved_samples = sorted(self.saved_samples,key=key)
+
     def add_saved_samples(self,saved_samples):
         if isinstance(saved_samples,list):
             assert all([is_saved_samples(ss) for ss in saved_samples]), "expected all elements in a list to be instances of SavedSamples, found "+str([type(ss) for ss in saved_samples])
@@ -271,8 +276,10 @@ class SavedSamplesManager:
                     ss_idx=None,
                     plot_qual_seg_kwargs={},
                     add_text_axis=True,
+                    add_text_inside=True,
                     add_spaces_left=2,
-                    transpose=None):
+                    transpose=None,
+                    pixel_mult=1):
         self.raise_error_on_no_ss()
         if num_images is None:
             assert isinstance(didx,list), "If num_images is None, idx must be a list"
@@ -337,25 +344,33 @@ class SavedSamplesManager:
             x_sizes=[im.shape[1]/im.shape[0] for im in ims]
             sp = " "*add_spaces_left
             text_outside = [sp+text+sp for text in text_outside]
-            text_pos_kwargs={"left": text_outside, "top": didx_plot, "xtick_kwargs": {"fontsize": 10}}
-            text_kwargs = {"color": text_color_inside,"fontsize": 1,"verticalalignment":"top","horizontalalignment":"left"}
+            text_pos_kwargs={"left": text_outside, 
+                             "top": didx_plot, 
+                             "xtick_kwargs": {"fontsize": 10*pixel_mult}}
+            text_inside = [[text_inside[j][i] for j in range(len(text_inside))] for i in range(len(text_inside[0]))]
         else:
             y_sizes=[im.shape[0]/im.shape[1] for im in ims]
             x_sizes=[1 for _ in range(len(text_outside))]
             sp = " "*add_spaces_left
             didx_plot = [sp+d+sp for d in didx_plot]
-            text_pos_kwargs={"top": text_outside, "left": didx_plot, "xtick_kwargs": {"fontsize": 10}}
-            text_kwargs = {"color": text_color_inside,"fontsize": 1,"verticalalignment":"top","horizontalalignment":"left"}
-        if add_text_axis:
+            text_pos_kwargs={"top": text_outside, 
+                             "left": didx_plot, 
+                             "xtick_kwargs": {"fontsize": 10*pixel_mult}}
+        text_kwargs = {"color": text_color_inside,
+                       "fontsize": 8*pixel_mult,
+                       "verticalalignment": "top",
+                       "horizontalalignment": "left"}
+        if add_text_axis or add_text_inside:
             big_image = render_text_gridlike(big_image,
                                     x_sizes=x_sizes,
                                     y_sizes=y_sizes,
-                                    text_inside=text_inside,
-                                    transpose_text_inside=transposed,
+                                    text_inside=text_inside if add_text_inside else [],
                                     anchor_image=(0.05,0.05),
                                     text_kwargs=text_kwargs,
-                                    text_pos_kwargs=text_pos_kwargs,
-                                    border_width_inside=0.2)
+                                    text_pos_kwargs=text_pos_kwargs if add_text_axis else {},
+                                    border_width_inside=2,
+                                    pixel_mult=pixel_mult)
+            print(text_pos_kwargs)
         return big_image
     
     def hist(self,
@@ -375,7 +390,6 @@ class SavedSamplesManager:
         metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
         ncol =  len(metric_names) if subplot_per_metric else 1
         nrow = len(ss_idx) if subplot_per_ss else 1
-        print(metric_names)
         if transposed:
             ncol,nrow = nrow,ncol
         plt.figure(figsize=figsize)
@@ -1129,11 +1143,29 @@ class SavedSamples:
         assert len(output_of_read_heavy_data)==3, f"expected read_heavy_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_heavy_data)}"
         self.add_samples(*output_of_read_heavy_data)
 
-    def clone(self,new_name=None):
-        copy_of_self = copy.deepcopy(self)
-        if new_name is not None:
-            copy_of_self.name = new_name
-        return copy_of_self
+    def reduce_by_indexer(self,indexer):
+        didx,idx = self.normalize_indexer(indexer)
+        light_data = [self.light_data[i] for i in idx]
+        heavy_data = [self.heavy_data[i] for i in idx]
+        new_ss = SavedSamples(light_data=light_data,heavy_data=heavy_data,didx=didx,name=self.name)
+        return new_ss
+
+    def clone(self,new_name=None,didx=None):
+        new_name = self.name if new_name is None else new_name
+        #remove all samples not in didx
+        if didx is None:
+            new_ss = copy.deepcopy(self)
+            new_ss.name = new_name
+        else:
+            didx,idx = self.normalize_indexer(didx)
+            light_data = [self.light_data[i] for i in idx]
+            heavy_data = [self.heavy_data[i] for i in idx]
+
+            new_ss = SavedSamples(light_data=light_data,
+                                  heavy_data=heavy_data,
+                                  didx=didx,
+                                  name=new_name)
+        return new_ss
 
     def postprocess(self,postprocess_kwargs={},recompute_metrics=True):
         if self.postprocess_kwargs is not None:
@@ -1449,7 +1481,7 @@ def main():
     args = parser.parse_args()
     verbose = True
     postprocess = False
-    names = sam12_info["names"]
+    names = sam12_info["names"][4:]
     eval_sam_kwargs = argparse.Namespace(datasets="ade20k",
                                         model_type=args.model_type,
                                         num_return_segments=args.num_return_segments,

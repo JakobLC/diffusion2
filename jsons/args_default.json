@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.2.2",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.2."],
+    "model_version": ["1.3.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.2."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -31,14 +31,13 @@
         "attention_resolutions": ["-2,-1",          "Resolutions to perform attention on. TYPE: comma separated list of integers representing idx with -1 being the deepest resolution. DEFAULT: '-2,-1'. "],
         "image_size": [64,                          "Image resolution. TYPE: positive integer. DEFAULT: 64. "],
         "deeper_net": [false,                       "Should a deeper net be used? TYPE: boolean. DEFAULT: true. "],
-        "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "],
         "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
         "unet_spatialness": ["2,3" ,                "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '2,3'. "],
-        "vit_spatialness": ["0,1,2,3",              "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
+        "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
         "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
         "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "]
@@ -47,12 +46,11 @@
         "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets' (TODO),'num_classes']. DEFAULT: 'none'. "],
         "cond_img_size": [-1,                       "Image size for inputs given to the conditional net TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
         "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_b','sam_vit_l','sam_vit_h']. DEFAULT: 'none'. "],
-
         "p_image": [0.95,                           "Probability of image being given as input. TYPE: float. DEFAULT: 0.95. "],
-        "p_classes": [0.5,                          "Probability of the number of class being given as input. TYPE: float. DEFAULT: 0.5. "],
+        "p_classes": [0.25,                          "Probability of the number of class being given as input. TYPE: float. DEFAULT: 0.5. "],
         "p_bbox": [0.0,                             "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
         "p_points": [0.25,                          "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
-        "p_self_cond": [0.5,                        "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
+        "p_self_cond": [0.25,                        "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
         "p_semantic": [0.0,                         "Probability of using semantic/instance as a conditional input arg. TYPE: float. DEFAULT: 0.0. "],
         "p_adjacent": [0.0,                         "Probability of adjacent images being given as input. TYPE: float. DEFAULT: 0.0. "],
         "p_same_vol": [0.0,                         "Probability of images from the same vol being given as input. TYPE: float. DEFAULT: 0.0. "],
@@ -113,7 +111,7 @@
         "dataloader_save_processing": [false,       "Should the dataloader save the processing of datasets to save time for later dataset loadings? TYPE: boolean. DEFAULT: false. "]
     },
     "version_backwards_compatability": {
-        "p_classes" : {"<1.0.0": 0.9},
+        "p_classes" : {"<1.0.0": 0.9, "1.0.0<=x<1.3.0": 0.5},
         "p_bbox": {"<1.0.0": 0.25},
         "p_points": {"<1.0.0": 0.25, "1.0.0<=x<1.2.2": 0.5},
         "dl_num_workers": {"<1.0.0": 0},
@@ -125,7 +123,9 @@
         "gen_setups": {"<1.1.0": "vali,train"},
         "max_class_names": {"<=1.2.0": 16},
         "cond_patch_size": {"<=1.2.0": 16},
-        "semantic_dl_prob": {"<=1.2.1": 0.5}
+        "semantic_dl_prob": {"<=1.2.1": 0.5},
+        "vit_spatialness": {"<1.3.0": "0,1,2,3"},
+        "p_self_cond": {"<1.3.0": 0.5}
     },
     "deprecated": {
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'. "],
@@ -163,7 +163,8 @@
         "vit_unet_cond_mode": ["both_spatial_unet", "Which mode to use for conditioning with the Vision Transformer. TYPE: str, One of ['no_vit','both_spatial_unet','both_spatial_vit','no_unet']. DEFAULT: 'both_spatial_unet'. "],
         "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"},
         "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0},
-        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "]
+        "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
+        "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "]
     },
     "renamed": {
         "image_prob": "p_image",

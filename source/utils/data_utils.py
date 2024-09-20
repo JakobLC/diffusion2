@@ -834,7 +834,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         new_class_table = pd.DataFrame(columns=new_class_table_columns,index=range(mnc))
         
         new_class_table["idx_new"] = range(mnc)
-        new_class_table = new_class_table.applymap(lambda x: [] if is_nan_float(x) else x)
+        new_class_table = new_class_table.map(lambda x: [] if is_nan_float(x) else x)
         for row in class_table.iterrows():
             i = row[1]["idx_new"]
             for k in new_class_table_columns[1:]:

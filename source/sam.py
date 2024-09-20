@@ -82,7 +82,9 @@ class Sam2AgnosticGenerator(SAM2AutomaticMaskGenerator):
             image = images[i]
             mask = self.generate(image)
             masks.append(mask)
-        segmentations = [get_segmentation(mask) for mask in masks]
+        Hs = [image.shape[0] for image in images]
+        Ws = [image.shape[1] for image in images]
+        segmentations = [get_segmentation(mask,h,w) for mask,h,w in zip(masks,Hs,Ws)]
         return segmentations
     
 class SamAgnosticGenerator(SamAutomaticMaskGenerator):
@@ -100,7 +102,9 @@ class SamAgnosticGenerator(SamAutomaticMaskGenerator):
             image = images[i]
             mask = self.generate(image)
             masks.append(mask)
-        segmentations = [get_segmentation(mask) for mask in masks]
+        Hs = [image.shape[0] for image in images]
+        Ws = [image.shape[1] for image in images]
+        segmentations = [get_segmentation(mask,h,w) for mask,h,w in zip(masks,Hs,Ws)]
         return segmentations
 
     def batched_generate_raw(self, model_kwargs,info):
@@ -175,16 +179,15 @@ def show_anns(anns):
         img[m] = color_mask
     ax.imshow(img)
 
-def get_segmentation(anns):
+def get_segmentation(anns,h,w):
+    segment = np.zeros((h,w), dtype=np.uint8)
     if len(anns) == 0:
         warnings.warn("No annotations found")
-        return np.zeros((1,1))
-    h, w = anns[0]['segmentation'].shape
-    segment = np.zeros((h,w), dtype=np.uint8)
     for k, ann in enumerate(anns):
+        assert [h,w] == list(ann['segmentation'].shape), f"segmentation shape {ann['segmentation'].shape} does not match image shape ({h,w})"
         segment[ann['segmentation']] = k+1
         if k == 255:
-            warnings.warn("More than 255 segments found, only the first 255 will be shown.")
+            warnings.warn("More than 255 segments found, only the first 255 are included.")
             break
     return segment
 
