@@ -463,6 +463,47 @@
         "gen_interval": 5000
     },
     "g25": {
-        "gen_setups": "vali-ts25,train-ts25"
+        "versions": {
+            "cond": {
+                    "semantic_dl_prob": 0.5,
+                    "p_semantic": 0.125,
+                    "p_adjacent": 0.125,
+                    "p_same_vol": 0.125,
+                    "p_same_classes": 0.125,
+                    "p_same_dataset": 0.125,
+                    "p_num_labels": 0.125},
+            "COND": {
+                    "semantic_dl_prob": 0.5,
+                    "p_semantic": 0.5,
+                    "p_adjacent": 0.5,
+                    "p_same_vol": 0.5,
+                    "p_same_classes": 0.5,
+                    "p_same_dataset": 0.5,
+                    "p_num_labels": 0.5},
+            "cont128": {
+                    "image_size": 128,
+                    "input_scale": 0.006,
+                    "mode": "load", 
+                    "ckpt_name": "*g25+slow+128*", 
+                    "load_state_dict_loose": true, 
+                    "lr_warmup_steps": 5000, 
+                    "max_iter": 50000, 
+                    "lr_decay_steps": 10000},
+            "cont": {"mode": "load", 
+                    "ckpt_name": "*g25+slow_1*", 
+                    "load_state_dict_loose": true, 
+                    "lr_warmup_steps": 10000,
+                    "max_iter": 20000, 
+                    "lr_decay_steps": 10000},
+            "sam": {"image_encoder": "sam_vit_b", "train_batch_size": 4},
+            "sem": {"semantic_dl_prob": 1.0},
+            "memleak": {"image_size": 32, 
+                        "datasets": "fss", 
+                        "gen_interval": 100000, 
+                        "num_channels": 32, 
+                        "channel_multiplier": "1,1,1,1"}
+        },
+        "gen_setups": "vali-ts25,train-ts25",
+        "unet_spatialness": "0,1,2,3"
     }
 }

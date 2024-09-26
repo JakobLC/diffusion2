@@ -26,6 +26,7 @@
         "ema_idx"                     : [-1,              "EMA model idx to use for sampling. negative for no EMA (normal model). TYPE: float. DEFAULT: -1"],
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
         "kwargs_mode"                 : ["train",         "How to get kwargs for the model forward passes. Either a str of comma-sep key names to use or one of ['train', 'only_image', 'all', 'none', 'classes']. TYPE: str. DEFAULT: 'train'"],
+        "use_image"                   : [true,            "Whether to use the image as input to the model. TYPE: bool. DEFAULT: true"],
         "postprocess"                 : ["none",          "Which postprocessing to use. One of ['none','area0.005']. TYPE: str. DEFAULT: 'none'"],
         "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],
         "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"]

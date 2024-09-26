@@ -25,14 +25,14 @@ from source.utils.fp16_utils import (
 import datetime
 from source.utils.argparse_utils import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
-from sampling import DiffusionSampler
+from source.sampling import DiffusionSampler
 from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
 from source.utils.data_utils import (CatBallDataset, custom_collate_with_info, 
                       SegmentationDataset, points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, get_sam_image_encoder
-from source.cont_gaussian_diffusion import create_diffusion_from_args,cond_kwargs_int2bit
+from source.cont_gaussian_diffusion import create_diffusion_from_args
 from source.utils.mixed_utils import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
                    format_relative_path,set_random_seed,is_infinite_and_not_none,
                    get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
@@ -43,14 +43,14 @@ from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss_utils import get_all_metrics
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
-                                    dynamic_image_keys,
+                                    dynamic_image_keys,cond_kwargs_int2bit,
                                     num_tokens_from_token_info, is_valid_cond_vit_setup,
-                                    ModelInputKwargs,all_input_keys)
+                                    ModelInputKwargs,all_input_keys,unet_vit_inputs_from_args)
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
-                    "dummymodel","unet_print","token_info_overview"
-                    ""]
+                    "dummymodel","unet_print","token_info_overview","unet_input_dict",
+                    "vit_input_dict","restart_step2","no_kwargs","no_train_step"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -63,10 +63,17 @@ class DiffusionModelTrainer:
     def init(self):
         if self.args.debug_run not in VALID_DEBUG_RUNS:
             assert self.args.debug_run=="", "debug_run must be one of "+str(VALID_DEBUG_RUNS)+", found: "+self.args.debug_run
+        
         if self.args.debug_run=="print_model_name_and_exit":
             print(self.args.model_name)
             self.exit_flag = True
             return
+        
+        if self.args.debug_run=="restart_step2":
+            self.restart_step2 = True
+        else:
+            self.restart_step2 = False
+
         if not self.restart_flag:
             self.args.seed = set_random_seed(self.args.seed)
         self.cgd = create_diffusion_from_args(self.args)
@@ -93,7 +100,7 @@ class DiffusionModelTrainer:
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
             if self.exit_flag:
                 return
-            ckpt = torch.load(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name,weights_only=False)
             if self.args.save_path=="":
                 self.args.save_path = format_save_path(self.args)
             self.log("Starting new training run with loaded ckpt from: "+self.args.ckpt_name)
@@ -101,7 +108,7 @@ class DiffusionModelTrainer:
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
             if self.exit_flag:
                 return
-            ckpt = torch.load(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name,weights_only=False)
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
             self.log("Continuing training run.")
@@ -109,7 +116,7 @@ class DiffusionModelTrainer:
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)
             if self.exit_flag:
                 return
-            ckpt = torch.load(self.args.ckpt_name)
+            ckpt = torch.load(self.args.ckpt_name,weights_only=False)
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
             self.log("Setting up generation.")
@@ -135,8 +142,6 @@ class DiffusionModelTrainer:
             assert -n_setups < self.args.best_ckpt_gen_setup_idx < n_setups, "save_best_ckpt_setup must be in gen_setups"
             
         if self.args.mode in ["new","load","cont"]:
-            self.all_input_keys = all_input_keys
-            self.used_dynamic_image_keys = [k for k in dynamic_image_keys if k in self.model.legal_keys]
             self.create_datasets(["train","vali"])
         
         self.kvs_buffer = {}
@@ -202,8 +207,8 @@ class DiffusionModelTrainer:
             self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
-            save_args(self.args, do_nothing=self.args.debug_run!="")
-            self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}", do_nothing=self.args.debug_run!="")
+            save_args(self.args)
+            self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}")
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
             self.args.model_id = json.loads((Path(self.args.save_path)/"args.json").read_text())[0]["model_id"]
@@ -242,6 +247,7 @@ class DiffusionModelTrainer:
             dataloader = get_dataset_from_args(self.args,split,mode="training")
             if self.args.debug_run=="no_dl":
                 dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
+                setattr(self,split+"_dl",dataloader)
             elif self.args.debug_run=="anomaly":
                 torch.autograd.set_detect_anomaly(True)
             elif self.args.debug_run=="only_dl":
@@ -250,6 +256,12 @@ class DiffusionModelTrainer:
             elif self.args.debug_run=="cond_vit_info" and split=="vali":
                 pprint(is_valid_cond_vit_setup(self.args.cond_vit_setup,long_names_instead=1))
                 print(ModelInputKwargs(self.args,construct_args=True).kwarg_table)
+                self.exit_flag = True
+            elif self.args.debug_run=="unet_input_dict" and split=="vali":
+                print(self.model.unet_input_dict)
+                self.exit_flag = True
+            elif self.args.debug_run=="vit_input_dict" and split=="vali":
+                print(self.model.vit.input_dict)
                 self.exit_flag = True
             else:
                 setattr(self,split+"_dl",dataloader)
@@ -316,36 +328,40 @@ class DiffusionModelTrainer:
                 x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
         else:
             x = x.to(self.device)
-        model_kwargs = {k: [] for k in self.all_input_keys}
+        unet_inputs,vit_inputs,used_inputs = unet_vit_inputs_from_args(self.args)
+        model_kwargs = {k: [] for k in used_inputs}
         bs = x.shape[0]
         for i in range(bs):
+            if self.args.debug_run=="no_kwargs":
+                break
             if np.random.rand()<=self.args.p_image or gen:
                 model_kwargs["image"].append(info[i]["image"])
             else:
                 model_kwargs["image"].append(None)
-            if self.args.p_bbox>0:
+
+            if "bbox" in used_inputs:
                 if np.random.rand()<=self.args.p_bbox or gen:
                     model_kwargs["bbox"].append(bbox_image_from_label(x[i]))
                 else:
                     model_kwargs["bbox"].append(None)
-            if self.args.p_points>0:
+
+            if "points" in used_inputs:
                 if np.random.rand()<=self.args.p_points or gen:
                     model_kwargs["points"].append(points_image_from_label(x[i]))
                 else:
                     model_kwargs["points"].append(None)
-            if self.args.p_self_cond>0:
+
+            if "self_cond" in used_inputs:
                 val = np.random.rand()<=self.args.p_self_cond or gen
                 model_kwargs["self_cond"].append(torch.tensor(val,dtype=torch.long))
                     
-            if self.args.class_type not in ["none",""]:
-                if self.args.class_type=="num_classes" and self.args.p_classes>0:
-                    if np.random.rand()<=self.args.p_classes or gen:
-                        model_kwargs["classes"].append(torch.tensor(info[i]["num_classes"],dtype=torch.long))
-                    else:
-                        model_kwargs["classes"].append(None)
+            if "num_labels" in used_inputs:
+                if np.random.rand()<=self.args.p_num_labels or gen:
+                    model_kwargs["num_labels"].append(torch.tensor(info[i]["num_labels"],dtype=torch.long))
                 else:
-                    raise NotImplementedError(f"class_type={self.args.class_type} not implemented")
-            if self.args.p_class_names>0:
+                    model_kwargs["num_labels"].append(None)
+                    
+            if "class_names" in used_inputs:
                 if np.random.rand()<=self.args.p_class_names or gen:
                     class_names = list(info[i]["idx_to_class_name"].values())
                     if "padding" in class_names:
@@ -356,17 +372,18 @@ class DiffusionModelTrainer:
                 else:
                     model_kwargs["class_names"].append(None)
             
-            for k in self.used_dynamic_image_keys:
-                model_kwargs[k].append(info[i].get("cond",{}).get(k,None))
-
-            if 0<self.args.p_semantic and 0.0<self.args.semantic_dl_prob<1.0:
+            for k in dynamic_image_keys:
+                if k in used_inputs:
+                    model_kwargs[k].append(info[i].get("cond",{}).get(k,None))
+                
+            if "semantic" in used_inputs:
                 if np.random.rand()<=self.args.p_semantic:
-                    model_kwargs["semantic"].append(torch.tensor([info[i]["semantic"]],dtype=torch.long))
+                    model_kwargs["semantic"].append(torch.tensor([info[i]["semantic"]+1],dtype=torch.long))
                 else:
                     model_kwargs["semantic"].append(None)
         #end of bs loop
         if self.args.image_encoder!="none":
-            model_kwargs["image_features"] = self.get_image_features(model_kwargs)
+            model_kwargs["image_features"] = self.get_image_features(model_kwargs,bs)
         model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.cgd.ab)
         model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
@@ -433,9 +450,9 @@ class DiffusionModelTrainer:
         kvs_step = {}
         if "loss" in self.args.log_train_metrics.split(","):
             kvs_step["loss"] = output["loss"].item()
-            if np.isnan(kvs_step["loss"]):
+            if np.isnan(kvs_step["loss"]) or (self.restart_step2 and self.step>2):
                 self.num_nan_losses += 1
-                if self.num_nan_losses>20:
+                if self.num_nan_losses>20 or (self.restart_step2 and self.step>2):
                     self.log("Too many NaN losses, stopping training.")
                     self.restart_flag = True
             else:
@@ -552,8 +569,14 @@ class DiffusionModelTrainer:
             self.model.train()
             
             batch = next(self.train_dl)
-            
-            output,metrics = self.run_train_step(batch)
+            if self.args.debug_run=="no_train_step":
+                if self.step==1:
+                    output,metrics = self.run_train_step(batch)
+                    self.no_train_step_output = output,metrics
+                else:
+                    output,metrics = self.no_train_step_output
+            else:
+                output,metrics = self.run_train_step(batch)
             pbar.update(1)
 
             if self.step % self.args.log_vali_interval == 0 and self.args.log_vali_interval>0:
@@ -595,6 +618,7 @@ class DiffusionModelTrainer:
                 if ckpt_exists:
                     self.args.ckpt_name = ""
                     self.args.mode = "cont"
+                self.restart_processing(num_restarts)
                 self.init()
                 self.train_loop()
             else:
@@ -603,7 +627,17 @@ class DiffusionModelTrainer:
         else:
             self.update_training_history(f"event=finished, step={self.step}, time={get_time()}")
             self.log("Training loop finished.")
-        
+    
+    def restart_processing(self,num_restarts):
+        restart_folder = Path(self.args.save_path)/"restart_logs"/f"restart_{num_restarts+1}"
+        if not restart_folder.exists():
+            os.makedirs(restart_folder, exist_ok=True)
+        files_to_move = ["log.txt","logging.csv","logging_step.csv"]
+        for file in files_to_move:
+            file_old = restart_folder.parent.parent/file
+            if file_old.exists():
+                os.rename(file_old,restart_folder.parent/file)
+
     def update_training_history(self,event,do_nothing=False):
         if not do_nothing:
             if not isinstance(self.args.training_history,list):
@@ -616,7 +650,7 @@ class DiffusionModelTrainer:
         filepath = Path(self.args.save_path)/filename
         if self.args.save_path!="" and self.args.mode!="data":
             if not filepath.exists():
-                create_save = (not self.exit_flag) and (self.args.debug_run=="")
+                create_save = not self.exit_flag
                 if create_save:
                     self.check_save_path(self.args.save_path)
                     os.makedirs(self.args.save_path, exist_ok=True)

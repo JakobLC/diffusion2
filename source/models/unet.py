@@ -319,8 +319,6 @@ class UNetModel(nn.Module):
     :param conv_resample: if True, use learned convolutions for upsampling and
         downsampling.
     :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param num_classes: if specified (as an int), then this model will be
-        class-conditional with `num_classes` classes.
     :param use_checkpoint: use gradient checkpointing to reduce memory usage.
     :param num_heads: the number of attention heads in each attention layer.
     """
@@ -336,7 +334,6 @@ class UNetModel(nn.Module):
         channel_mult=(1, 2, 4, 8),
         conv_resample=True,
         dims=2,
-        num_classes=None,
         use_checkpoint=False,
         num_heads=1,
         num_heads_upsample=-1,
@@ -346,7 +343,6 @@ class UNetModel(nn.Module):
         final_act="none",
         image_encoder_shape=(256,64,64),
         image_encoder_depth=-1,
-        class_keys="num_classes",
         vit_args=None,
         unet_input_dict=None,
         vit_feature_depth=1,
@@ -358,10 +354,10 @@ class UNetModel(nn.Module):
         self.vit_args = vit_args
         self.image_size = image_size
         time_embed_dim = model_channels*4
+        assert isinstance(unet_input_dict,dict), "unet_input_dict must be a dictionary"
         self.legal_keys = list(unet_input_dict.keys())
         self.vit_feature_depth = vit_feature_depth
 
-        self.class_keys = nice_split(class_keys)
         self.has_unet = len(unet_input_dict)>0
         self.has_vit = False
         self.vit = None
@@ -394,21 +390,17 @@ class UNetModel(nn.Module):
             self.dropout = dropout
             self.channel_mult = channel_mult
             self.conv_resample = conv_resample
-            if num_classes is None:
-                self.use_class_emb = False
-            elif isinstance(num_classes, int):
-                assert len(self.class_keys)==1, "if num_classes is an int, then class_keys must be a single key"
-                if num_classes<=0:
-                    self.use_class_emb = False
-                    self.num_classes = None
-                else:
+            self.unet_input_dict = unet_input_dict
+
+            self.class_dict = {}
+            self.use_class_emb = False
+
+            for k,v in self.unet_input_dict.items():
+                if v["input_type"] == "scalar_discrete":
+                    assert v["size"]>0, f"class size must be greater than 0. got {v['size']} for class {k}"
+                    self.class_dict[k] = v["size"]
                     self.use_class_emb = True
-                    self.num_classes = [num_classes]
-            else:
-                assert isinstance(num_classes,list), "num_classes must be an int or a list of ints or None"
-                assert all([isinstance(nc,int) for nc in num_classes]), "num_classes must be an int or a list of ints or None"
-                assert len(num_classes)==len(self.class_keys), "num_classes must have the same length as class_keys if num_classes!=None"
-                self.num_classes = num_classes
+
             self.use_checkpoint = use_checkpoint
             self.num_heads = num_heads
             self.num_heads_upsample = num_heads_upsample
@@ -438,7 +430,6 @@ class UNetModel(nn.Module):
                     self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
                 self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
-            self.unet_input_dict = unet_input_dict
             self.input_to_channels = {}
             self.in_channels = 0
             for k,v in self.unet_input_dict.items():
@@ -458,7 +449,7 @@ class UNetModel(nn.Module):
             if self.use_class_emb:
                 self.fp16_attrs.append("class_emb")
                 self.class_emb = nn.ModuleDict()
-                for k,nc in zip(self.class_keys,self.num_classes):
+                for k,nc in self.class_dict.items():
                     self.class_emb[k] = nn.Embedding(nc+1, time_embed_dim)
             
             self.input_blocks = nn.ModuleList([TimestepEmbedSequential(conv_nd(dims, self.in_channels, model_channels, 3, padding=1))])
@@ -651,7 +642,7 @@ class UNetModel(nn.Module):
 
     def apply_class_emb(self, classes):
         emb = 0
-        for i,k in enumerate(self.class_keys):
+        for i,k in enumerate(self.class_dict.keys()):
             emb += self.class_emb[k](classes[:,i])
         return emb
 
@@ -751,28 +742,34 @@ class UNetModel(nn.Module):
         bs = sample.shape[0]
         h = torch.zeros([bs,self.in_channels,self.image_size,self.image_size],device=sample.device).type(self.inner_dtype)
         if self.use_class_emb:
-            classes = torch.zeros((bs,len(self.class_keys)),dtype=torch.long,device=sample.device)
+            classes = torch.zeros((bs,len(self.class_dict)),dtype=torch.long,device=sample.device)
         else:
             classes = None
         image_features = None
         for k,v in kwargs.items():
-            if k not in self.unet_input_dict.keys():
+            if model_arg_is_trivial(v):
+                assert v is None, f"Trivial inputs should be None, found: {v}"
+            elif k not in self.unet_input_dict.keys():
                 warnings.warn(f"input {k} is not used by the model")
-                continue
-            if k in self.class_keys:
+            elif k in self.class_dict.keys():
+                if isinstance(v,list):
+                    v = torch.tensor([vi if vi is not None else 0 for vi in v],dtype=torch.long,device=sample.device).flatten()
+                elif isinstance(v,int):
+                    v = v*torch.ones(bs,dtype=torch.long,device=sample.device)
+                else:
+                    if v.numel() == 1:
+                        v = v.expand(bs)
+                assert isinstance(v,torch.Tensor), f"class input {k} must be a tensor, an int (repeat for all samples), or a list of ints (with None being ignored)"
                 assert self.use_class_emb, "classes provided but model has no class embedding"
-                if v.numel() == 1:
-                    v = v.expand(bs)
-                assert v.shape == (bs,), "image_features must be a vector of length batch size"
-                assert 0<=v.min() and v.max()<=self.num_classes[self.class_keys.index(k)], "class index out of range. for class "+k+" expected range [0,"+str(self.num_classes[self.class_keys.index(k)])+"), got: "+str(v.min())+" to "+str(v.max())
-                classes[:,self.class_keys.index(k)] = v
+                assert v.shape == (bs,), f"expected shape {(bs,)}, got {v.shape} for class {k}, input {v}"
+                assert 0<=v.min() and v.max()<=self.class_dict[k], f"class index out of range. for class {k} expected range [0,{self.class_dict[k]}], got {v.min()} to {v.max()}"
+                classes[:,list(self.class_dict.keys()).index(k)] = v
             elif k=="image_features":
                 assert self.use_image_features, "image_features provided but model has does not use image features"
                 image_features = v
-                continue
-            if model_arg_is_trivial(v):
-                assert v is None, f"Trivial inputs should be None, found: {v}"
-            if torch.is_tensor(v) or isinstance(v,list):
+            elif torch.is_tensor(v) or isinstance(v,list):
+                #here should only be image inputs
+                assert self.unet_input_dict[k]["input_type"] == "image", f"input {k} is not an image input"
                 exp_shape = [bs,self.unet_input_dict[k]["in_chans"],self.image_size,self.image_size]
                 first_nontrivial_idx = [i for i,item in enumerate(v) if item is not None][0]
                 act_shape = [len(v)]+list(v[first_nontrivial_idx].shape)
@@ -816,23 +813,12 @@ def create_unet_from_args(args):
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
 
-    if args["onehot"]:
-        out_channels = args["max_num_classes"]
-    else:
-        out_channels = np.ceil(np.log2(args["max_num_classes"])).astype(int)
-
+    out_channels=args["diff_channels"]
     if args["predict"]=="both":
         out_channels *= 2
-
-    if args["class_type"]=="none":
-        num_classes = None
-    elif args["class_type"]=="num_classes":
-        num_classes = args["max_num_classes"]
-    else:
-        raise ValueError(f"unknown class_type: {args['class_type']}")
     
     if args["debug_run"]=="dummymodel":
-        raise NotImplementedError("DummyModel not implemented")
+        #raise NotImplementedError("DummyModel not implemented")
         unet = DummyModel(out_channels)
     
     mik = ModelInputKwargs(args)
@@ -846,7 +832,6 @@ def create_unet_from_args(args):
                 attention_resolutions=args["attention_resolutions"],
                 dropout=args["dropout"],
                 channel_mult=channel_mult,
-                num_classes=num_classes,
                 num_heads=args["num_heads"],
                 num_heads_upsample=args["num_heads_upsample"],
                 debug_run=args["debug_run"],

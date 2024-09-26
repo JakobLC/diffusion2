@@ -7,6 +7,7 @@ from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, con
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import confusion_matrix
 from skimage.morphology import binary_dilation,disk
+from functools import partial
 
 def get_all_metrics(output,ab=None):
     assert isinstance(output,dict), "output must be an output dict"
@@ -141,7 +142,7 @@ def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
 
     return all_acc, iou
 
-def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],ab=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):
+def get_segment_metrics(pred,target,mask=None,ab=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):
     if isinstance(target,(dict,str)):
         #we are in pure evaluation mode, i.e compare with the same target for any method in the native resolution
         #load raw target and reshape pred
@@ -187,14 +188,12 @@ def get_segment_metrics(pred,target,mask=None,metrics=["iou","hiou","ari","mi"],
         target = ab.bit2int(target)
     assert len(pred.shape)==len(target.shape)==4, "batched_metrics expects 3D or 4D torch tensors"
     bs = pred.shape[0]
-    if not isinstance(metrics,list):
-        metrics = [metrics]
     metric_dict = {"iou": standard_iou,
                    "hiou": hungarian_iou,
                    "ari": adjusted_rand_score_stable,
                    "mi": adjusted_mutual_info_score,}
+    metrics = list(metric_dict.keys())
     #has to be defined inline for ab to be implicitly passed
-
 
     #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
     out = {metric: [] for metric in metrics}
@@ -252,7 +251,7 @@ def extend_shorter_vector(vec1,vec2,fill_value=0):
         vec2 = np.concatenate([vec2,(fill_value*np.ones(len(vec1)-len(vec2))).astype(vec2.dtype)])
     return vec1,vec2
 
-def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
+def hungarian_iou(target,pred,ignore_idx=[],return_assignment=False):
     if ignore_idx is None:
         ignore_idx = []
     if isinstance(ignore_idx,list):
@@ -261,14 +260,18 @@ def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
         assert isinstance(ignore_idx,int), "ignore_idx must be None, int or list[int]"
         ignore_idx = [ignore_idx]
     
-    uq_target,target,conf_rowsum = np.unique(target,return_counts=True,return_inverse=True)
-    uq_pred,pred,conf_colsum = np.unique(pred,return_counts=True,return_inverse=True)
+    uq_target,target,conf_rowsum = np.unique(target,return_inverse=True,return_counts=True)
+    uq_pred,pred,conf_colsum = np.unique(pred,return_inverse=True,return_counts=True)
+    if len(uq_target)==1 and len(uq_pred)==1:
+        if return_assignment:
+            return 1.0, uq_pred, uq_target, np.array([1.0])
+        else:
+            return 1.0
     conf_rowsum,conf_colsum = extend_shorter_vector(conf_rowsum,conf_colsum)
     uq_target,uq_pred = extend_shorter_vector(uq_target,uq_pred,fill_value=-1)
     
     conf_rowsum,conf_colsum = conf_rowsum[:,None],conf_colsum[None,:]
     intersection = confusion_matrix(target, pred)
-
     union = conf_rowsum + conf_colsum - intersection
     iou_hungarian_mat = intersection / union
 
@@ -276,23 +279,16 @@ def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
     mask_target = np.isin(uq_target,ignore_idx)
     #handle edge cases
     if all(mask_pred) and all(mask_target):
-        val = 1.0
-        assign_pred = np.array([],dtype=int)
-        assign_target = np.array([],dtype=int)
-        iou_per_assignment = np.array([],dtype=float)
+        return 1.0, np.array([],dtype=int), np.array([],dtype=int), np.array([],dtype=int)
     elif all(mask_pred) or all(mask_target):
-        val = 0.0
-        assign_pred = np.array([],dtype=int)
-        assign_target = np.array([],dtype=int)
-        iou_per_assignment = np.array([],dtype=float)
+        return 0.0, np.array([],dtype=int), np.array([],dtype=int), np.array([],dtype=int)
     else:
         #force optimal assignment to match ignore_idx with ignore_idx
-        iou_hungarian_mat[mask_target,:] = 0
-        iou_hungarian_mat[:,mask_pred] = 0
-        iou_hungarian_mat += mask_target[:,None]*mask_pred[None,:]
-
+        if len(ignore_idx)>0:
+            iou_hungarian_mat[mask_target,:] = 0
+            iou_hungarian_mat[:,mask_pred] = 0
+            iou_hungarian_mat += mask_target[:,None]*mask_pred[None,:] # 1 where both indices are ignore_idx
         assignment = linear_sum_assignment(iou_hungarian_mat, maximize=True)
-
         assign_target = uq_target[assignment[0]]
         assign_pred = uq_pred[assignment[1]]
         iou_per_assignment = iou_hungarian_mat[assignment[0],assignment[1]]
@@ -304,10 +300,10 @@ def hungarian_iou(target,pred,ignore_idx=0,return_assignment=False):
         
         val = np.mean(iou_per_assignment)
 
-    if return_assignment:
-        return val, assign_target, assign_pred, iou_per_assignment
-    else:
-        return val
+        if return_assignment:
+            return val, assign_target, assign_pred, iou_per_assignment
+        else:
+            return val
     
 def standard_iou(target,pred,ignore_idx=0,reduce_classes=True):
     num_classes = max(target.max(),pred.max())+1

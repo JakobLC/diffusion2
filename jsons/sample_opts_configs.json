@@ -77,5 +77,20 @@
     "train-ts25": {
         "num_timesteps": 25,
         "split": "train"
+    },
+    "fast": {
+        "versions": {
+            "kwargs_sweep": {"kwargs_mode": "image;adjacent;same_dataset;same_vol;same_classes;self_cond;num_labels"}
+        },
+        "semantic_prob": 1.0,
+        "num_votes": 3,
+        "num_timesteps": 25,
+        "sampler_type":"ddpm",
+        "num_samples": 16,
+        "kwargs_mode": "train",
+        "plotting_functions": "",
+        "save_light_stats": true,
+        "save_raw_samples": false,
+        "datasets": "visor"
     }
 }

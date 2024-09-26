@@ -18,7 +18,7 @@ import copy
 import math
 import warnings
 import pandas as pd
-from source.utils.mixed_utils import get_named_datasets,nice_split
+from source.utils.mixed_utils import get_named_datasets,nice_split,model_arg_is_trivial
 from argparse import Namespace
 from source.utils.argparse_utils import TieredParser
 
@@ -59,7 +59,7 @@ class ModelInputKwargs:
 
     def compute_hyper_params(self):
         self.hyper_params = {}
-        self.hyper_params["diff_channels"] = int(torch.log2(torch.tensor(self.args["max_num_classes"])).ceil().item())
+        self.hyper_params["diff_channels"] = self.args["diff_channels"]
         self.hyper_params["image_channels"] = 3
         self.hyper_params["image_encoder"] = 256
         self.hyper_params["class_names_datasets"] = get_named_datasets(self.args["datasets"])
@@ -74,7 +74,7 @@ class ModelInputKwargs:
             "points":         lambda a: a["p_points"]>0,
             "bbox":           lambda a: a["p_bbox"]>0,
             "self_cond":      lambda a: a["p_self_cond"]>0,
-            "num_classes":    lambda a: a["class_type"]=="num_classes" and a["p_classes"]>0,
+            "num_labels":     lambda a: a["p_num_labels"]>0,
             "same_vol":       lambda a: a["p_same_vol"]>0,
             "same_classes":   lambda a: a["p_same_classes"]>0,
             "same_dataset":   lambda a: a["p_same_dataset"]>0,
@@ -86,7 +86,7 @@ class ModelInputKwargs:
     
     def supported_inputs(self):
         unet_support = ["time","sample","image","image_features",
-                        "points","bbox","self_cond","num_classes",
+                        "points","bbox","self_cond","num_labels",
                         "semantic","adjacent","same_vol","same_classes",
                         "same_dataset"]
         vit_support = unet_support+["class_names"]
@@ -117,14 +117,14 @@ class ModelInputKwargs:
             "same_dataset":   {**im_d, "in_chans": c_im_d},
             "adjacent":       {**im_d, "in_chans": c_im_d},
             "time":           {"type": "scalar_continuous", "min": 0.0, "max": 1.0},
-            "num_classes":    {"type": "scalar_discrete", "size": 64},
+            "num_labels":     {"type": "scalar_discrete", "size": 64},
             "class_names":    {"type": "vocabulary", "size": -1, "class_names_datasets": cnd},
             "semantic":       {"type": "scalar_discrete", "size": 2}
             }
         #add what is needed to load each input
         load_type =  {"dynamic": ["adjacent","same_vol","same_classes","same_dataset"], #dynamic loading inside dataloader
-                      "unique": ["image_features","time","sample","num_classes","semantic","self_cond","points","bbox"], #unique processing required
-                      "info": ["class_names","semantic","num_classes","image"]#ready as-is: simply take from info
+                      "unique": ["image_features","time","sample","num_labels","semantic","self_cond","points","bbox"], #unique processing required
+                      "info": ["class_names","semantic","num_labels","image"]#ready as-is: simply take from info
                       }
         #check that load_type is defined for all inputs
         assert_one_to_one_list_of_str(list(inputs.keys()),sum([v for v in load_type.values()],[]))
@@ -137,7 +137,7 @@ class ModelInputKwargs:
         for k in need_int2bit:
             inputs[k]["int2bit"] = True
         #add spatialness
-        spatialness = {0: ["num_classes","class_names","semantic"], #non-spatial
+        spatialness = {0: ["num_labels","class_names","semantic"], #non-spatial
                        1: ["same_vol","same_classes","same_dataset"], #style-like spatial inputs (images)
                        2: ["image","image_features","bbox","points","self_cond","adjacent"], #pixelwise spatial inputs (images)
                        3: ["sample","time"]} #minimum required diffusion args
@@ -219,6 +219,17 @@ class ModelInputKwargs:
                 raise e
             else:
                 return False
+
+def unet_vit_inputs_from_args(args):
+    mik = ModelInputKwargs(args)
+    mik.construct_kwarg_table()
+    unet_inputs = mik.kwarg_table[mik.kwarg_table["unet"]]["name"].tolist()
+    vit_inputs = mik.kwarg_table[mik.kwarg_table["vit"]]["name"].tolist()
+    used_inputs = []
+    for k in unet_inputs+vit_inputs:
+        if not k in used_inputs:
+            used_inputs.append(k)
+    return unet_inputs, vit_inputs, used_inputs
 
 mik = ModelInputKwargs(args=None,construct_args=True,assert_valid=True)
 all_input_keys = mik.kwarg_table["name"].tolist()
@@ -1828,6 +1839,23 @@ class WrapToVocabDict(dict):
             v = torch.tensor(v)
         return v
 
+def cond_kwargs_int2bit(kwargs,ab,dynamic_image_keys=dynamic_image_keys):
+    """loops over dynamic image keys and converts the label part to bits"""
+    for key in dynamic_image_keys:
+        if key in kwargs.keys():
+            #arg should be a tuple of (label (1 channel), image (3 channels), info (dict)). verify this
+            if model_arg_is_trivial(kwargs[key]):
+                continue
+            assert isinstance(kwargs[key],list), f"expected a list for key={key}. got type(kwargs[key])={type(kwargs[key])}"
+            for i in range(len(kwargs[key])):
+                if kwargs[key][i] is not None:
+                    assert isinstance(kwargs[key][i],(tuple,list)), f"expected a tuple for key={key}. got type(kwargs[key][i])={type(kwargs[key][i])}"
+                    assert len(kwargs[key][i])==3, f"expected a tuple of len 3 for key={key}. got len(kwargs[key][i])={len(kwargs[key][i])}"
+                    lab,im,info = kwargs[key][i]
+                    kwargs[key][i] = torch.cat([ab.int2bit(lab[None])[0],im])
+            
+    return kwargs
+
 def main():
     import argparse
     import sys, os
@@ -1887,7 +1915,7 @@ def main():
                     "same_dataset": 0.5,
                     "adjacent": 0.5,
                     "time": 0.5,
-                    "num_classes": 0.5,
+                    "num_labels": 0.5,
                     "class_names": 0.5}
         input_dict = {"image": torch.randn(bs,3,img_size,img_size),
                       "same_vol": torch.randn(bs,3+6,img_size,img_size),
@@ -1895,7 +1923,7 @@ def main():
                     "same_dataset": torch.randn(bs,3+6,img_size,img_size),
                     "adjacent": torch.randn(bs,3+6,img_size,img_size),
                     "time": torch.rand(bs,1),
-                    "num_classes": torch.randint(0,64,(bs,1)),
+                    "num_labels": torch.randint(0,64,(bs,1)),
                     "class_names": class_names}
         input_dict = {k: [v[i] if torch.rand(1)>probs_per_arg[k] else None for i in range(bs)] for k,v in input_dict.items()}
         pred = model(input_dict)
@@ -1916,7 +1944,7 @@ def main():
                 seed = set_random_seed(None)
                 print("seed: ",seed)
                 args = {"cond_vit_setup": "1b2abcde3a4b", #err: ["1b2abcde3c4b"]
-                        "max_num_classes": 64,
+                        "diff_channels": 6,
                         "cond_img_size": 128,
                         "cond_patch_size": 16,
                         "cond_sam_idx": -1}
@@ -1937,7 +1965,7 @@ def main():
                             "same_dataset": 0.5,
                             "adjacent": 0.5,
                             "time": 0.5,
-                            "num_classes": 0.5,
+                            "num_labels": 0.5,
                             "class_names": 0.5}
                 probs_per_arg = {k: 0.5 for k in probs_per_arg.keys()}
                 input_dict = {"image": torch.randn(bs,3,img_size,img_size),
@@ -1946,7 +1974,7 @@ def main():
                             "same_dataset": torch.randn(bs,3+6,img_size,img_size),
                             "adjacent": torch.randn(bs,3+6,img_size,img_size),
                             "time": torch.rand(bs,1),
-                            "num_classes": torch.randint(0,64,(bs,1)),
+                            "num_labels": torch.randint(0,64,(bs,1)),
                             "class_names": class_names}
                 input_dict = {k: v.to(device) if torch.is_tensor(v) else v for k,v in input_dict.items()}
                 input_dict = {k: [v[i] if torch.rand(1)<probs_per_arg[k] else None for i in range(bs)] for k,v in input_dict.items()}

@@ -4,23 +4,9 @@ import enum
 import numpy as np
 import torch
 from source.utils.data_utils import AnalogBits
-from source.utils.mixed_utils import normal_kl, construct_points
+from source.utils.mixed_utils import normal_kl, construct_points, nice_split
 from source.utils.metric_and_loss_utils import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
-from source.models.cond_vit import dynamic_image_keys
-
-def cond_kwargs_int2bit(kwargs,ab,keys=dynamic_image_keys):
-    """loops over dynamic image keys and converts the label part to bits"""
-    pesent_dynamic_keys = [key for key in keys if key in kwargs.keys()]
-    for key in pesent_dynamic_keys:
-        #x should be a tuple of (label, image). verify this
-        assert all([isinstance(x,(tuple,list)) for x in kwargs[key]]), f"expected a tuple of (label,image) for key={key}. got type(x[0])={type(kwargs[key][0])}"
-        assert all([len(x)==2 for x in kwargs[key]]), f"expected a tuple of (label,image), i.e. len 2 for key={key}. got len(x[0])={len(kwargs[key][0])}"
-        kwargs[key] = [(torch.cat([ab.int2bit(x[0][None])[0],x[1]]) 
-                        if (x is not None) else None) 
-                       for x in kwargs[key]]
-        
-    return kwargs
 
 def add_(coefs,x,batch_dim=0,flat=False):
     """broadcast and add coefs to x"""
@@ -274,7 +260,10 @@ class ContinuousGaussianDiffusion():
         alpha_t = self.alpha(t)
         sigma_t = self.sigma(t)
         x_t = mult_(alpha_t,x) + mult_(sigma_t,eps)
-        
+        """if "semantic" in model_kwargs.keys():
+            if not isinstance(model_kwargs["semantic"],list):
+                print(model_kwargs["semantic"])
+                assert 0"""
         if any(self_cond):
             with torch.no_grad():
                 output = model(x_t, t, **model_kwargs)
@@ -282,7 +271,6 @@ class ContinuousGaussianDiffusion():
                 model_kwargs['self_cond'] = [(pred_x[i] if self_cond[i] else None) for i in range(len(x))]
         else:
             model_kwargs['self_cond'] = None
-    
         output = model(x_t, t, **model_kwargs)
         
         pred_x, pred_eps = self.get_predictions(output,x_t,alpha_t,sigma_t)
@@ -418,7 +406,7 @@ class ContinuousGaussianDiffusion():
             t_cond = self.to_t_cond(t).to(x_t.dtype).to(x_t.device)
             
             if guidance_weight is not None:
-                model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs.items() if k in guidance_kwargs.split(",")})
+                model_output_guidance = model(x_t, t_cond, **{k: v for (k,v) in model_kwargs.items() if k in nice_split(guidance_kwargs)})
             else:
                 model_output_guidance = None
             
@@ -523,9 +511,7 @@ def transform_guidance_weight(gw, x):
         return w
 
 def create_diffusion_from_args(args):
-    num_bits = np.ceil(np.log2(args.max_num_classes)).astype(int)
-    ab = AnalogBits(num_bits=num_bits,
-                    onehot=args.onehot)
+    ab = AnalogBits(num_bits=args.diff_channels,onehot=args.onehot)
 
     cgd = ContinuousGaussianDiffusion(analog_bits=ab,
                                     schedule_name=args.noise_schedule,

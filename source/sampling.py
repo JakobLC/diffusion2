@@ -8,10 +8,11 @@ import tqdm
 from source.utils.mixed_utils import (get_time,save_dict_list_to_json,
                    check_keys_are_same,mask_from_imshape,postprocess_batch,
                    sam_resize_index,apply_mask,unet_kwarg_to_tensor,construct_points,
-                   model_arg_is_trivial)
+                   model_arg_is_trivial,nice_split)
 from source.utils.metric_and_loss_utils import get_segment_metrics
 from source.utils.plot_utils import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from source.utils.argparse_utils import TieredParser, save_args, overwrite_existing_args
+from source.models.cond_vit import all_input_keys
 from pathlib import Path
 import copy
 #from cont_gaussian_diffusion import DummyDiffusion TODO
@@ -47,6 +48,7 @@ class DiffusionSampler(object):
         if len(self.opts.datasets)>0:
             assert self.trainer.args.mode=="gen", "Datasets can only be specified in sampling mode."
             self.trainer.args.datasets = self.opts.datasets
+            self.trainer.args.dl_num_workers = 0
             self.trainer.create_datasets(self.opts.split)
             lpd = getattr(self.trainer,f"{self.opts.split}_dl").dataloader.dataset.len_per_dataset
             max_num_samples = sum([lpd[dataset] for dataset in self.opts.datasets])
@@ -201,19 +203,6 @@ class DiffusionSampler(object):
         return sample_output, metric_output
 
     def get_output_dict(self, metric_list, samples, info_keys_save=["dataset_name","i"]):
-        """for k in ["image","points","self_cond"]:
-            c = []
-            for s in samples:
-                if k in s["model_kwargs"].keys():
-                    if s["model_kwargs"][k] is None:
-                        c.append("n")
-                    elif model_arg_is_trivial(s["model_kwargs"][k]):
-                        c.append("t")
-                    else:
-                        c.append("1")
-                else:
-                    c.append("0") TODO: delete this
-            print(f"model_kwargs[{k}]: {c}")"""
         model_kwargs_keys = []
         for s in samples:
             for k in s["model_kwargs"].keys():
@@ -345,26 +334,36 @@ class DiffusionSampler(object):
         if self.opts.save_light_stats:
             save_dict_list_to_json(self.light_stats,self.opts.light_stats_filename)
 
-    def get_kwargs(self,batch):
+    def sampler_get_kwargs(self):
         if self.opts.kwargs_mode=="train":
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
-            x,model_kwargs,info = self.trainer.get_kwargs(batch)
+            x,model_kwargs,info = self.trainer.get_kwargs(next(self.dataloader))
         else:
-            x,info = batch
-            x = x.to(self.device)
-            x,model_kwargs,info = self.trainer.get_kwargs(batch, gen=True)
-            if self.opts.kwargs_mode=="none":
-                model_kwargs_use = []
+            assert self.trainer.args.mode=="gen", "kwargs_mode must be 'train' if not in gen mode."
+            self.dataloader.dataloader.dataset.gen_mode = True #enables all dynamic cond inputs
+            x,model_kwargs,info = self.trainer.get_kwargs(next(self.dataloader), gen=True)
+            self.dataloader.dataloader.dataset.gen_mode = False
+
+            model_kwargs_use = []
+            if self.opts.use_image:
+                model_kwargs_use.append("image")
+                if "image_features" in model_kwargs.keys():
+                    model_kwargs_use.append("image_features")
+
+            do_nothing_kwargs_modes = ["none","only_image","image",""]
+            if self.opts.kwargs_mode in do_nothing_kwargs_modes:
+                pass
             elif self.opts.kwargs_mode=="all":
-                model_kwargs_use = list(model_kwargs.keys())
-            elif self.opts.kwargs_mode=="only_image":
-                model_kwargs_use = ["image"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
-            elif self.opts.kwargs_mode=="classes":
-                model_kwargs_use = ["image","classes"]+(["image_features"] if "image_features" in model_kwargs.keys() else [])
-            elif self.opts.kwargs_mode.find(",")>=0:
-                model_kwargs_use = self.opts.kwargs_mode.split(",")
+                model_kwargs_use.extend(all_input_keys)
             else:
-                raise ValueError(f"Unknown kwargs_mode: {self.opts.kwargs_mode}")
+                special_kwargs_modes = ["all","train"]+do_nothing_kwargs_modes
+                for k in nice_split(self.opts.kwargs_mode):
+                    if k not in all_input_keys:
+                        raise ValueError(f"If kwargs_mode is NOT a special value ({special_kwargs_modes})"
+                                         f"then it must be a comma-separated list of valid keys from all_input_keys." 
+                                         f"Found: {k}. all_input_keys: {all_input_keys}")
+                model_kwargs_use.extend(nice_split(self.opts.kwargs_mode))
+
             if not all([k in model_kwargs.keys() for k in model_kwargs_use]):
                 not_found_kwargs = [k for k in model_kwargs_use if k not in model_kwargs.keys()]
                 raise ValueError(f"Could not find the following requested kwargs from the dataloader: {not_found_kwargs}")
@@ -388,7 +387,7 @@ class DiffusionSampler(object):
         
         bs = min(self.eval_batch_size,len(self.queue))
         if self.source_idx >= self.bss:
-            self.source_batch = self.get_kwargs(next(self.dataloader))
+            self.source_batch = self.sampler_get_kwargs()
             self.bss = self.source_batch[0].shape[0]
             self.source_idx = 0
         batch_x = []
@@ -410,12 +409,13 @@ class DiffusionSampler(object):
             if batch_queue[-1]["vote"]==self.opts.num_votes-1:
                 self.source_idx += 1
                 if (self.source_idx >= self.bss) and (not len(self.queue)==0):
-                    self.source_batch = self.get_kwargs(next(self.dataloader))
+                    self.source_batch = self.sampler_get_kwargs()
                     self.bss = self.source_batch[0].shape[0]
                     self.source_idx = 0
 
         for k in list(batch_kwargs.keys()):
             batch_kwargs[k] = unet_kwarg_to_tensor(batch_kwargs[k],key=k,list_instead=True)
+        
         batch_x = torch.stack(batch_x,dim=0)
         return batch_x, batch_kwargs, batch_info, batch_queue
     

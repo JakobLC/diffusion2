@@ -31,7 +31,7 @@
         "attention_resolutions": ["-2,-1",          "Resolutions to perform attention on. TYPE: comma separated list of integers representing idx with -1 being the deepest resolution. DEFAULT: '-2,-1'. "],
         "image_size": [64,                          "Image resolution. TYPE: positive integer. DEFAULT: 64. "],
         "deeper_net": [false,                       "Should a deeper net be used? TYPE: boolean. DEFAULT: true. "],
-        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "],
+        "diff_channels": [6,                        "Maximum number of diff channels, giving 2^diff_channels max labels in image. TYPE: positive integer. DEFAULT: 6. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
@@ -43,14 +43,13 @@
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "]
     },
     "Model input sampling probs (or args controlling inputs)": {
-        "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets' (TODO),'num_classes']. DEFAULT: 'none'. "],
         "cond_img_size": [-1,                       "Image size for inputs given to the conditional net TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
         "image_encoder": ["none",                   "Image encoder to use. TYPE: One of ['none','sam_vit_b','sam_vit_l','sam_vit_h']. DEFAULT: 'none'. "],
         "p_image": [0.95,                           "Probability of image being given as input. TYPE: float. DEFAULT: 0.95. "],
-        "p_classes": [0.25,                          "Probability of the number of class being given as input. TYPE: float. DEFAULT: 0.5. "],
+        "p_num_labels": [0.25,                      "Probability of the number of class being given as input. TYPE: float. DEFAULT: 0.5. "],
         "p_bbox": [0.0,                             "Probability of weak bbox being given as input. TYPE: float. DEFAULT: 0.25. "],
         "p_points": [0.25,                          "Probability of weak points being given as input. TYPE: float. DEFAULT: 0.25. "],
-        "p_self_cond": [0.25,                        "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
+        "p_self_cond": [0.25,                       "Probability of self conditioning being used. TYPE: float. DEFAULT: 0.25. "],
         "p_semantic": [0.0,                         "Probability of using semantic/instance as a conditional input arg. TYPE: float. DEFAULT: 0.0. "],
         "p_adjacent": [0.0,                         "Probability of adjacent images being given as input. TYPE: float. DEFAULT: 0.0. "],
         "p_same_vol": [0.0,                         "Probability of images from the same vol being given as input. TYPE: float. DEFAULT: 0.0. "],
@@ -111,14 +110,14 @@
         "dataloader_save_processing": [false,       "Should the dataloader save the processing of datasets to save time for later dataset loadings? TYPE: boolean. DEFAULT: false. "]
     },
     "version_backwards_compatability": {
-        "p_classes" : {"<1.0.0": 0.9, "1.0.0<=x<1.3.0": 0.5},
+        "p_num_classes" : {"<1.0.0": 0.9, "1.0.0<=x<1.3.0": 0.5},
         "p_bbox": {"<1.0.0": 0.25},
         "p_points": {"<1.0.0": 0.25, "1.0.0<=x<1.2.2": 0.5},
         "dl_num_workers": {"<1.0.0": 0},
         "ignore_padded": {"<1.0.0": false},
         "final_activation": {"<1.0.1": "none"},
         "split_method": {"<1.0.1": "random"},
-        "max_num_classes": {"<1.0.2": 8},
+        "diff_channels": {"<1.0.2": 3},
         "crop_method": {"<1.1.0": "multicrop_most_border"},
         "gen_setups": {"<1.1.0": "vali,train"},
         "max_class_names": {"<=1.2.0": 16},
@@ -164,18 +163,21 @@
         "backwards_comp_vit_unet_cond_mode": {"<1.2.0": "no_vit"},
         "backwards_comp_semantic_kwarg_prob": {"<=1.2.1": 1.0},
         "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
-        "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "]
+        "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "],
+        "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets' (TODO),'num_classes']. DEFAULT: 'none'. "],
+        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "]
     },
     "renamed": {
         "image_prob": "p_image",
         "same_dataset_prob": "p_same_dataset",
         "weak_points_prob": "p_points",
         "weak_bbox_prob": "p_bbox",
-        "classes_prob": "p_classes",
+        "classes_prob": "p_num_labels",
         "adjacent_prob": "p_adjacent",
         "same_classes_prob": "p_same_classes",
         "class_names_prob": "p_class_names",
         "same_vol_prob": "p_same_vol",
-        "self_cond_prob": "p_self_cond"
+        "self_cond_prob": "p_self_cond",
+        "p_classes": "p_num_labels"
     }
 }

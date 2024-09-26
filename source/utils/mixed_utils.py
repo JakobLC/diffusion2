@@ -14,6 +14,13 @@ import copy
 from jlc import shaprint
 import warnings
 
+def didx_from_info(info):
+    if isinstance(info,dict):
+        return f"{info['dataset_name']}/{info['i']}"
+    elif isinstance(info,list):
+        assert all([isinstance(info_i,dict) for info_i in info]), "expected all elements of info to be dicts, or info to be a dict"
+        return [didx_from_info(info_i) for info_i in info]
+
 def check_keys_are_same(list_of_dicts,verbose=True):
     assert isinstance(list_of_dicts,list), "list_of_dicts must be a list"
     keys = [sorted(list(d.keys())) for d in list_of_dicts]
@@ -820,7 +827,10 @@ def unet_kwarg_to_tensor(kwarg,key=None,non_tensor_exception_keys=["class_names"
         if all([kw is None for kw in kwarg]): #also return true for empty list
             kwarg = None
         elif all([isinstance(kw, torch.Tensor) for kw in kwarg]):
-            kwarg = torch.stack(kwarg)
+            if list_instead:
+                pass
+            else:
+                kwarg = torch.stack(kwarg)
         else:
             bs = len(kwarg)
             shapes = [kw.shape for kw in kwarg if kw is not None]
@@ -838,12 +848,13 @@ def unet_kwarg_to_tensor(kwarg,key=None,non_tensor_exception_keys=["class_names"
             kwarg = full_kwarg
     else:
         raise ValueError(f"kwarg={kwarg} is not a valid type. must be None, torch.Tensor, or list of torch.Tensor/None")
+
     if (dev is not None) and torch.is_tensor(kwarg):
         kwarg = kwarg.to(dev)
     elif (dev is not None) and isinstance(kwarg, list):
+        assert all([torch.is_tensor(kw) for kw in kwarg if kw is not None]), f"expected all elements of kwarg to be torch.Tensors, found {kwarg}"
         kwarg = [(kw.to(dev) if kw is not None else None) for kw in kwarg]
     return kwarg
-
 
 def construct_points(points,x,as_tensor=False):
     """Generates point images from ground truth

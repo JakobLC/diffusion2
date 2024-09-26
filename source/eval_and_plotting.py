@@ -13,7 +13,7 @@ from source.utils.argparse_utils import TieredParser, get_closest_matches,load_d
 from collections import defaultdict
 import tqdm
 from pathlib import Path
-from sam import (sam12_info, all_sam_setups,evaluate_sam)
+from source.sam import (sam12_info, all_sam_setups,evaluate_sam)
 from source.utils.data_utils import (AnalogBits,load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func)
@@ -98,13 +98,9 @@ def didx_from_info(list_of_info):
     return data_idx
 
 def is_saved_samples(x):
-    if isinstance(x,SavedSamples):
-        out = True
-    elif type(x).__name__.endswith("SavedSamples"):
-        out = True 
-    else:
-        out = False
-    return out
+    return any([isinstance(x,SavedSamples),
+                type(x).__name__.endswith("SavedSamples"),
+                type(x).__name__.endswith("DiffSamples")])
 
 class SavedSamplesManager:
     def __init__(self,saved_samples=None):
@@ -140,6 +136,10 @@ class SavedSamplesManager:
                                 values_per_key[k] = []
                             values_per_key[k].append(v)
             opts_keys = [k for k,v in values_per_key.items() if len(set(v))>1]
+        elif isinstance(opts_keys,str):
+            opts_keys = [opts_keys]
+        else:
+            assert isinstance(opts_keys,list), "expected opts_keys to be a list, string or None, found "+str(type(opts_keys))
         if include_renamed_keys:
             new_name_func = lambda x: "_".join([f"{k}={str(x[k])}" for k in opts_keys])
         else:
@@ -370,7 +370,6 @@ class SavedSamplesManager:
                                     text_pos_kwargs=text_pos_kwargs if add_text_axis else {},
                                     border_width_inside=2,
                                     pixel_mult=pixel_mult)
-            print(text_pos_kwargs)
         return big_image
     
     def hist(self,
@@ -468,7 +467,7 @@ class SavedSamplesManager:
             ss = ss.join_saved_samples(self.saved_samples[i],duplicate_join_mode=duplicate_join_mode)
         return ss
 
-    def metrics_for_plotting(self,metric_names=None,ss_idx=None,intersection_only=True,transpose_metric_ss=False):
+    def metrics_for_plotting(self,metric_names=None,ss_idx=None,intersection_only=True):
         self.raise_error_on_no_ss()
         if ss_idx is None:
             ss_idx = list(range(len(self.saved_samples)))
@@ -494,7 +493,7 @@ class SavedSamplesManager:
             assert isinstance(metric_names,str), "expected either None, a list of strings or a str as metric. found type: "+str(type(metric_names))
             metric_names = [metric_names]
         metrics = []
-        keyslist = [["metrics",m]for m in metric_names]
+        keyslist = [["metrics",m] for m in metric_names]
         for k in ss_idx:
             ss = self.saved_samples[k]
             metrics_k = ss.get_light_data(intersection_didx,return_type="list")
@@ -541,13 +540,16 @@ class SavedSamplesManager:
             error_bars=False,
             intersection_only=True,
             figsize=(12,6),
-            subplot_horz=True):
+            subplot_horz=True,
+            add_max_reduction=False):
         self.raise_error_on_no_ss()
-        metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
+        metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,
+                                ss_idx=ss_idx,
+                                intersection_only=intersection_only)
         #metrics structure:
         #metrics[ss_idx][metric_name] = list of values where mean is the bar height (instead of mean value, so we can get std)
         assert len(metric_names)>0, "expected at least one metric to be present in all ss_idx"
-        assert len(ss_idx)>0, "expected at least oneseperated_by_metrics ss_idx to be present"
+        assert len(ss_idx)>0, "expected at least one seperated_by_metrics ss_idx to be present"
         fancy_bar_args = {"text": text, 
                           "error_bars": error_bars}
         ss_names = [f"{self.saved_samples[i].name}" for i in ss_idx]
@@ -561,27 +563,42 @@ class SavedSamplesManager:
                 for i in range(len(metric_names)):
                     plt.subplot(1,n_subplots,i+1) if subplot_horz else plt.subplot(n_subplots,1,i+1)
                     m = metric_names[i]
-                    fancy_bar(fancy_bar_args,ss_names,[metrics[j][m] for j in range(len(ss_idx))])
+                    y = [metrics[j][m] for j in range(len(ss_idx))]
+                    fancy_bar(fancy_bar_args,ss_names,y)
                     plt.ylabel(m)
             else:
                 n_subplots = len(ss_idx)
                 
                 for i in range(len(ss_idx)):
                     plt.subplot(1,n_subplots,i+1) if subplot_horz else plt.subplot(n_subplots,1,i+1)
-                    fancy_bar(fancy_bar_args,metric_names,[metrics[i][m] for m in metric_names])
+                    y = [metrics[i][m] for m in metric_names]
+                    fancy_bar(fancy_bar_args,metric_names,y)
                     plt.title(f"Metrics for {ss_names[i]}")
                     plt.ylim(0,ymax)
         else:
             if seperated_by_metrics:
                 width = 0.8/len(ss_idx)
                 for i in range(len(ss_idx)):
-                    fancy_bar(fancy_bar_args,[j+width*i for j in range(len(metric_names))],[metrics[i][m] for m in metric_names],width,label=ss_names[i])
+                    x = [j+width*i for j in range(len(metric_names))]
+                    y = [metrics[i][m] for m in metric_names]
+                    
+                    if add_max_reduction:
+                        y_max = [y_i.max(1) for y_i in y]
+                        bar_kwargs = {"color": f"C{i}",
+                                      "edgecolor": "k",
+                                      "linewidth": 1,
+                                      "linestyle": "--",
+                                      "alpha": 0.4}
+                        fancy_bar({},x,y_max,width,**bar_kwargs)
+                    fancy_bar(fancy_bar_args,x,y,width,label=ss_names[i],color=f"C{i}")
                 plt.xticks([i+width*(len(ss_idx)-1)/2 for i in range(len(metric_names))], metric_names)
 
             else:
                 width = 0.8/len(metric_names)
                 for m in metric_names:
-                    fancy_bar(fancy_bar_args,[i+width*metric_names.index(m) for i in range(len(ss_idx))],[met[m] for met in metrics],width,label=m)
+                    x = [i+width*metric_names.index(m) for i in range(len(ss_idx))]
+                    y = [met[m] for met in metrics]
+                    fancy_bar(fancy_bar_args,x,y,width,label=m)
                 plt.xticks([i+width*(len(metric_names)-1)/2 for i in range(len(ss_idx))], ss_names)
             plt.legend() 
         plt.tight_layout()
@@ -595,11 +612,21 @@ class SavedSamplesManager:
                           to_df=True,
                           significant_digits=3,
                           convert_to_pct=False,
-                          opts_keys_for_table=[]):
+                          opts_keys_for_table=[],
+                          add_max_reduction=False):
         self.raise_error_on_no_ss()
         metrics,metric_names,ss_idx = self.metrics_for_plotting(metric_names=metric_names,ss_idx=ss_idx,intersection_only=intersection_only)
         ss_names = [self.saved_samples[i].name for i in ss_idx]
-        mean_metrics = {ss_name: {m: np.mean(metrics[i][m]).item() for m in metric_names} for i,ss_name in enumerate(ss_names)}
+        #this line is short, but has no max reduction
+        #mean_metrics = {ss_name: {m: np.mean(metrics[i][m]).item() for m in metric_names} for i,ss_name in enumerate(ss_names)}
+        mean_metrics = {}
+        for i,ss_name in enumerate(ss_names):
+            mean_metrics[ss_name] = {}
+            for m in metric_names:
+                mean_metrics[ss_name][m] = np.mean(metrics[i][m]).item()
+                if add_max_reduction:
+                    mean_metrics[ss_name]["max_"+m] = np.max(metrics[i][m]).item()
+
         if len(opts_keys_for_table)>0:
             for k in opts_keys_for_table:
                 list_of_vals = []
@@ -1142,7 +1169,14 @@ class SavedSamples:
             return
         assert len(output_of_read_heavy_data)==3, f"expected read_heavy_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_heavy_data)}"
         self.add_samples(*output_of_read_heavy_data)
-
+    
+    def reduce_to_only_heavy(self):
+        didx_w_heavy = []
+        for k,v in self.heavy_available.items():
+            if v=="pos_loaded":
+                didx_w_heavy.append(k)
+        return self.reduce_by_indexer(didx_w_heavy)
+    
     def reduce_by_indexer(self,indexer):
         didx,idx = self.normalize_indexer(indexer)
         light_data = [self.light_data[i] for i in idx]
@@ -1167,7 +1201,7 @@ class SavedSamples:
                                   name=new_name)
         return new_ss
 
-    def postprocess(self,postprocess_kwargs={},recompute_metrics=True):
+    def postprocess(self,postprocess_kwargs={},recompute_metrics=True,metrics=None):
         if self.postprocess_kwargs is not None:
             print("WARNING: The samples were already postprocessed, reprocessing with new postprocess_kwargs")
         didx = [d for d in self.didx if self.heavy_available[d]=="pos_loaded"]
@@ -1190,7 +1224,7 @@ class SavedSamples:
         else:
             segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
-            metrics = [get_segment_metrics(seg[None],gt.transpose((2,0,1))) 
+            metrics = [get_segment_metrics(seg.transpose((2,0,1)),gt.transpose((2,0,1))) 
                        for seg,gt in zip(segments_pp,gts)]
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
@@ -1304,8 +1338,7 @@ class DiffSamples(SavedSamples):
         if remove_old:
             for f in self.batch_files:
                 f.unlink()
-    
-    
+
 
 def mahalanobis_distance(data):
     #calculate mahalanobis distance for a given dataset, each row is a sample

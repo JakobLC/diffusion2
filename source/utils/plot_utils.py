@@ -12,7 +12,8 @@ from source.utils.argparse_utils import TieredParser
 from source.utils.mixed_utils import (bracket_glob_fix, save_dict_list_to_json, 
                                 imagenet_preprocess, 
                                 load_json_to_dict_list, wildcard_match,
-                                sam_resize_index,unet_kwarg_to_tensor)
+                                sam_resize_index,unet_kwarg_to_tensor,model_arg_is_trivial,
+                                didx_from_info)
 from source.utils.metric_and_loss_utils import get_likelihood
 from source.utils.data_utils import get_dataset_from_args, load_raw_image_label
 import cv2
@@ -402,7 +403,7 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     if remove_old:
         clean_up(concat_filename)
 
-def normal_image(x,i,imagenet_stats=True): 
+def normal_image(x,imagenet_stats=True): 
     if imagenet_stats:
         x2 = imagenet_preprocess(x.unsqueeze(0),inv=True)
         return x2.squeeze(0).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
@@ -429,7 +430,7 @@ def plot_inter(foldername,sample_output,model_kwargs,ab,save_i_idx=None,plot_tex
     im = np.zeros((batch_size,image_size,image_size,3))+0.5
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
-    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
+    normal_image2 = lambda x,i: normal_image(x,imagenet_stats=imagenet_stats)
     map_dict = {"x_t": aboi,
                 "pred": aboi,
                 "pred_x": aboi,
@@ -483,49 +484,49 @@ def get_sample_names_from_info(info,newline=True):
     sample_names = [f"{dataset_names[i]}/{newline}{datasets_i[i]}" for i in range(len(datasets_i))]
     return sample_names
 
-def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',text_inside=False,sample_names=None,imagenet_stats=True):
+def plot_grid(filename,
+              output,
+              ab,
+              max_images=32,
+              remove_old=False,
+              measure='ari',
+              text_inside=False,
+              sample_names=None,
+              imagenet_stats=True,
+              show_keys=dynamic_image_keys+["image","target_bit","pred_bit","points"]):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
-    show_keys = ["x_init","image","points","target_bit","pred_bit"]
-    show_keys_new = []
-    for k in show_keys:
-        if k in output.keys():
-            if output[k] is not None:
-                show_keys_new.append(k)
-    show_keys = show_keys_new
-    k0 = show_keys[0]
+    k0 = "pred_bit"
+    assert k0 in output.keys(), f"expected output to have key {k0}, found {output.keys()}"
     bs = len(output[k0])
     image_size = output[k0].shape[-1]
     if bs>max_images:
         bs = max_images
-    for k in show_keys:
+    
+    map_dict = get_map_dict(ab,imagenet_stats)
+    for k in list(show_keys):
+        if model_arg_is_trivial(output.get(k,None)):
+            show_keys.remove(k)
+            continue
+        if isinstance(output[k],list):
+            output[k] = unet_kwarg_to_tensor(output[k])
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
         output[k] = output[k][:bs]
-    
-    im = np.zeros((bs,image_size,image_size,3))+0.5
-    aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
-    points_aboi = lambda x,i: aboi(pretty_point(x),i)
-    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
-    map_dict = {"target_bit": aboi,
-                "pred_bit": aboi,
-                "x_init": aboi,
-                "image": normal_image2,
-                "points": points_aboi}
+        assert k in map_dict.keys(), f"No plotting method found in map_dict for key {k}"
     has_classes = False
     if "classes" in output.keys():
         if output["classes"] is not None:
             has_classes = True
-        
-    num_votes = output["pred_bit"].shape[1]
+    num_votes = output[k0].shape[1]
     images = []
     text = []
     for k in show_keys:
         if k in output.keys():
-            if k=="pred_bit":
+            if k==k0:
                 for j in range(num_votes):
-                    images.extend([map_dict[k](output[k][i][j],i) for i in range(bs)])
+                    images.extend([map_dict[k](output[k][i][j]) for i in range(bs)])
                     text1 = [k if text_inside else ""]+[""]*(bs-1)
                     text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
                     if j==0:
@@ -533,7 +534,7 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
                 text.extend([k if text_inside else ""]+[""]*(bs-1))
-                images.extend([map_dict[k](output[k][i],i) for i in range(bs)])
+                images.extend([map_dict[k](output[k][i]) for i in range(bs)])
                 if k=="points" and text_inside:
                     pass#text[-1] += f"\nclass={output['classes'][i].item()}" if has_classes else ""
     if not os.path.exists(os.path.dirname(filename)):
@@ -570,26 +571,54 @@ def plot_grid(filename,output,ab,max_images=32,remove_old=False,measure='ari',te
 def likelihood_image(x):
     return cm.inferno(replace_nan_inf(255*mean_dim0(x*2-1)).astype(np.uint8))[:,:,:3]
 
-def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,text_inside=False,sort_samples_by_t=True,sample_names=None,imagenet_stats=True):
+def get_map_dict(ab,imagenet_stats):
+    imgn_s = imagenet_stats
+    def get_zero_im(x):
+        return np.zeros((x.shape[-2],x.shape[-1],3))+0.5
+    def bit_to_np(x):
+        return ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy()
+    aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x),alpha_mask=1.0)
+    aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3]),alpha_mask=0.6)
+    points_aboi = lambda x: aboi(pretty_point(x))
+    err_im = lambda x: error_image(x)
+    lik_im = lambda x: likelihood_image(x)
+    normal_image2 = lambda x: normal_image(x,imagenet_stats=imagenet_stats)
+    aboi_keys = "x_t,pred_x,pred_eps,x,eps,pred_bit,target_bit,self_cond".split(",")
+    map_dict = {"image": normal_image2,
+                "err_x": err_im,
+                "points": points_aboi,
+                "likelihood": lik_im}
+    for k in aboi_keys:
+        map_dict[k] = aboi
+    for k in dynamic_image_keys:
+        map_dict[k] = aboi_split
+    return map_dict
+
+def plot_forward_pass(filename,
+                      output,
+                      metrics,
+                      ab,
+                      max_images=32,
+                      remove_old=True,
+                      text_inside=False,
+                      sort_samples_by_t=True,
+                      sample_names=None,
+                      imagenet_stats=True,
+                      show_keys=["image","x","pred_x","err_x","likelihood","self_cond",
+                                 "points"]+dynamic_image_keys):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
-    show_keys = ["image","points","x_t","pred_x","x","err_x","pred_eps","eps","likelihood"]
-    k0 = "x_t"
-    bs = len(output[k0])
-    image_size = output[k0].shape[-1]
+    k0 = "x_t" #key which determines batch size and image size
+    bs = output[k0].shape[0]
     if bs>max_images:
         bs = max_images
-    mask = (output["loss_mask"].to(output["x"].device) if "loss_mask" in output.keys() else 1.0)
-    output["err_x"] = (output["pred_x"]-output["x"])*mask
-    output["likelihood"] = get_likelihood(output["pred_x"],output["x"],mask,ab)[0]
-    if "mse_x" not in metrics.keys():
-        metrics["mse_x"] = torch.mean(output["err_x"]**2,dim=[1,2,3]).tolist()
-    if "self_cond" in output.keys():
-        if output["self_cond"] is not None:
-            show_keys.append("self_cond")
+    image_size = output[k0].shape[-1]
 
-    for k in show_keys:
-        if output.get(k,None) is None:
+    map_dict = get_map_dict(ab,imagenet_stats)
+    for k in list(show_keys):
+        if k in ["err_x","likelihood"]:
+            continue
+        if model_arg_is_trivial(output.get(k,None)):
             show_keys.remove(k)
             continue
         if isinstance(output[k],list):
@@ -598,49 +627,33 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
         output[k] = output[k][:bs]
-        
-    im = np.zeros((bs,image_size,image_size,3))+0.5
-    aboi = lambda x,i: mask_overlay_smooth(im[i],ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
-    points_aboi = lambda x,i: aboi(pretty_point(x),i)
-    err_im = lambda x,i: error_image(x)
-    lik_im = lambda x,i: likelihood_image(x)
-    normal_image2 = lambda x,i: normal_image(x,i,imagenet_stats=imagenet_stats)
-    map_dict = {"image": normal_image2,
-                "x_t": aboi,
-                "pred_x": aboi,
-                "x": aboi,
-                "err_x": err_im,
-                "pred_eps": aboi,
-                "eps": aboi,
-                "self_cond": aboi,
-                "points": points_aboi,
-                "likelihood": lik_im}
+        assert k in map_dict.keys(), f"No plotting method found in map_dict for key {k}"
+    mask = (output["loss_mask"].to(output["x"].device) if "loss_mask" in output.keys() else 1.0)
+    output["err_x"] = (output["pred_x"]-output["x"])*mask
+    output["likelihood"] = get_likelihood(output["pred_x"],output["x"],mask,ab)[0]
+    if "mse_x" not in metrics.keys():
+        metrics["mse_x"] = torch.mean(output["err_x"]**2,dim=[1,2,3]).tolist()
+    
     if sort_samples_by_t:
         perm = torch.argsort(output["t"]).tolist()
     else:
         perm = torch.arange(bs).tolist()
     images = []
     for k in show_keys:
-        if k in output.keys():
-            images.append([map_dict[k](output[k][i],i) for i in perm])
+        is_not_none = [output[k][i] is not None for i in range(bs)]
+        assert all(is_not_none), f"expected output[{k}] to be not None for all samples, found {is_not_none}"
+        images.append([map_dict[k](output[k][i]) for i in perm])
     text = sum([[k if text_inside else ""]+[""]*(bs-1) for k in show_keys],[])
 
-    has_classes = False
-    if "classes" in output.keys():
-        if output["classes"] is not None:
-            has_classes = True
-
     if text_inside:
-        err_idx = show_keys.index("err_x")*bs
-        for i in perm:
-            text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.3f}"
-        x_t_idx = show_keys.index("x_t")*bs
-        for i in perm:
-            text[i+x_t_idx] += f"\nt={output['t'][i].item():.3f}"
-        if has_classes:
-            points_idx = show_keys.index("points")*bs
+        if "err_idx" in show_keys:
+            err_idx = show_keys.index("err_x")*bs
             for i in perm:
-                text[i+points_idx] += f"\nclass={output['classes'][i].item()}"
+                text[i+err_idx] += f"\nmse={metrics['mse_x'][i]:.3f}"
+        if "x_t" in show_keys:
+            x_t_idx = show_keys.index("x_t")*bs
+            for i in perm:
+                text[i+x_t_idx] += f"\nt={output['t'][i].item():.3f}"
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     jlc.montage_save(save_name=filename,
@@ -658,8 +671,9 @@ def plot_forward_pass(filename,output,metrics,ab,max_images=32,remove_old=True,t
         sample_names = [sample_names[i] for i in perm]
     if not text_inside:
         t_and_mse = [f"t={output['t'][i].item():.3f}\nmse={metrics['mse_x'][i]:.3f}" for i in perm]
-        if has_classes:
-            t_and_mse = [f"class={output['classes'][i].item()}\n"+t for i,t in zip(perm,t_and_mse)]
+        if not model_arg_is_trivial(output.get("num_labels",None)):
+            nl_pretty = [int(v) if v is not None else None for v in output['num_labels']]
+            t_and_mse = [f"#labels={nl_pretty[i]}\n"+t for i,t in zip(perm,t_and_mse)]
         add_text_axis_to_image(filename,
                             save_filename=filename,
                             top=sample_names,
@@ -865,42 +879,47 @@ default_overlay_kwargs = {
             "alpha_mask": 0.5,
             "pixel_mult": 1,
             "set_lims": True,
-            "fontsize": 12,
+            "fontsize": 10,
             "text_alpha": 1.0,
             "text_border_instead_of_background": True
             }
 
 #unfortunately has to be in training.py due to circular imports  TODO: fix this
-def visualize_cond_batch(args,
-                         datasets=None,#"visor", 
+def visualize_cond_batch(dli,
                          num_images=4,
                          overlay_kwargs = default_overlay_kwargs,
                          montage_kwargs = {},
                          crop=False,
-                         text=True,
-                         fontsize=None):
-    if fontsize is not None:
-        overlay_kwargs["fontsize"] = fontsize
+                         add_class_names=True,
+                         add_text_axis=True,
+                         overlay_fontsize=None,
+                         axis_fontsize=None,
+                         text_inside_fontsize=None,
+                         didx_text_inside=True):
+    if overlay_fontsize is not None:
+        overlay_kwargs["fontsize"] = overlay_fontsize
     all_image_keys = ["image"]+dynamic_image_keys
     n_col = len(dynamic_image_keys)+1
     n_row = num_images
     image_key_to_index = {"image": 0, **{k: i+1 for i,k in enumerate(dynamic_image_keys)}}
     image_overlays = []
-    #dataloader = dataset_from_modelname(model_name,bs=num_images,split="vali",datasets=dataset_name,args_modifier=args_modifier)
-    dataloader = get_dataset_from_args(args,split="vali",mode="training")
-    x,info = next(dataloader)
+    x,info = next(dli)
+    didx = [["" for _ in range(n_row)] for _ in range(n_col)]
+    cond_dicts = []
     zero_image = None#np.zeros((image_size,image_size,3))
     for i in range(num_images):
         image_overlays.append([zero_image for _ in range(n_col)])
         image_dict = {"image": [x[i],info[i]["image"],info[i]], **info[i].get("cond",{})}
         class_names = info[i]["idx_to_class_name"]
+        cond_dicts.append(info[i]["conditioning"])
         for k in all_image_keys:
             if k in image_dict.keys():
-                label,image,_ = image_dict[k]
+                label,image,info_i = image_dict[k]
+                didx[image_key_to_index[k]][i] = didx_from_info(info_i)
                 label,image = label.permute(1,2,0).numpy(),image.permute(1,2,0).numpy()
                 image = imagenet_preprocess(image,inv=True,dim=2)
                 image_overlay = mask_overlay_smooth(image,label,
-                                                    class_names=class_names if text else None
+                                                    class_names=class_names if add_class_names else None,
                                                     **overlay_kwargs)
                 image_overlays[-1][image_key_to_index[k]] = image_overlay
     
@@ -910,11 +929,24 @@ def visualize_cond_batch(args,
             for j in range(len(image_overlays[i])):
                 if image_overlays[i][j] is not None:
                     image_overlays[i][j] = image_overlays[i][j][:h,:w]
+    
     montage_kwargs = {"return_im": True, "imshow": False, **montage_kwargs}
+    #if didx_text_inside:
+    #    montage_kwargs["text"] = didx
     montage_im = jlc.montage(image_overlays,n_col=n_col,n_row=n_row,**montage_kwargs)
-    if text:
-        xtick_kwargs = {"fontsize": overlay_kwargs["fontsize"]} if fontsize is not None else {}
-        left_text = [f"image {i}" for i in range(num_images)]
+    if didx_text_inside:
+        text_kwargs = {"color":"red","fontsize": 10,"verticalalignment":"top","horizontalalignment":"left"}
+        if text_inside_fontsize is not None:
+            text_kwargs["fontsize"] = text_inside_fontsize
+        montage_im = render_text_gridlike(montage_im,
+                                          x_sizes=n_col,
+                                          y_sizes=n_row,
+                                          text_inside=didx,
+                                          border_width_inside=text_kwargs["fontsize"]//10,
+                                          text_kwargs=text_kwargs)
+    if add_text_axis:
+        xtick_kwargs = {"fontsize": axis_fontsize} if axis_fontsize is not None else {}
+        left_text = ["\n".join([f"{k}: {len(v)}," for k,v in cond_dict.items()])[:-1] for cond_dict in cond_dicts]
         bottom_text = ["image"]+dynamic_image_keys
         bottom_text = [b+"\n" for b in bottom_text]
         montage_im = jlc.add_text_axis_to_image(montage_im,n_horz=n_col,n_vert=n_row,

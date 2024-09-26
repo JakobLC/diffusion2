@@ -374,6 +374,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.padding_idx = padding_idx
         self.save_matched_items = save_matched_items
         self.load_matched_items = load_matched_items
+        self.gen_mode = False
         assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
         if crop_method.startswith("sam"):
             self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx)
@@ -450,7 +451,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                         item["image_path"] = item["image_path"].replace("_im."+file_format,"_pim."+file_format)
                         item["label_path"] = item["label_path"].replace("_la.png","_pla.png")
                     if self.conditioning:
-                        item = self.process_conditioning(item,use_idx)                 
+                        item = self.process_dyn_cond(item,use_idx)                 
                     else:
                         if "conditioning" in item:
                             del item["conditioning"]
@@ -545,7 +546,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self.length
     
-    def process_conditioning(self,item,use_idx,keep_atmost=8):
+    def process_dyn_cond(self,item,use_idx,keep_atmost=8):
         if "conditioning" not in item.keys():
             item["conditioning"] = {}
         item["conditioning"]["same_dataset"] = np.random.choice(use_idx,min(keep_atmost,len(use_idx)),replace=False).tolist()
@@ -800,7 +801,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     print("excess_idx: ",excess_idx)
                     print("class_table: ",class_table)
                     raise
-            elif self.map_excess_classes_to=="random_different": #all labels are randomly associated with 
+            elif self.map_excess_classes_to=="random_different": #all labels are randomly associated with a different label
                 if semantic:
                     random_classes = np.random.choice(mnc,size=len(excess_idx))
                     dataset_idx_of_excess = class_table.loc[excess_idx,"idx_dataset"].to_numpy()
@@ -809,14 +810,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 else:
                     random_classes = np.random.choice(mnc,size=len(excess_idx))
                 class_table.loc[excess_idx,"idx_new"] = random_classes
-            elif self.map_excess_classes_to=="random_same": #all labels are randomly associated with 
+            elif self.map_excess_classes_to=="random_same": #all labels are randomly associated with the same label
                 random_class = np.random.choice(mnc)
                 class_table.loc[excess_idx,"idx_new"] = random_class
             elif self.map_excess_classes_to=="zero":
                 class_table.loc[excess_idx,"idx_new"] = 0
             elif self.map_excess_classes_to=="same":
                 pass
-            elif self.map_excess_classes_to=="nearest_expensive":
+            elif self.map_excess_classes_to=="nearest_expensive": #not implemented yet, supposed to find maximum bordering class and assign to that
                 raise NotImplementedError("nearest_expensive not implemented yet")
         if self.shuffle_labels:
             if self.shuffle_zero:
@@ -880,18 +881,19 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 delta = len(class_table)
                 class_table_v = self.class_table_from_info(info["cond"][k][-1],origin=k)
                 class_table_v["idx_old"] += delta
-                info["cond"][k][0] = padding_to_val(info["cond"][k][0],padding_idx=self.padding_idx,val=-1)
-                info["cond"][k][0] += delta
+                info["cond"][k][0] = info["cond"][k][0].astype(int)
+                info["cond"][k][0][info["cond"][k][0]==self.padding_idx] = -1
+                info["cond"][k][0][info["cond"][k][0]>0] += delta
                 class_table = pd.concat([class_table,class_table_v],axis=0,ignore_index=True)
         class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic,info=info)
-        
-        label = padding_to_val(label,padding_idx=self.padding_idx,val=-1)
+        label = label.astype(int)
+        label[label==self.padding_idx] = -1
         label = np.vectorize(old_to_new.get)(label)
 
         info["idx_to_class_name"] = idx_to_class_name
         info["idx_to_dataset_idx"] = idx_to_dataset_idx
         info["old_to_new"] = old_to_new
-        info["num_classes"] = num_classes
+        info["num_labels"] = num_classes
         if has_cond:
             for k in info["cond"].keys():
                 info["cond"][k][0] = np.vectorize(old_to_new.get)(info["cond"][k][0])
@@ -905,10 +907,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
         didx_to_load = []
         illegal_idx = [info["i"]]
         for key in dynamic_image_keys:
-            p = probs.get(key,0)
+            if self.gen_mode:
+                p = 1.0
+            else:
+                p = probs.get("p_"+key,0.0)
             if p>0:
                 if np.random.rand()<=p:
-                    idx = sample_from_list_in_dict(dict_=info["conditioning"], key="p_"+key, num_samples=1, illegal_idx=illegal_idx)
+                    idx = sample_from_list_in_dict(dict_=info["conditioning"], key=key, num_samples=1, illegal_idx=illegal_idx)
                     type_of_load.extend([key for _ in range(len(idx))])
                     didx_to_load.extend([f"{dataset_name}/{i}" for i in idx])
         if len(didx_to_load)>0:
@@ -1005,8 +1010,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
                                 v[2]] for k,v in info["cond"].items()}
         return image,label,info
     
-
-
     def __getitem__(self, idx):
         idx,load_cond,load_cond_probs,is_cond_call = self.process_input(idx)
         info = copy.deepcopy(self.items[idx])
@@ -1270,12 +1273,6 @@ def save_sam_features(datasets="ade20k",
             if not dry:
                 torch.save(image_features[i],filename)
 
-def padding_to_val(label,padding_idx,val=-1):
-    assert isinstance(label,np.ndarray)
-    label = label.astype(int)
-    label[label==padding_idx] = val
-    return label
-
 def get_dataset_from_args(args_or_model_id=None,
                           split="vali",
                           prioritized_didx=None,
@@ -1287,7 +1284,7 @@ def get_dataset_from_args(args_or_model_id=None,
         #use default args with data
         args_or_model_id = TieredParser().get_args(alt_parse_args=["--model_name","default"])
         args_or_model_id.datasets = "all"
-    assert split in ["train","vali","test","all",0,1,2,3], f"split must be in ['train','vali','test','all'], got {split}"
+    assert split in ["train","vali","test","all",0,1,2,3], f"split must be in ['train','vali','test','all'] or its index, got {split}"
     split = {0:"train",1:"vali",2:"test",3:"all"}.get(split,split)
     assert return_type in ["dli","dl","ds"], f"return_type must be in ['dli','dl','ds'], got {return_type}"
     assert mode in ["training","pure_gen","pri_didx",None], f"sampler_mode must be in ['training','pure_gen','pri_didx',None], got {mode}"
@@ -1298,36 +1295,34 @@ def get_dataset_from_args(args_or_model_id=None,
     else:
         assert isinstance(args_or_model_id,Namespace)
         args = args_or_model_id
-    cond_mode = len(nice_split(args.vit_spatialness))>0
-    if cond_mode:
-        if load_cond_probs_override is not None:
-            assert isinstance(load_cond_probs_override,float), f"load_cond_probs_override must be a float, got {load_cond_probs_override}"
-            load_cond_probs = {k: load_cond_probs_override for k in dynamic_image_keys}
-        else:
-            mik = ModelInputKwargs(args)
-            load_cond_probs = mik.get_input_probs()
-            if max(load_cond_probs.values())==0:
-                cond_mode = False
-                load_cond_probs = None
+
+    if load_cond_probs_override is not None:
+        assert isinstance(load_cond_probs_override,float), f"load_cond_probs_override must be a float, got {load_cond_probs_override}"
+        load_cond_probs = {k: load_cond_probs_override for k in dynamic_image_keys}
     else:
+        load_cond_probs = {"p_"+k: args.__dict__["p_"+k] for k in dynamic_image_keys}
+        
+    if max(load_cond_probs.values())==0:
+        conditioning = False
         load_cond_probs = None
-    
+    else:
+        conditioning = True
     ds = SegmentationDataset(split=split,
-                                        split_ratio=[float(item) for item in args.split_ratio.split(",")],
-                                        image_size=args.image_size,
-                                        datasets=args.datasets,
-                                        min_rel_class_area=args.min_label_size,
-                                        max_num_classes=args.max_num_classes,
-                                        shuffle_zero=args.shuffle_zero,
-                                        crop_method=args.crop_method,
-                                        padding_idx=255 if args.ignore_padded else 0,
-                                        split_method=args.split_method,
-                                        sam_features_idx=args.image_encoder,
-                                        semantic_prob=args.semantic_dl_prob,
-                                        conditioning=cond_mode,
-                                        load_cond_probs=load_cond_probs,
-                                        save_matched_items=args.dataloader_save_processing
-                                        )
+                            split_ratio=[float(item) for item in args.split_ratio.split(",")],
+                            image_size=args.image_size,
+                            datasets=args.datasets,
+                            min_rel_class_area=args.min_label_size,
+                            max_num_classes=2**args.diff_channels,
+                            shuffle_zero=args.shuffle_zero,
+                            crop_method=args.crop_method,
+                            padding_idx=255 if args.ignore_padded else 0,
+                            split_method=args.split_method,
+                            sam_features_idx=args.image_encoder,
+                            semantic_prob=args.semantic_dl_prob,
+                            conditioning=conditioning,
+                            load_cond_probs=load_cond_probs,
+                            save_matched_items=args.dataloader_save_processing
+                            )
     if return_type=="ds":
         return ds
     tbs = args.train_batch_size
