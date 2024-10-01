@@ -321,7 +321,7 @@ class DiffusionModelTrainer:
 
         return self.model, swap_pointers_func
 
-    def get_kwargs(self, batch, gen=False, del_none=True):
+    def get_kwargs(self, batch, gen=False, del_none=True, force_image=False):
         x,info = batch
         if self.args.image_encoder!="none":
             if self.args.image_size!=x.shape[-1]:
@@ -335,7 +335,7 @@ class DiffusionModelTrainer:
         for i in range(bs):
             if self.args.debug_run=="no_kwargs":
                 break
-            if np.random.rand()<=self.args.p_image or gen:
+            if np.random.rand()<=self.args.p_image or gen or force_image:
                 model_kwargs["image"].append(info[i]["image"])
             else:
                 model_kwargs["image"].append(None)

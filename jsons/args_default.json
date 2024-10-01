@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.3.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.2.2."],
+    "model_version": ["1.3.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.3.1."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -19,6 +19,7 @@
         "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 20.0. "]
     },
     "model": {
+        "agnostic": [true,                          "Should the model be class agnostic? TYPE: boolean. DEFAULT: true. "],
         "use_checkpoint": [false,                   "Should gradient checkpointing be used (reduced memory usage, more flops)? TYPE: boolean. DEFAULT: false. "],
         "channel_multiplier": ["auto",              "Channel multipliers for the UNet, specifying the number of layers and their multiplier with num_channels. TYPE: comma separated list of ints. DEFAULT: 'auto'. "],                   
         "dropout": [0.0,                            "UNet dropout probability. TYPE: float. DEFAULT: 0.0. "],
@@ -36,8 +37,8 @@
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
-        "unet_spatialness": ["2,3" ,                "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '2,3'. "],
-        "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
+        "unet_spatialness": ["0,1,2,3" ,            "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
+        "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: ''. "],
         "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
         "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "]
@@ -124,7 +125,8 @@
         "cond_patch_size": {"<=1.2.0": 16},
         "semantic_dl_prob": {"<=1.2.1": 0.5},
         "vit_spatialness": {"<1.3.0": "0,1,2,3"},
-        "p_self_cond": {"<1.3.0": 0.5}
+        "p_self_cond": {"<1.3.0": 0.5},
+        "unet_spatialness": {"<1.3.1": "2,3"}
     },
     "deprecated": {
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'. "],

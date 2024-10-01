@@ -92,5 +92,28 @@
         "save_light_stats": true,
         "save_raw_samples": false,
         "datasets": "visor"
+    },
+    "XL": {
+        "versions": {
+            "self_cond_gw2": {"kwargs_mode": "image,self_cond", "guidance_weight": 2.0},
+            "train": {"split": "train"},
+            "vali": {}
+        },
+        "kwargs_mode": "image",
+        "num_samples": 32,
+        "num_timesteps": 25,
+        "split": "vali"
+    },
+    "lidc_eval": {
+        "num_timesteps": 25,
+        "num_samples": -1,
+        "split": "vali",
+        "datasets": "lidc",
+        "num_votes": 1,
+        "kwargs_mode": "only_image",
+        "save_light_stats": true,
+        "save_raw_samples": true,
+        "num_save_raw_samples": 1e10,
+        "only_save_pred_int": true
     }
 }

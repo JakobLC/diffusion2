@@ -5,7 +5,6 @@ from PIL import Image
 from pathlib import Path
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix, pair_confusion_matrix
 from scipy.optimize import linear_sum_assignment
-from sklearn.metrics import confusion_matrix
 from skimage.morphology import binary_dilation,disk
 
 def get_all_metrics(output,ab=None):
@@ -13,9 +12,11 @@ def get_all_metrics(output,ab=None):
     assert "pred_x" in output.keys(), "output must have a pred_x key"
     assert "x" in output.keys(), "output must have an x key"
     mask = output["loss_mask"] if "loss_mask" in output.keys() else None
-    metrics = {**get_segment_metrics(output["pred_x"],output["x"],mask=mask,ab=ab),
+    mapper = ab.bit2int if ab is not None else lambda x: x
+    metrics = {**get_segment_metrics(mapper(output["pred_x"]),output["x"],mask=mask),
                **get_mse_metrics(output)}
-    metrics["likelihood"] = get_likelihood(output["pred_x"],output["x"],output["loss_mask"],ab)[1]
+    if ab is not None:
+        metrics["likelihood"] = get_likelihood(output["pred_x"],output["x"],output["loss_mask"],ab)[1]
     return metrics
 
 def get_likelihood(pred,target,mask,ab,outside_mask_fill_value=0.0,clamp=True):
@@ -141,7 +142,7 @@ def mean_iou(results, gt_seg_maps, num_classes, ignore_index,
 
     return all_acc, iou
 
-def get_segment_metrics(pred,target,mask=None,ab=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):
+def get_segment_metrics(pred,target,mask=None,reduce_to_mean=True,acceptable_ratio_diff=0.1):
     if isinstance(target,(dict,str)):
         #we are in pure evaluation mode, i.e compare with the same target for any method in the native resolution
         #load raw target and reshape pred
@@ -180,11 +181,7 @@ def get_segment_metrics(pred,target,mask=None,ab=None,reduce_to_mean=True,accept
             mask = mask.unsqueeze(0)
     else:
         was_single = False
-    if not pred.shape[1]==target.shape[1]==1:
-        if ab is None:
-            raise ValueError("ab must be specified if pred and target are not 1-channel. Use Analog bits to get a 1-channel output.")
-        pred = ab.bit2int(pred)
-        target = ab.bit2int(target)
+    assert pred.shape[1]==target.shape[1]==1, "pred and target must be 1-channel"
     assert len(pred.shape)==len(target.shape)==4, "batched_metrics expects 3D or 4D torch tensors"
     bs = pred.shape[0]
     metric_dict = {"iou": standard_iou,
@@ -266,7 +263,7 @@ def lsa_no_warning(mat, maximize=True):
         assignment = (a1[:1],a2[:1])
     return assignment
 
-def hungarian_iou(target,pred,ignore_zero=True,match_zero=False,return_assignment=False):
+def hungarian_iou(target,pred,ignore_zero=False,match_zero=False,return_assignment=False):
     uq_target,target,conf_rowsum = np.unique(target,return_inverse=True,return_counts=True)
     uq_pred  ,pred  ,conf_colsum = np.unique(pred,return_inverse=True,return_counts=True)
 
@@ -335,11 +332,16 @@ def hungarian_iou(target,pred,ignore_zero=True,match_zero=False,return_assignmen
     
 def standard_iou(target,pred,ignore_zero=False,reduce_classes=True):
     num_classes = max(target.max(),pred.max())+1
+    if target.dtype==bool:
+        target = target.astype(int)
+    if pred.dtype==bool:
+        pred = pred.astype(int)
     if num_classes==1:
         return 1.0
-    intersection = np.histogram(target[pred==target], bins=np.arange(num_classes + 1))[0]
-    area_pred = np.histogram(pred, bins=np.arange(num_classes + 1))[0]
-    area_target = np.histogram(target, bins=np.arange(num_classes + 1))[0]
+    bins = np.arange(num_classes + 1)
+    intersection = np.histogram(target[pred==target], bins=bins)[0]
+    area_pred    = np.histogram(pred,                 bins=bins)[0]
+    area_target  = np.histogram(target,               bins=bins)[0]
     union = area_pred + area_target - intersection
     if ignore_zero:
         union[0] = 0
@@ -464,3 +466,100 @@ def seg2bmap(seg,width=None,height=None):
 					bmap[j,i] = 1;
 	return bmap
 
+def get_TP_FP_FN_TN(gt,pred):
+    TP = np.sum(gt&pred)
+    FP = np.sum(~gt&pred)
+    FN = np.sum(gt&~pred)
+    TN = np.sum(~gt&~pred)
+    return TP,FP,FN,TN
+
+def collective_insight(gt,pred):
+    assert gt.max()<=1 and pred.max()<=1
+    n_gt = gt.shape[-1]
+    n_pred = pred.shape[-1]
+
+    measures = {"combined_sensitivty": float("nan"),
+                "maximum_dice_matching": float("nan"),
+                "diversity_agreement": float("nan")}
+                
+    TP,FP,FN,TN = get_TP_FP_FN_TN(gt.any(-1),pred.any(-1))
+    if TP+FP+FN==0: 
+        #edge case 1
+        #both are empty, the combined sensitivity is 1
+        measures["combined_sensitivty"] = 1.0
+    elif TP+FN==0 and FP>0: 
+        #edge case 2
+        #ground truth is empty, but prediction is not, the combined sensitivity is 0
+        measures["combined_sensitivty"] = 0.0
+    else:
+        measures["combined_sensitivty"] = TP/(TP+FN)
+
+    dice_mat = np.zeros((n_gt,n_pred))
+    for i in range(n_gt):
+        for j in range(n_pred):
+            TP,FP,FN,TN = get_TP_FP_FN_TN(gt[:,:,i],pred[:,:,j])
+            dice_mat[i,j] = 2*TP/(2*TP+FP+FN)
+    measures["maximum_dice_matching"] = dice_mat.max(axis=1).mean()
+
+    variance_mat_pred = np.var(pred.reshape(-1,n_pred)[:,:,None].astype(int)-
+                               pred.reshape(-1,n_pred)[:,None,:].astype(int),axis=0)
+    variance_mat_gt = np.var(gt.reshape(-1,n_gt)[:,:,None].astype(int)-
+                             gt.reshape(-1,n_gt)[:,None,:].astype(int),axis=0)
+    V_pred_min = variance_mat_pred.min()
+    V_pred_max = variance_mat_pred.max()
+    V_gt_min = variance_mat_gt.min()
+    V_gt_max = variance_mat_gt.max()
+    delta_max = abs(V_pred_max-V_gt_max)
+    delta_min = abs(V_pred_min-V_gt_min)
+    measures["diversity_agreement"] = 1-(delta_max+delta_min)/2
+    multiplied = np.prod([v for v in measures.values()])
+    added = np.sum([v for v in measures.values()])
+    measures["collective_insight"] = 3*multiplied/added
+    return measures
+
+def binary_iou(TP,FP,FN,TN):
+    if TP+FP+FN==0:
+        return 1.0
+    else:
+        return TP/(TP+FP+FN)
+
+def generalized_energy_distance(gt,pred,dist=binary_iou):
+    n_gt = gt.shape[-1]
+    n_pred = pred.shape[-1]
+    dist_pred_gt = np.zeros((n_gt,n_pred))
+    for i in range(n_gt):
+        for j in range(n_pred):
+            TP,FP,FN,TN = get_TP_FP_FN_TN(gt[:,:,i],pred[:,:,j])
+            dist_pred_gt[i,j] = dist(TP,FP,FN,TN)
+    dist_gt = {}
+    for i in range(n_gt):
+        for j in range(i,n_gt):
+            TP,FP,FN,TN = get_TP_FP_FN_TN(gt[:,:,i],gt[:,:,j])
+            dist_gt[(i,j)] = dist(TP,FP,FN,TN)
+    dist_pred = {}
+    for i in range(n_pred):
+        for j in range(n_pred):
+            TP,FP,FN,TN = get_TP_FP_FN_TN(pred[:,:,i],pred[:,:,j])
+            dist_pred[(i,j)] = dist(TP,FP,FN,TN)
+    expected_gt = np.array(list(dist_gt.values())).mean()
+    expected_pred = np.array(list(dist_pred.values())).mean()
+    ged = 2*dist_pred_gt.mean()-expected_gt-expected_pred
+    return ged
+
+def get_ambiguous_metrics(gt,pred,shorthand=False):
+    assert isinstance(gt,np.ndarray), "gt must be a numpy array"
+    assert isinstance(pred,np.ndarray), "pred must be a numpy array"
+    assert len(gt.shape)==3, "gt must be a 3D numpy array in (H,W,C_gt) format"
+    assert len(pred.shape)==3, "pred must be a 3D numpy array in (H,W,C_pred) format"
+    assert gt.shape[0]==pred.shape[0], "gt and pred must have the same height"
+    assert gt.shape[1]==pred.shape[1], "gt and pred must have the same width"
+    shorthand_dict = {"combined_sensitivty": "S_c",
+                      "maximum_dice_matching": "D_max",
+                      "diversity_agreement": "D_a",
+                      "collective_insight": "CI",
+                      "generalized_energy_distance": "GED"}
+    measures = collective_insight(gt,pred)
+    measures["generalized_energy_distance"] = generalized_energy_distance(gt,pred)
+    if shorthand:
+        measures = {shorthand_dict[k]:v for k,v in measures.items()}
+    return measures

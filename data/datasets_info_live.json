@@ -358,5 +358,25 @@
         ],
         "thin_bg": "never",
         "quality": "medium"
+    },
+    {
+        "dataset_name": "lidc",
+        "type": "medical",
+        "live": true,
+        "symmetries": "all",
+        "num_samples": 45609,
+        "num_classes": 2,
+        "file_format": "png",
+        "rel_weight": 0.5,
+        "aug": "medical_grey",
+        "bg_prob": 0.5,
+        "overlap": false,
+        "samples_per_split": [
+            36552,
+            4501,
+            4556
+        ],
+        "thin_bg": "never",
+        "quality": "high"
     }
 ]

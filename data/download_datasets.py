@@ -729,6 +729,45 @@ class DatasetDownloader:
                 label = Image.fromarray(label)
                 image = Image.fromarray(image)
                 return image,label,info
+        elif name=="lidc":
+            lidc_path = "/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/"
+            data = load_json_to_dict_list(lidc_path+"data.jsonl")
+            class_dict = {0: "background",1: "nodule"}
+            vali_idx_path = lidc_path+"vali_patient_ids.txt"
+            test_idx_path = lidc_path+"test_patient_ids.txt"
+            vali_idx = [l.replace("\n","") for l in open(vali_idx_path).readlines()]
+            test_idx = [l.replace("\n","") for l in open(test_idx_path).readlines()]
+            split_from_patient_id = lambda id: 1 if id in vali_idx else 2 if id in test_idx else 0
+            image_suffix = ".png"
+            file_data = []
+            for scan_id,scan in enumerate(data):
+                for nodule in scan["nodules"]:
+                    for image_dict in nodule:
+                        for mask_id in image_dict["masks_id"]:
+                            file_data.append({"split_idx": split_from_patient_id(scan["patient_id"]),
+                                            "bbox"       : image_dict["bbox"],
+                                            "image_id"   : image_dict["image_id"],
+                                            "mask_id"    : mask_id,
+                                            "patient_id" : scan["patient_id"],
+                                            "scan_id"    : scan_id})
+            file_name_list = [f"mask_{f['mask_id']:06d}.png" for f in file_data]
+            def load_image_label_info(file_name):
+                file_data_idx = file_name_list.index(file_name)
+                file_data_dict = file_data[file_data_idx]
+                image_path = lidc_path+f"images/img_{file_data_dict['image_id']:06d}.png"
+                label_path = lidc_path+"masks/"+file_name
+                image = np.array(Image.open(image_path))
+                label = np.zeros(image.shape[:2],dtype=np.uint8)
+                b1,b2,b3,b4 = file_data_dict["bbox"]
+                label[b1:b2,b3:b4] = (np.array(Image.open(label_path))>0).astype(np.uint8)
+
+                image,label = bbox_crop(image,label,file_data_dict["bbox"],size=128)
+                info = {"classes": [0]+([1] if np.sum(label)>0 else []),
+                        "split_idx": file_data_dict["split_idx"]}
+                image = Image.fromarray(image)
+                label = Image.fromarray(label)
+                return image,label,info
+            
         else:
             raise ValueError(f"Dataset {name} not supported.")
         if do_step["delete_f_before"]:
@@ -748,8 +787,9 @@ class DatasetDownloader:
         samples_per_split = [0,0,0]
         for file_name in tqdm.tqdm(file_name_list):
             if not any([do_step[k] for k in ["save_images","save_info"]]): break
-            has_run_long_enough = num_attempts>np.ceil(2/(self.allowed_failure_rate+0.01)) or self.allowed_failure_rate<0.01
-            if (self.allowed_failure_rate*num_attempts >= file_i) and has_run_long_enough:
+            num_failures = num_attempts-file_i
+            failure_rate = num_failures/num_attempts if num_attempts>0 else 0
+            if failure_rate>self.allowed_failure_rate:
                 show_error_flag = True
             num_attempts += 1
             try:
@@ -1181,6 +1221,10 @@ def add_conditioning_adjacent_slices_and_same_vol(dataset_name="totseg",max_neig
                 info_add[idx]["adjacent"] = row[1]["adjacent"]
                 n = min(max_neighbours,len(df))
                 info_add[idx]["same_vol"] = np.random.choice(df["info_idx"].tolist(),n,replace=False).tolist()
+    elif dataset_name=="lidc":
+        lidc_path = "/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/"
+        data = load_json_to_dict_list(lidc_path+"data.jsonl")
+        raise NotImplementedError()
     else:
         raise NotImplementedError()
     for i in range(len(info_list)):
@@ -1457,6 +1501,54 @@ def zip_data_subsets(dataset_names=None,
             zipf.write(datasets_info_path)
     save_path = save_path.replace("[info_name]",info_name)
 
+def get_slice_bbox(mask):
+    assert np.any(mask), "mask is empty"
+    if len(mask.shape)==3:
+        mask = mask.any(axis=-1)
+    b1,b2 = np.where(mask.any(axis=1))[0][[0,-1]]
+    b3,b4 = np.where(mask.any(axis=0))[0][[0,-1]]
+    return b1,b2+1,b3,b4+1
+
+def bbox_crop(image,mask,bbox,size,mask_pad=0,image_pad=0):
+    """crops centrally around the bbox, adding enough pixels to reach
+    the desired size. If the larger size exceeds the image size, the
+    image is padded with zeros. if the number of needed pixels is odd,
+    one more pixel is added to the top left corner (smaller index)"""
+    if isinstance(size,int):
+        d1,d2 = size,size
+    else:
+        d1,d2 = size
+    if bbox is None:
+        bbox = get_slice_bbox(mask)
+    b1,b2,b3,b4 = bbox # image[b1:b2,b3:b4] is the bbox
+    h,w = image.shape
+    assert mask.shape[:2]==(h,w), f"mask shape {mask.shape} does not match image shape {image.shape}"
+    #number of available pixels on each side
+    avail = b1,h-b2,b3,w-b4
+    assert all([val>=0 for val in avail]), f"bbox is invalid since it exceeds bounds: {bbox}. Image shape: {image.shape}"
+    assert b1<b2 and b3<b4, f"bbox is invalid since we dont have (stop > start): {bbox}"
+    #number of additional pixels needed on each side
+    a = (d1-(b2-b1))/2, (d2-(b4-b3))/2
+    c = lambda x: int(np.ceil(x))
+    f = lambda x: int(np.floor(x))
+    a = [c(a[0]),f(a[0]),c(a[1]),f(a[1])]
+    #number of additional pixels needed on each side, inside the image
+    a_i = [min(a[i],avail[i]) for i in range(4)]
+    #number of additional pixels needed on each side, which must be padded since they are outside the image
+    a_o = [val1-val2 for val1,val2 in zip(a,a_i)]
+    #old_slice
+    old_slice = (slice(b1-a_i[0],b2+a_i[1]),slice(b3-a_i[2],b4+a_i[3]))
+    #new_slice
+    new_slice = (slice(a_o[0],d1-a_o[1]),slice(a_o[2],d2-a_o[3]))
+    image_new = np.zeros((d1,d2),dtype=image.dtype)+image_pad
+    image_new[new_slice] = image[old_slice]
+    mask_shape_new = list(mask.shape)
+    mask_shape_new[0] = d1
+    mask_shape_new[1] = d2
+    mask_new = np.zeros(mask_shape_new,dtype=mask.dtype)+mask_pad
+    mask_new[new_slice] = mask[old_slice]
+    return image_new,mask_new
+
 
 def main():
     import argparse
@@ -1554,6 +1646,24 @@ def main():
     elif args.process==18:
         print("PROCESS 18: zip data subsets")
         zip_data_subsets()
+    elif args.process==19:
+        print("PROCESS 19: create test_patient_ids.txt and vali_patient_ids.txt for lidc")
+        if Path("/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/vali_patient_ids.txt").exists():
+            raise ValueError("Files already exist. Delete them first to create new ones.")
+        data = load_json_to_dict_list("/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/data.jsonl")
+        patient_ids = list(set([d["patient_id"] for d in data]))
+        perm = np.random.permutation(len(patient_ids))
+        n = len(patient_ids)
+        vali_idx = perm[int(n*0.8):int(n*0.9)]
+        test_idx = perm[int(n*0.9):]
+        vali_patient_ids = [patient_ids[i] for i in vali_idx]
+        test_patient_ids = [patient_ids[i] for i in test_idx]
+        with open("/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/vali_patient_ids.txt","w") as f:
+            for pid in vali_patient_ids:
+                f.write(f"{pid}\n")
+        with open("/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/test_patient_ids.txt","w") as f:
+            for pid in test_patient_ids:
+                f.write(f"{pid}\n")
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

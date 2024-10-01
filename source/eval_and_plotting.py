@@ -1278,6 +1278,9 @@ class DiffSamples(SavedSamples):
         didx = []
         for i in range(len(self.raw_samples_files)):
             batch = torch.load(self.raw_samples_files[i])
+            import jlc
+            jlc.shaprint(batch)
+            assert 0
             batch_didx = didx_from_info(batch["info"])
             bs = len(batch["info"])
             for b in range(bs):

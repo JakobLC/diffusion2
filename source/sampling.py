@@ -42,6 +42,10 @@ class DiffusionSampler(object):
         self.source_batch = None
         self.queue = None
         self.eval_batch_size = self.opts.eval_batch_size if self.opts.eval_batch_size>0 else self.trainer.args.train_batch_size
+        if len(self.opts.split_method)>0:
+            assert self.trainer.args.mode=="gen", "split_method can only be specified in sampling mode."
+            assert self.opts.split_method in ["random","native_train","native"], f"split_method={self.opts.split_method} is not a valid option."
+            self.trainer.args.split_method = self.opts.split_method
         if len(self.opts.datasets)>0:
             if not isinstance(self.opts.datasets,list):
                 self.opts.datasets = self.opts.datasets.split(",")
@@ -257,7 +261,9 @@ class DiffusionSampler(object):
                 sample_output["info"] = info
                 if not all(save_bool):
                     sample_output = index_dict_with_bool(sample_output,save_bool)
-
+                if self.opts.only_save_raw_pred_int:
+                    sample_output = {"info": sample_output["info"],
+                                     "pred_int": self.trainer.cgd.ab.bit2int(sample_output["pred"])}
                 torch.save(sample_output,os.path.join(self.opts.raw_samples_folder,f"raw_sample_batch{batch_ite:03d}.pt"))
             
     def run_on_full_votes(self,votes,x_true,x_true_bit,info,model_kwargs,x_init,bqi):
@@ -335,14 +341,16 @@ class DiffusionSampler(object):
             save_dict_list_to_json(self.light_stats,self.opts.light_stats_filename)
 
     def sampler_get_kwargs(self):
-        if self.opts.kwargs_mode=="train":
+        if self.opts.kwargs_mode in ["train","train_image"]:
             assert self.trainer is not None, "self.trainer is None. Set self.trainer to a DiffusionModelTrainer instance or a class with a usable get_kwargs() method."
-            x,model_kwargs,info = self.trainer.get_kwargs(next(self.dataloader))
+            x,model_kwargs,info = self.trainer.get_kwargs(next(self.dataloader),
+                                                          force_image=self.opts.kwargs_mode=="train_image")
         else:
-            assert self.trainer.args.mode=="gen", "kwargs_mode must be 'train' if not in gen mode."
-            self.dataloader.dataloader.dataset.gen_mode = True #enables all dynamic cond inputs
+            if self.trainer.args.mode=="gen" or self.trainer.args.dl_num_workers==0:
+                self.dataloader.dataloader.dataset.gen_mode = True #enables all dynamic cond inputs
             x,model_kwargs,info = self.trainer.get_kwargs(next(self.dataloader), gen=True)
-            self.dataloader.dataloader.dataset.gen_mode = False
+            if self.trainer.args.mode=="gen" or self.trainer.args.dl_num_workers==0:
+                self.dataloader.dataloader.dataset.gen_mode = False
 
             model_kwargs_use = []
             if self.opts.use_image:
@@ -351,12 +359,12 @@ class DiffusionSampler(object):
                     model_kwargs_use.append("image_features")
 
             do_nothing_kwargs_modes = ["none","only_image","image",""]
+            special_kwargs_modes = ["all","train","train_image"]+do_nothing_kwargs_modes
             if self.opts.kwargs_mode in do_nothing_kwargs_modes:
                 pass
             elif self.opts.kwargs_mode=="all":
                 model_kwargs_use.extend(all_input_keys)
             else:
-                special_kwargs_modes = ["all","train"]+do_nothing_kwargs_modes
                 for k in nice_split(self.opts.kwargs_mode):
                     if k not in all_input_keys:
                         raise ValueError(f"If kwargs_mode is NOT a special value ({special_kwargs_modes})"

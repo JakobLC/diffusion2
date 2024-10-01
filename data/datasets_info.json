@@ -697,5 +697,29 @@
             19809,
             0
         ]
+    },
+    {
+        "dataset_name": "lidc",
+        "urls": [],
+        "num_samples": 45609,
+        "num_classes": 2,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            36552,
+            4501,
+            4556
+        ]
+    },
+    {
+        "dataset_name": "lidc",
+        "urls": [],
+        "num_samples": 45609,
+        "num_classes": 2,
+        "file_format": ".png",
+        "samples_per_split": [
+            36552,
+            4501,
+            4556
+        ]
     }
 ]

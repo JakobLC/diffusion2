@@ -506,5 +506,21 @@
         },
         "gen_setups": "vali-ts25,train-ts25",
         "unet_spatialness": "0,1,2,3"
+    },
+    "lidc": {
+        "versions": {
+            "v2": {
+                "max_iter": 20000,
+                "train_batch_size": 16,
+                "gen_interval": 200,
+                "lr_warmup_steps": 1000,
+                "lr_decay_steps": 10000,
+                "gen_setups": "XL[vali],XL[train],XL[vali][self_cond_gw2]"
+            }
+        },
+        "datasets": "lidc",
+        "p_points": 0,
+        "p_num_labels": 0,
+        "agnostic": false
     }
 }

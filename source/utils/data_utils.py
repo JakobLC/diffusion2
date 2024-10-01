@@ -1214,7 +1214,7 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p
             list_of_augs.extend(common_augs)
             list_of_augs.extend(common_color_augs)
             list_of_augs.extend(geo_augs)
-    elif augment_name == "medical_gray":
+    elif augment_name in ["medical_gray","medical_grey"]:
         if train:
             list_of_augs.extend(all_sym_aug)
             list_of_augs.extend(common_augs)
@@ -1321,7 +1321,8 @@ def get_dataset_from_args(args_or_model_id=None,
                             semantic_prob=args.semantic_dl_prob,
                             conditioning=conditioning,
                             load_cond_probs=load_cond_probs,
-                            save_matched_items=args.dataloader_save_processing
+                            save_matched_items=args.dataloader_save_processing,
+                            shuffle_labels=args.agnostic
                             )
     if return_type=="ds":
         return ds
