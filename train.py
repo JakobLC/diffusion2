@@ -40,6 +40,8 @@ from source.training import DiffusionModelTrainer
 # [11] make sure kwargs are only passed if spatialness allow it
 # [12] add support for non-agnostic data (non-analog-bits), i.e. each channel is a class, e.g. "dog"
 # [13] add LIDC dataset
+# [14] unet add shared dynamic inputs channels and class embed instead
+# [15] fix restarting matching ckpts multiple, fix restart logs so you keep steps up until ckpt loading
 
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)

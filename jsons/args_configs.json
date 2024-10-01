@@ -497,6 +497,7 @@
                     "lr_decay_steps": 10000},
             "sam": {"image_encoder": "sam_vit_b", "train_batch_size": 4},
             "sem": {"semantic_dl_prob": 1.0},
+            "hq": {"datasets": "high-qual"},
             "memleak": {"image_size": 32, 
                         "datasets": "fss", 
                         "gen_interval": 100000, 

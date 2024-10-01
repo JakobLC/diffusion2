@@ -430,7 +430,6 @@ class UNetModel(nn.Module):
                     self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
                 self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
-            self.input_to_channels = {}
             self.in_channels = 0
             for k,v in self.unet_input_dict.items():
                 c = v.get("in_chans",0)
@@ -439,6 +438,9 @@ class UNetModel(nn.Module):
                     self.unet_input_dict[k]["slice"] = slice(self.in_channels,self.in_channels+c)
                     self.in_channels += c
                 assert imsize==self.image_size, "all image sizes must be the same. kwarg "+k+" has image size "+str(imsize)+" while the model has image size "+str(self.image_size)
+            if self.debug_run=="unet_channels":
+                print({k: f"[{v['slice'].start},{v['slice'].stop})" for k,v in self.unet_input_dict.items() if "slice" in v})
+                exit()
             self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
                 linear(model_channels, time_embed_dim),

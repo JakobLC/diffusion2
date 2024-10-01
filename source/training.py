@@ -50,7 +50,7 @@ from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
                     "dummymodel","unet_print","token_info_overview","unet_input_dict",
-                    "vit_input_dict","restart_step2","no_kwargs","no_train_step"]
+                    "vit_input_dict","restart_step2","no_kwargs","no_train_step","unet_channels"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -300,6 +300,7 @@ class DiffusionModelTrainer:
                 assert k in save_dict.keys(), f"key {k} not found in save_dict"
             save_dict = {k:v for k,v in save_dict.items() if k in only_keep_keys}
         torch.save(save_dict, save_name)
+        self.last_save_name = save_name
         if delete_old:
             possible_ckpts = self.list_existing_ckpts(name_str)
             for ckpt_name in possible_ckpts:
@@ -616,7 +617,7 @@ class DiffusionModelTrainer:
                 self.log(f"Restarting training loop, restart {num_restarts+1} of {self.args.max_training_restarts}.")
                 ckpt_exists = self.step>=self.args.save_interval
                 if ckpt_exists:
-                    self.args.ckpt_name = ""
+                    self.args.ckpt_name = self.last_save_name if hasattr(self,"last_save_name") else ""
                     self.args.mode = "cont"
                 self.restart_processing(num_restarts)
                 self.init()

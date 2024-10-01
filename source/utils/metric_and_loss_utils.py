@@ -7,7 +7,6 @@ from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, con
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import confusion_matrix
 from skimage.morphology import binary_dilation,disk
-from functools import partial
 
 def get_all_metrics(output,ab=None):
     assert isinstance(output,dict), "output must be an output dict"
@@ -244,68 +243,97 @@ def metric_preprocess(target,pred,mask=None):
         pred = pred[mask]
     return target,pred
 
-def extend_shorter_vector(vec1,vec2,fill_value=0):
-    if len(vec1)<len(vec2):
-        vec1 = np.concatenate([vec1,(fill_value*np.ones(len(vec2)-len(vec1))).astype(vec1.dtype)])
-    elif len(vec2)<len(vec1):
-        vec2 = np.concatenate([vec2,(fill_value*np.ones(len(vec1)-len(vec2))).astype(vec2.dtype)])
+def extend_shorter_vector(vec1,vec2,fill_value=0,min_len=None):
+    new_len = max(len(vec1),len(vec2))
+    if min_len is not None:
+        new_len = max(new_len,min_len)
+    if len(vec1)<new_len:
+        vec1 = np.concatenate([vec1,(fill_value*np.ones(new_len-len(vec1))).astype(vec1.dtype)])
+    if len(vec2)<new_len:
+        vec2 = np.concatenate([vec2,(fill_value*np.ones(new_len-len(vec2))).astype(vec2.dtype)])
     return vec1,vec2
 
-def hungarian_iou(target,pred,ignore_idx=[],return_assignment=False):
-    if ignore_idx is None:
-        ignore_idx = []
-    if isinstance(ignore_idx,list):
-        assert all([isinstance(idx,int) for idx in ignore_idx]), "ignore_idx must be None, int or list[int]"
+def lsa_no_warning(mat, maximize=True):
+    if mat.shape==(1,1):
+        unpad = True
+        mat = np.zeros((2,2))
+        mat[0,0] = mat[0,0]
     else:
-        assert isinstance(ignore_idx,int), "ignore_idx must be None, int or list[int]"
-        ignore_idx = [ignore_idx]
-    
+        unpad = False
+    assignment = linear_sum_assignment(mat, maximize=maximize)
+    if unpad:
+        a1,a2 = assignment
+        assignment = (a1[:1],a2[:1])
+    return assignment
+
+def hungarian_iou(target,pred,ignore_zero=True,match_zero=False,return_assignment=False):
     uq_target,target,conf_rowsum = np.unique(target,return_inverse=True,return_counts=True)
-    uq_pred,pred,conf_colsum = np.unique(pred,return_inverse=True,return_counts=True)
-    if len(uq_target)==1 and len(uq_pred)==1:
-        if return_assignment:
-            return 1.0, uq_pred, uq_target, np.array([1.0])
-        else:
-            return 1.0
+    uq_pred  ,pred  ,conf_colsum = np.unique(pred,return_inverse=True,return_counts=True)
+
     conf_rowsum,conf_colsum = extend_shorter_vector(conf_rowsum,conf_colsum)
     uq_target,uq_pred = extend_shorter_vector(uq_target,uq_pred,fill_value=-1)
-    
+
     conf_rowsum,conf_colsum = conf_rowsum[:,None],conf_colsum[None,:]
-    intersection = confusion_matrix(target, pred)
+    if len(uq_target)==1 and len(uq_pred)==1:
+        intersection = np.array([[len(target)]])
+    else:
+        intersection = confusion_matrix(target, pred)
     union = conf_rowsum + conf_colsum - intersection
     iou_hungarian_mat = intersection / union
+    iou_hungarian_mat_for_lsa = iou_hungarian_mat.copy()
+    if match_zero:
+        #force optimal assignment to match zero with zero, if it is present in both target and pred
+        iou_hungarian_mat_for_lsa[uq_target==0,:         ] = 0
+        iou_hungarian_mat_for_lsa[:           ,uq_pred==0] = 0
+        iou_hungarian_mat_for_lsa[uq_target==0,uq_pred==0] = 1
 
-    mask_pred = np.isin(uq_pred,ignore_idx)
-    mask_target = np.isin(uq_target,ignore_idx)
-    #handle edge cases
-    if all(mask_pred) and all(mask_target):
-        return 1.0, np.array([],dtype=int), np.array([],dtype=int), np.array([],dtype=int)
-    elif all(mask_pred) or all(mask_target):
-        return 0.0, np.array([],dtype=int), np.array([],dtype=int), np.array([],dtype=int)
-    else:
-        #force optimal assignment to match ignore_idx with ignore_idx
-        if len(ignore_idx)>0:
-            iou_hungarian_mat[mask_target,:] = 0
-            iou_hungarian_mat[:,mask_pred] = 0
-            iou_hungarian_mat += mask_target[:,None]*mask_pred[None,:] # 1 where both indices are ignore_idx
-        assignment = linear_sum_assignment(iou_hungarian_mat, maximize=True)
-        assign_target = uq_target[assignment[0]]
-        assign_pred = uq_pred[assignment[1]]
-        iou_per_assignment = iou_hungarian_mat[assignment[0],assignment[1]]
-        
-        #remove matches which have ignore_idx or dummy (-1) as both target and pred
-        ignore_idx.append(-1)
-        mask = np.logical_or(~np.isin(assign_pred,ignore_idx),~np.isin(assign_target,ignore_idx))
-        assign_target,assign_pred,iou_per_assignment = assign_target[mask],assign_pred[mask], iou_per_assignment[mask]
-        
-        val = np.mean(iou_per_assignment)
+    assignment = lsa_no_warning(iou_hungarian_mat_for_lsa, maximize=True)
 
-        if return_assignment:
-            return val, assign_target, assign_pred, iou_per_assignment
-        else:
-            return val
+    assign_target = uq_target[assignment[0]]
+    assign_pred = uq_pred[assignment[1]]
+    iou_per_assignment = iou_hungarian_mat[assignment[0],assignment[1]]
     
-def standard_iou(target,pred,ignore_idx=0,reduce_classes=True):
+    #fix cases where 0 was matched with non-zero. 
+    #Only happens when exact one of target or pred has 0
+    if match_zero and ((np.sum(uq_target==0)+np.sum(uq_pred==0))==1):
+        if 0 in uq_target.tolist():
+            z = np.flatnonzero(uq_target==0).item()
+        else:
+            z = np.flatnonzero(uq_pred==0).item()
+        z_p,z_t = assign_pred[z],assign_target[z]
+        if z_t>=0 and z_p>=0:
+            #make each of the matches with 0 instead have a dummy match with -1. adjust each array accordingly
+            assign_pred,assign_target,iou_per_assignment = assign_pred.tolist(),assign_target.tolist(),iou_per_assignment.tolist()
+            iou_per_assignment = iou_per_assignment[:z]+iou_per_assignment[z+1:]+[0.0,0.0]
+            assign_pred = assign_pred[:z]+assign_pred[z+1:]+[z_p,-1]
+            assign_target = assign_target[:z]+assign_target[z+1:]+[-1,z_t]
+            assign_pred,assign_target,iou_per_assignment = np.array(assign_pred),np.array(assign_target),np.array(iou_per_assignment)
+            
+    #remove matches which have ignore_idx or dummy (-1) as both target and pred
+    mask = np.logical_or(assign_pred!=-1,assign_target!=-1)
+    if ignore_zero:
+         mask = np.logical_and(mask,assign_target!=0)
+    if np.sum(mask)==0:
+        #handle edge cases where no valid matches are found
+        if match_zero:
+            if (0 in uq_target) and (0 in uq_pred):
+                val = 1.0
+            else:
+                val = 0.0
+        else:
+            val = 1.0
+    else:
+        val = np.mean(iou_per_assignment[mask])
+    if return_assignment:
+        out = {"val":val, 
+               "assign_target": assign_target, 
+               "assign_pred": assign_pred,
+               "iou_per_assignment": iou_per_assignment}
+    else:
+        out = val
+    return out
+    
+def standard_iou(target,pred,ignore_zero=False,reduce_classes=True):
     num_classes = max(target.max(),pred.max())+1
     if num_classes==1:
         return 1.0
@@ -313,8 +341,8 @@ def standard_iou(target,pred,ignore_idx=0,reduce_classes=True):
     area_pred = np.histogram(pred, bins=np.arange(num_classes + 1))[0]
     area_target = np.histogram(target, bins=np.arange(num_classes + 1))[0]
     union = area_pred + area_target - intersection
-    if ignore_idx is not None:
-        union[ignore_idx] = 0
+    if ignore_zero:
+        union[0] = 0
     iou = intersection[union>0] / union[union>0]
     if reduce_classes:
         iou = np.mean(iou)
