@@ -512,15 +512,51 @@
             "v2": {
                 "max_iter": 20000,
                 "train_batch_size": 16,
-                "gen_interval": 200,
+                "gen_interval": 1000,
                 "lr_warmup_steps": 1000,
                 "lr_decay_steps": 10000,
-                "gen_setups": "XL[vali],XL[train],XL[vali][self_cond_gw2]"
-            }
+                "gen_setups": "XL[vali],XL[train]"
+            },
+            "v3": {
+                "max_iter": 20000,
+                "train_batch_size": 16,
+                "gen_interval": 1000,
+                "lr_warmup_steps": 1000,
+                "lr_decay_steps": 10000,
+                "gen_setups": "XL[vali],XL[train]",
+                "num_channels": 32
+            },
+            "v4": {
+                "max_iter": 20000,
+                "train_batch_size": 16,
+                "gen_interval": 1000,
+                "lr_warmup_steps": 1000,
+                "lr_decay_steps": 10000,
+                "gen_setups": "XL[vali],XL[train]",
+                "num_channels": 32,
+                "input_scale": 0.1
+            },
+            "lr_sweep": {
+                "lr": "0.003;0.001;0.0003;0.0001;0.00003;0.00001"
+            },
+            "nc_sweep": {"num_channels": "32;64;96;128"},
+            "b_sweep": { "input_scale": "0.3;0.1;0.03;0.01;0.003;0.001"},
+            "loss_w_sweep": {"loss_weights": "SNR;SNR_trunc;uniform"},
+            "loss_f_sweep": {"loss_type": "ce1;ce2"},
+            "bce": {"bce_loss": true},
+            "predict_sweep": {"predict": "v;eps;both;p;p_logits"},
+            "opt": {"input_scale": 0.1,
+                    "num_channels": 128},
+            "128": {"image_size": 128},
+            "long": {"max_iter": 100000, "lr_decay_steps": 50000, "gen_interval": 5000, "num_channels": 64, "deeper_net": true},
+            "15096": {"datasets": "lidc15096"}
         },
         "datasets": "lidc",
         "p_points": 0,
         "p_num_labels": 0,
         "agnostic": false
-    }
+    },
+    "+nc32": {
+        "num_channels": 32
+    } 
 }

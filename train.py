@@ -4,7 +4,7 @@ import sys, os
 sys.path.append(os.path.abspath('./source/'))
 
 #from source.utils import SmartParser
-from source.utils.argparse_utils import TieredParser, save_args, load_existing_args
+from source.utils.argparsing import TieredParser, save_args, load_existing_args
 from source.training import DiffusionModelTrainer
 
 #import warnings
@@ -29,18 +29,18 @@ from source.training import DiffusionModelTrainer
 # [5] resume training by model_id
 # [7] add half precision to vit
 # [5] add parameter to NOT give timesteps to ViT
-# [8] conditioned saving of light stats
 
 # [9] decouple get_kwargs from trainer
 # [10] add sam encoder to dataloader
 # [10] make all probabilities get sampled with the dataset (with option for generation mode)'
 # [10] make unfified framework for probabilities
-# [10] add support for all kwargs
 
-# [12] add support for non-agnostic data (non-analog-bits), i.e. each channel is a class, e.g. "dog"
+# [11] fix sam encoder
+# [12] add support for non-agnostic onehot
+# [12] add support for non-agnostic multi dataset with analog bits
 # [14] unet add shared dynamic inputs channels and class embed instead
-# [15] fix restarting matching ckpts multiple, fix restart logs so you keep steps up until ckpt loading
-# [16] likelihood not working with diff_channels=1, iou also maybe??
+# [15] fix restart logs so you keep steps up until ckpt loading
+# [16] likelihood not working with diff_channels=1
 
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)

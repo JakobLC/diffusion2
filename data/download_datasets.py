@@ -13,19 +13,20 @@ from data.data_utils import (unpack_files, save_dict_list_to_json, load_json_to_
 from source.models.unet import get_sam_image_encoder
 import glob
 import json
-import pickle
 import jlc.nc as nc 
 from pathlib import Path
 import scipy.ndimage as nd
-from source.utils.mixed_utils import quantile_normalize, prettify_classname, str_to_seed
+from source.utils.mixed import quantile_normalize, prettify_classname, str_to_seed
 import cv2
-from source.utils.data_utils import SegmentationDataset, save_sam_features, get_all_valid_datasets
+from source.utils.dataloading import SegmentationDataset, save_sam_features, get_all_valid_datasets
 import pandas as pd
 import zipfile
 import skimage
 import nibabel as nib
 import clip
 import torch
+import pydicom
+import pickle
 
 def default_do_step():
     return {"unpack": 0,
@@ -730,44 +731,146 @@ class DatasetDownloader:
                 image = Image.fromarray(image)
                 return image,label,info
         elif name=="lidc":
-            lidc_path = "/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/"
+            always_4_labels = False 
+            lidc_path = "/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare3/"
             data = load_json_to_dict_list(lidc_path+"data.jsonl")
             class_dict = {0: "background",1: "nodule"}
-            vali_idx_path = lidc_path+"vali_patient_ids.txt"
-            test_idx_path = lidc_path+"test_patient_ids.txt"
+            vali_idx_path = Path(lidc_path).parent/"vali_patient_ids.txt"
+            test_idx_path = Path(lidc_path).parent/"test_patient_ids.txt"
             vali_idx = [l.replace("\n","") for l in open(vali_idx_path).readlines()]
             test_idx = [l.replace("\n","") for l in open(test_idx_path).readlines()]
             split_from_patient_id = lambda id: 1 if id in vali_idx else 2 if id in test_idx else 0
             image_suffix = ".png"
             file_data = []
             for scan_id,scan in enumerate(data):
-                for nodule in scan["nodules"]:
-                    for image_dict in nodule:
-                        for mask_id in image_dict["masks_id"]:
+                for n_i,nodule in enumerate(scan["nodules"]):
+                    for s_i,image_dict in enumerate(nodule):
+                        if always_4_labels:
+                            if len(image_dict["masks_id"])>4:
+                                image_dict["masks_id"] = image_dict["masks_id"][:4]
+                            elif len(image_dict["masks_id"])<4:
+                                image_dict["masks_id"] += [-1]*(4-len(image_dict["masks_id"]))
+                        for m_i,mask_id in enumerate(image_dict["masks_id"]):
                             file_data.append({"split_idx": split_from_patient_id(scan["patient_id"]),
                                             "bbox"       : image_dict["bbox"],
                                             "image_id"   : image_dict["image_id"],
+
+                                            "m_i"        : m_i,
+                                            "s_i"        : s_i,
+                                            "n_i"        : n_i,
+
+                                            "tot_m"      : len(image_dict["masks_id"]),
+                                            "tot_s"      : len(nodule),
+                                            "tot_n"      : len(scan["nodules"]),
+
                                             "mask_id"    : mask_id,
                                             "patient_id" : scan["patient_id"],
                                             "scan_id"    : scan_id})
-            file_name_list = [f"mask_{f['mask_id']:06d}.png" for f in file_data]
+            def fmt(f):
+                return ",".join([
+                    f"mask-i_{f['m_i']}/{f['tot_m']}",
+                    f"slice-i_{f['s_i']}/{f['tot_s']}",
+                    f"nodule-i_{f['n_i']}/{f['tot_n']}",
+                    f"scan_{f['scan_id']}",
+                    f"img_{f['image_id']:06d}.dcm",
+                    f"mask_{f['mask_id']:06d}.png"
+                ])
+            file_name_list = [fmt(f) for f in file_data]
+            if not always_4_labels:
+                assert len(file_name_list)==mask_id+1, f"Expected {mask_id+1} files, got {len(file_name_list)}." 
             def load_image_label_info(file_name):
                 file_data_idx = file_name_list.index(file_name)
                 file_data_dict = file_data[file_data_idx]
-                image_path = lidc_path+f"images/img_{file_data_dict['image_id']:06d}.png"
-                label_path = lidc_path+"masks/"+file_name
-                image = np.array(Image.open(image_path))
+                image_path = lidc_path+f"images/img_{file_data_dict['image_id']:06d}.dcm"
+                image = pydicom.dcmread(image_path).pixel_array
                 label = np.zeros(image.shape[:2],dtype=np.uint8)
-                b1,b2,b3,b4 = file_data_dict["bbox"]
-                label[b1:b2,b3:b4] = (np.array(Image.open(label_path))>0).astype(np.uint8)
-
+                if file_data_dict['mask_id']>0:
+                    label_path = lidc_path+f"masks/mask_{file_data_dict['mask_id']:06d}.png"
+                    b1,b2,b3,b4 = file_data_dict["bbox"]
+                    label[b1:b2,b3:b4] = (np.array(Image.open(label_path))>0).astype(np.uint8)
                 image,label = bbox_crop(image,label,file_data_dict["bbox"],size=128)
+                image = (quantile_normalize(image,alpha=0.001)*255).astype(np.uint8)
                 info = {"classes": [0]+([1] if np.sum(label)>0 else []),
                         "split_idx": file_data_dict["split_idx"]}
                 image = Image.fromarray(image)
                 label = Image.fromarray(label)
                 return image,label,info
+        elif name=="lidc15096":
+            data = pickle.load(open("/home/jloch/Desktop/diff/diffusion2/data/lidc15096/data_lidc.pickle","rb"))
+            data = pickle.load(open("/home/jloch/Desktop/diff/diffusion2/data/lidc15096/data_lidc.pickle","rb"))
+            patient_ids = [k.split("_")[0] for k in data.keys()]
+            patient_ids = np.unique(patient_ids).tolist()
+
+            test_ids = np.loadtxt("/home/jloch/Desktop/diff/diffusion2/data/lidc15096/test_ids.txt", dtype=str)
+            vali_ids = np.loadtxt("/home/jloch/Desktop/diff/diffusion2/data/lidc15096/vali_ids.txt", dtype=str)
+            file_data = []
+            image_id = 0
+            for k,v in data.items():
+                patient_id = patient_ids.index(k.split("_")[0])
+                if "lesion" in k:
+                    n_i = int(k.split("lesion")[-1])-1
+                    tot_n = 2
+                else:
+                    n_i = 0
+                    tot_n = 1
+                rawslice = int(k.split("_")[-1].split("lesion")[0].replace("slice",""))
+                for m_i in range(len(v["masks"])):
+                    file_data.append({"split_idx": 2 if k.split("_")[0] in test_ids else (1 if k.split("_")[0] in vali_ids else 0),
+                                    "m_i"        : m_i,
+                                    "s_i"        : None,
+                                    "n_i"        : n_i,
+
+                                    "tot_m"      : len(v["masks"]),
+                                    "tot_s"      : None,
+                                    "tot_n"      : tot_n,
+
+                                    "rawslice": rawslice,
+                                    "image_id"   : image_id,
+                                    "mask_id"    : m_i,
+                                    "patient_id" : patient_id})
+                image_id += 1
+
+            # go through all the data and add slice indices for each unique patient,nodule pair
+            pair_to_slices = {} # (patient_id,n_i) -> {rawslice: [i1,i2,...]}
+            for i,f in enumerate(file_data):
+                key = (f["patient_id"],f["n_i"])
+                if not key in pair_to_slices:
+                    pair_to_slices[key] = {}
+                pair_to_slices[key][f["rawslice"]] = [i] if not f["rawslice"] in pair_to_slices[key] else pair_to_slices[key][f["rawslice"]]+[i]
+            for k,v in pair_to_slices.items():
+                tot_s = len(v)
+                keys = list(v.keys())
+                values = list(v.values())
+                for s_i,indices in enumerate([values[i] for i in np.argsort(keys)]):
+                    for i in indices:
+                        file_data[i]["s_i"] = s_i
+                        file_data[i]["tot_s"] = tot_s
             
+            def fmt(f):
+                return ",".join([
+                    f"mask-i_{f['m_i']}/{f['tot_m']}",
+                    f"slice-i_{f['s_i']}/{f['tot_s']}",
+                    f"nodule-i_{f['n_i']}/{f['tot_n']}",
+                    f"rawslice_{f['rawslice']}",
+                    f"img_{f['image_id']}",
+                    f"mask_{f['mask_id']}"
+                ])
+            file_name_list = [fmt(f) for f in file_data]
+            class_dict = {0: "background",1: "nodule"}
+            keylist = list(data.keys())
+            image_suffix = ".png"
+            def load_image_label_info(file_name):
+                file_data_idx = file_name_list.index(file_name)
+                file_data_dict = file_data[file_data_idx]
+                data_i = data[keylist[file_data_dict["image_id"]]]
+                image = data_i["image"]
+                label = data_i["masks"][file_data_dict["m_i"]].astype(np.uint8)
+                image = (quantile_normalize(image,alpha=0.001)*255).astype(np.uint8)
+                info = {"classes": [0]+([1] if np.sum(label)>0 else []),
+                        "split_idx": file_data_dict["split_idx"]}
+                image = Image.fromarray(image)
+                label = Image.fromarray(label)
+                return image,label,info
         else:
             raise ValueError(f"Dataset {name} not supported.")
         if do_step["delete_f_before"]:

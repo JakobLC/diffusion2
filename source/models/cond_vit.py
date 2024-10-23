@@ -18,9 +18,10 @@ import copy
 import math
 import warnings
 import pandas as pd
-from source.utils.mixed_utils import get_named_datasets,nice_split,model_arg_is_trivial
+from source.utils.mixed import get_named_datasets,nice_split,model_arg_is_trivial
 from argparse import Namespace
-from source.utils.argparse_utils import TieredParser
+from source.utils.argparsing import TieredParser
+from source.utils.analog_bits import ab_int2bit
 
 tp = TieredParser()
 arg_items = tp.get_args(alt_parse_args=["--model_name","default"]).__dict__.items()
@@ -1839,7 +1840,7 @@ class WrapToVocabDict(dict):
             v = torch.tensor(v)
         return v
 
-def cond_kwargs_int2bit(kwargs,ab,dynamic_image_keys=dynamic_image_keys):
+def cond_kwargs_int2bit(kwargs,dynamic_image_keys=dynamic_image_keys,ab_kw={}):
     """loops over dynamic image keys and converts the label part to bits"""
     for key in dynamic_image_keys:
         if key in kwargs.keys():
@@ -1852,7 +1853,7 @@ def cond_kwargs_int2bit(kwargs,ab,dynamic_image_keys=dynamic_image_keys):
                     assert isinstance(kwargs[key][i],(tuple,list)), f"expected a tuple for key={key}. got type(kwargs[key][i])={type(kwargs[key][i])}"
                     assert len(kwargs[key][i])==3, f"expected a tuple of len 3 for key={key}. got len(kwargs[key][i])={len(kwargs[key][i])}"
                     lab,im,info = kwargs[key][i]
-                    kwargs[key][i] = torch.cat([ab.int2bit(lab[None])[0],im])
+                    kwargs[key][i] = torch.cat([ab_int2bit(lab[None],**ab_kw)[0],im])
             
     return kwargs
 
@@ -1860,7 +1861,7 @@ def main():
     import argparse
     import sys, os
     sys.path.append(os.path.join(os.path.dirname(__file__), '..')) 
-    from source.utils.mixed_utils import set_random_seed
+    from source.utils.mixed import set_random_seed
     parser = argparse.ArgumentParser()
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()

@@ -11,8 +11,8 @@ import os
 from source.models.cond_vit import (FancyViT, ModelInputKwargs,
                                     token_info_overview,ModelInputKwargs,
                                     fancy_vit_from_args)
-from source.utils.fp16_utils import convert_module_to_f16, convert_module_to_f32
-from source.utils.mixed_utils import (model_arg_is_trivial, nice_split, 
+from source.utils.fp16 import convert_module_to_f16, convert_module_to_f32
+from source.utils.mixed import (model_arg_is_trivial, nice_split, 
                                       unet_kwarg_to_tensor)
 from source.models.nn import (
     SiLU,
@@ -703,7 +703,7 @@ class UNetModel(nn.Module):
             h = vit_output
         if self.debug_run=="unet_print":
             import jlc
-            from utils.plot_utils import visualize_tensor
+            from source.utils.plot import visualize_tensor
             import matplotlib 
             #switch to qt5
             matplotlib.use('Qt5Agg')
@@ -805,7 +805,10 @@ def create_unet_from_args(args):
             else:
                 channel_mult = (1, 2, 2, 4, 4)
         elif image_size == 64:
-            channel_mult = (1, 2, 3, 4)
+            if args["deeper_net"]:
+                channel_mult = (1, 2, 3, 4, 4)
+            else:
+                channel_mult = (1, 2, 3, 4)
         elif image_size == 32:
             channel_mult = (1, 2, 2, 2)
         elif image_size == 16:

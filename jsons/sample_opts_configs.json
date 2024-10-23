@@ -105,15 +105,25 @@
         "split": "vali"
     },
     "lidc_eval": {
+        "versions": {
+            "amb": {"num_timesteps": 5, "ambiguous_mode": true, "num_votes": 4},
+            "nosave": {"save_raw_samples": false, "plotting_functions": ""},
+            "gw_sweep": {"guidance_weight": "-0.1;-0.01;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "num_timesteps":20},
+            "ts_sweep": {"num_timesteps": "2;5;10;20;50;100;200", "gen_id": "ts_sweep_*"},
+            "ddim_sweep": {"sampler_type": "ddim", "num_timesteps": "2;5;10;20;50;100;200", "gen_id": "ddim_sweep_*"},
+            "ambopt": {"num_timesteps": 10, "sampler_type": "ddim", "seed": 0, "ambiguous_mode": true, "num_votes": 4},
+            "15096": {"datasets": "lidc15096"}
+        },
         "num_timesteps": 25,
         "num_samples": -1,
         "split": "vali",
         "datasets": "lidc",
         "num_votes": 1,
+        "split_method": "native",
         "kwargs_mode": "only_image",
         "save_light_stats": true,
         "save_raw_samples": true,
         "num_save_raw_samples": 1e10,
-        "only_save_pred_int": true
+        "only_save_raw_pred": true
     }
 }

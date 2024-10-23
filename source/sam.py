@@ -13,11 +13,11 @@ from segment_anything.modeling.sam import Sam
 if __name__=="__main__":
     sys.path.append("/home/jloch/Desktop/diff/diffusion2")
 
-from source.utils.metric_and_loss_utils import get_segment_metrics
-from source.utils.argparse_utils import TieredParser
-from source.utils.mixed_utils import postprocess_list_of_segs
+from source.utils.metric_and_loss import get_segment_metrics
+from source.utils.argparsing import TieredParser
+from source.utils.mixed import postprocess_list_of_segs
 from source.training import DiffusionModelTrainer
-from source.utils.data_utils import get_dataset_from_args
+from source.utils.dataloading import get_dataset_from_args
 import warnings 
 import tqdm
 

@@ -9,22 +9,23 @@ import os,sys
 if __name__=="__main__":
     sys.path.append("/home/jloch/Desktop/diff/diffusion2")
 
-from source.utils.argparse_utils import TieredParser, get_closest_matches,load_defaults
+from source.utils.argparsing import TieredParser, get_closest_matches,load_defaults
 from collections import defaultdict
 import tqdm
 from pathlib import Path
 from source.sam import (sam12_info, all_sam_setups,evaluate_sam)
-from source.utils.data_utils import (AnalogBits,load_raw_image_label,
+from source.utils.dataloading import (AnalogBits,load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func)
 import copy
-from source.utils.metric_and_loss_utils import get_segment_metrics
-from source.utils.mixed_utils import (imagenet_preprocess, 
+from source.utils.metric_and_loss import get_segment_metrics
+from source.utils.mixed import (imagenet_preprocess, ambiguous_info_from_fn,
                          load_json_to_dict_list,sam_resize_index, 
                          postprocess_list_of_segs,wildcard_match)
-from utils.plot_utils import (mask_overlay_smooth, darker_color, 
+from source.utils.plot import (mask_overlay_smooth, darker_color, 
                               get_matplotlib_color,index_dict_with_bool,
                               render_text_gridlike)
+from source.utils.analog_bits import ab_bit2prob
 import enum
 from collections import OrderedDict
 import pandas as pd
@@ -291,15 +292,20 @@ class SavedSamplesManager:
             raise ValueError("No overlapping didx found")
         elif len(heavy_avail)<num_images:
             raise ValueError(f"Only {len(heavy_avail)} overlapping didx found but num_images={num_images} requested")
-        if seed is None:
-            didx_plot = heavy_avail[:num_images]
-        elif seed<0:
-            didx_plot = np.random.choice(heavy_avail,num_images,replace=False)
+        if didx is None:
+            if seed is None:
+                didx_plot = heavy_avail[:num_images]
+            elif seed<0:
+                didx_plot = np.random.choice(heavy_avail,num_images,replace=False)
+            else:
+                assert isinstance(seed,int), "expected seed to be an int (use seed), None (fixed, first images) or a negative int (random seed)"
+                didx_plot = np.random.RandomState(seed).choice(heavy_avail,num_images,replace=False)
+            if isinstance(didx_plot,np.ndarray):
+                didx_plot = didx_plot.tolist()
         else:
-            assert isinstance(seed,int), "expected seed to be an int (use seed), None (fixed, first images) or a negative int (random seed)"
-            didx_plot = np.random.RandomState(seed).choice(heavy_avail,num_images,replace=False)
-        if isinstance(didx_plot,np.ndarray):
-            didx_plot = didx_plot.tolist()
+            assert isinstance(didx,list), "expected didx to be a list"
+            assert all([d in heavy_avail for d in didx]), "expected all didx to be in heavy_avail"
+            didx_plot = didx
         preds = []
         metrics = []
         ims,gts = self.get_image_gt(didx_plot,ss_idx=ss_idx,try_saved_samples=image_gt_from_saved_samples)
@@ -498,7 +504,7 @@ class SavedSamplesManager:
             ss = self.saved_samples[k]
             metrics_k = ss.get_light_data(intersection_didx,return_type="list")
             metrics_k = [index_with_keylist(item,keyslist) for item in metrics_k]
-            metrics_k = {m: np.array([item[j] for item in metrics_k]) for j,m in enumerate(metric_names)}
+            metrics_k = {m: np.array(maybe_flatten([item[j] for item in metrics_k])) for j,m in enumerate(metric_names)}
             metrics.append(metrics_k)
         return metrics,metric_names,ss_idx
 
@@ -892,7 +898,8 @@ class SavedSamples:
                 didx = None,
                 name = None,
                 mem_threshold=4e9,
-                segment_key="pred_int"):
+                segment_key="pred_int",
+                is_ambiguous=False):
         assert all([(x is None) or is_nontrivial_list(x) for x in [light_data,heavy_data,didx]]), "expected all of [light_data,heavy_data,didx] to be None or a non-empty list"
         self.reset()
         if any([x is not None for x in [light_data,heavy_data,didx]]):
@@ -900,10 +907,29 @@ class SavedSamples:
             self.mem_all = sys.getsizeof(self)
             self.mem_threshold = mem_threshold
         self.segment_key = segment_key
+        self.is_ambiguous = is_ambiguous
         if name is not None:
             self.name = name
         else:
             self.name = "unnamed"
+
+    def load_heavy_image_gt(self,didx_load=None):
+        if didx_load is None:
+            didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
+        imsize = self.get_image_size()
+        for didx_i in didx_load:
+            assert didx_i in self.didx, f"expected didx to be in self.didx, found {didx_i}"
+            x = {"dataset_name": didx_i.split("/")[0], "i": int(didx_i.split("/")[1])}
+            image,gt = load_raw_image_label(x,longest_side_resize=imsize)
+            i = self.didx_to_idx[didx_i]
+            if not isinstance(self.heavy_data[i],dict):
+                self.heavy_data[i] = {}
+            self.heavy_data[i]["image"] = image
+            self.heavy_data[i]["gt"] = gt
+            if self.is_ambiguous:
+                ambiguous_gts, gts_didx = get_ambiguous_gts(didx_i,imsize=imsize)
+                self.heavy_data[i]["gt"] = ambiguous_gts
+                self.light_data[i]["gts_didx"] = gts_didx
 
     def clear_heavy_data(self):
         self.heavy_data = [None for _ in range(len(self.heavy_data))]
@@ -912,6 +938,19 @@ class SavedSamples:
                       "negative": "negative",
                       "pos_not_loaded": "pos_not_loaded"}
         self.heavy_available = {k: old_to_new[v] for k,v in self.heavy_available.items()}
+
+    def get_image_size(self):
+        has_heavy = [self.heavy_available[d]=="pos_loaded" for d in self.didx]
+        assert any(has_heavy), "expected atlaest some heavy data to be loaded to determine image size"
+        hd = self.heavy_data[has_heavy.index(True)]
+        assert self.segment_key in hd.keys(), f"expected segment_key={self.segment_key} to be present in heavy_data.keys()={hd.keys()}"
+        s = hd[self.segment_key].shape
+        assert len(s)>=3, f"expected at least 3 dimensions in the image shape, found hd[{k}].shape={s}"
+
+        out = max(s[-2:])
+        assert out in [2**i for i in range(4,11)], f"expected image size to be a power of 2 between 16 and 1024, found {out}"
+
+        return out
 
     def downscale_heavy_data(self,longest_side_resize=128,keys=["gt","pred_int","image"]):
         if not isinstance(keys,list):
@@ -964,8 +1003,8 @@ class SavedSamples:
         self.light_data = []
         self.didx = []
         self.postprocess_kwargs = None
-        self.didx_to_idx = defaultdict(lambda: -1)
-        self.heavy_available = defaultdict(lambda: "unknown")
+        self.didx_to_idx = {}
+        self.heavy_available = {}
         #self.has_heavy_data = []
         self.mem_all = sys.getsizeof(self)
 
@@ -1061,7 +1100,7 @@ class SavedSamples:
             heavy_data = extract_from_dict_list(heavy_data,keys)
         return lists_of_dicts_as_type(didx,heavy_data,return_type,add_didx_to_list=keys is None)
             
-    def add_samples(self,didx=None,light_data=None,heavy_data=None):
+    def add_samples(self,didx=None,light_data=None,heavy_data=None, assert_heavy_format=True):
         assert any([is_nontrivial_list(x) for x in [didx,light_data,heavy_data]]), "expected at least one of [didx,light_data,heavy_data] to be a non-empty list"
         lengths = [len(x) for x in [didx,light_data,heavy_data] if is_nontrivial_list(x)]
         assert len(set(lengths))==1, f"expected all of [didx,light_data,heavy_data] to have the same length, found {lengths}"
@@ -1074,13 +1113,25 @@ class SavedSamples:
             heavy_data = [None for _ in range(len(didx))]
         assert len(heavy_data)==len(didx), f"expected heavy_data to have length {len(didx)}, found {len(heavy_data)}"
         for d,l,h in zip(didx,light_data,heavy_data):
-            find_idx = self.didx_to_idx[d]
+            find_idx = self.didx_to_idx.get(d,-1)
             if find_idx>=0:
                 if l is not None:
                     self.light_data[find_idx] = l
                 if h is not None:
                     self.heavy_data[find_idx] = h
                     self.heavy_available[d] = "pos_loaded"
+                    if assert_heavy_format:
+                        assert isinstance(h,dict), f"expected heavy_data to be a dict, found {type(h)}"
+                        assert self.segment_key in h.keys(), f"expected segment_key={self.segment_key} to be in heavy_data.keys()={h.keys()}"
+                        seg = h[self.segment_key]
+                        assert torch.is_tensor(seg), f"expected segmentations to be torch tensors, found {type(seg)}"
+                        seg_shape = seg.shape
+                        assert len(seg_shape)==4, f"expected segmentations to have 3 dimensions, found seg_shape={seg_shape}"
+                        assert seg_shape[1] == 1, f"expected segmentations to have 1 channel, found seg_shape={seg_shape}"
+                        if self.is_ambiguous:
+                            assert min(seg_shape[0],*seg_shape[2:])==seg_shape[0], f"expected first dimension of segmentations to be the smallest, found {seg_shape}"
+                        else:
+                            assert seg_shape[0]==1, f"expected first dimension of segmentations to be 1, found {seg_shape[0]}"
             else:
                 self.didx.append(d)
                 self.light_data.append(l)
@@ -1161,10 +1212,10 @@ class SavedSamples:
         assert len(output_of_read_light_data)==3, f"expected read_light_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_light_data)}"
         self.add_samples(*output_of_read_light_data)
     
-    def load_heavy_data(self):
+    def load_heavy_data(self,**kwargs):
         has_read_heavy_data = hasattr(self,"read_heavy_data")
         assert has_read_heavy_data, "expected read_heavy_data to be implemented in a subclass"
-        output_of_read_heavy_data = self.read_heavy_data()
+        output_of_read_heavy_data = self.read_heavy_data(**kwargs)
         if output_of_read_heavy_data is None:
             return
         assert len(output_of_read_heavy_data)==3, f"expected read_heavy_data to return a tuple of length 3 representing [didx,light_data,heavy_data], found {len(output_of_read_heavy_data)}"
@@ -1201,17 +1252,22 @@ class SavedSamples:
                                   name=new_name)
         return new_ss
 
-    def postprocess(self,postprocess_kwargs={},recompute_metrics=True,metrics=None):
+    def recompute_metrics(self):
+        self.postprocess(postprocess_kwargs=None,recompute_metrics=True)
+
+    def postprocess(self,postprocess_kwargs={},recompute_metrics=True):
         if self.postprocess_kwargs is not None:
-            print("WARNING: The samples were already postprocessed, reprocessing with new postprocess_kwargs")
+            warnings.warn("The samples were already postprocessed, reprocessing with new postprocess_kwargs")
         didx = [d for d in self.didx if self.heavy_available[d]=="pos_loaded"]
         if len(didx)<len(self.didx):
-            print(f"Warning: only {len(didx)} of {len(self.didx)} samples are postprocessed")
+            warnings.warn(f"only {len(didx)} of {len(self.didx)} samples are postprocessed")
         heavy_data = self.get_heavy_data(didx,return_type="list")
         if "gt" in self.heavy_keys():
             gts = [hd["gt"] for hd in heavy_data]
         elif "raw_gt" in self.heavy_keys():
             gts = [hd["raw_gt"] for hd in heavy_data]
+        elif self.is_ambiguous and "gts_didx" in self.light_data[0].keys():
+            gts = [ld["gts_didx"] for ld in self.light_data]
         else:
             _,gts = load_raw_image_label_from_didx(didx)
             #add the gts to heavy_data
@@ -1222,15 +1278,34 @@ class SavedSamples:
         if postprocess_kwargs is None:
             segments_pp = segments
         else:
+            raise NotImplementedError("This code is broken now. Check input sizes to postprocess_list_of_segs")
             segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
-            metrics = [get_segment_metrics(seg.transpose((2,0,1)),gt.transpose((2,0,1))) 
-                       for seg,gt in zip(segments_pp,gts)]
+            #print("gts:",[gt.shape for gt in gts[:5]])
+            #print("segs:",[seg.shape for seg in segments_pp[:5]])
+            metrics = []
+            for seg,gt in zip(segments_pp,gts):
+                metrics.append(get_segment_metrics(seg,gt,ambiguous=self.is_ambiguous)) 
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]
             self.heavy_data[idx][self.segment_key] = segments_pp[i]
         self.postprocess_kwargs = postprocess_kwargs
+
+    def add_gt_image_to_heavy_data(self,didx=None,longest_side_resize=0,process_pred=True):
+        if didx is None:
+            didx = self.didx
+        for d in didx:
+            i = self.didx_to_idx[d]
+            if "gt" in self.heavy_data[i].keys():
+                continue
+            x  = {"dataset_name": d.split("/")[0], "i": int(d.split("/")[1])}
+            image,gt = load_raw_image_label(x,longest_side_resize=longest_side_resize)
+            self.heavy_data[i]["gt"] = gt
+            self.heavy_data[i]["image"] = image
+            if "pred_int" in self.heavy_data[i].keys():
+                if process_pred:
+                    self.heavy_data[i]["pred_int"] = self.heavy_data[i]["pred_int"][0].permute(1,2,0).cpu().numpy()
 
     def read_heavy_data(self):
         raise NotImplementedError("expected read_heavy_data to be implemented in a subclass")
@@ -1272,50 +1347,41 @@ class DiffSamples(SavedSamples):
 
     def read_heavy_data(self,read_didx=None,extract=True):
         if not (len(self.sample_opts["raw_samples_folder"])>0 and self.sample_opts["save_raw_samples"]):
-            print("Warning: no raw_samples_folder found or save_raw_samples is False")
+            warnings.warn("no raw_samples_folder found or save_raw_samples is False")
             return None
         heavy_data = []
         didx = []
         for i in range(len(self.raw_samples_files)):
             batch = torch.load(self.raw_samples_files[i])
-            import jlc
-            jlc.shaprint(batch)
-            assert 0
             batch_didx = didx_from_info(batch["info"])
             bs = len(batch["info"])
             for b in range(bs):
-                
+                didx_i = batch_didx[b]
                 if read_didx is None:
                     append_b = True
                 else:
-                    append_b = batch_didx[b] in read_didx
+                    append_b = didx_i in read_didx
                 if append_b:
-                    heavy_data.append(index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b))
-                    didx.append(batch_didx[b])
-                    self.heavy_available[batch_didx[b]] = "pos_loaded"
+                    item = index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b)
+                    if self.heavy_available[didx_i]=="pos_loaded":
+                        j = didx.index(didx_i)
+                        assert self.is_ambiguous, "Found repeat votes, but add_multi_votes is False for didx_i="+didx_i
+                        heavy_data[j]["pred_int"] = torch.cat([heavy_data[j]["pred_int"],item["pred_int"]],dim=0)
+                    else:
+                        didx.append(didx_i)
+                        heavy_data.append(item)
+                    self.heavy_available[didx_i] = "pos_loaded"
                 else:
-                    self.heavy_available[batch_didx[b]] = "pos_not_loaded"
+                    self.heavy_available[didx_i] = "pos_not_loaded"
         if read_didx is None:
             #set all existences which are unknown to negative
             for d in self.didx:
                 if self.heavy_available[d]=="unknown":
                     self.heavy_available[d] = "negative"
         if extract:
-            heavy_data = extract_from_sample_list(heavy_data)
+            if "pred" in heavy_data[0].keys():
+                heavy_data = extract_from_sample_list(heavy_data)
         return didx,None,heavy_data
-    
-    def load_heavy_image_gt(self,didx_load=None):
-        if didx_load is None:
-            didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
-        for didx_i in didx_load:
-            assert didx_i in self.didx, f"expected didx to be in self.didx, found {didx_i}"
-            x  = {"dataset_name": didx_i.split("/")[0], "i": int(didx_i.split("/")[1])}
-            image,gt = load_raw_image_label(x)
-            i = self.didx_to_idx(didx_i)
-            if not isinstance(self.heavy_data[i],dict):
-                self.heavy_data[i] = {}
-            self.heavy_data[i]["raw_image"] = image
-            self.heavy_data[i]["raw_gt"] = gt
 
     def read_light_data(self,read_didx=None):
         assert len(self.sample_opts["light_stats_filename"])>0, "no light_stats_filename found"
@@ -1326,7 +1392,7 @@ class DiffSamples(SavedSamples):
             didx = didx_from_info(light_data)
         for d,ld in zip(didx,light_data):
             if "has_raw_sample" in ld.keys():
-                if self.heavy_available[d]=="unkown":
+                if d not in self.heavy_available.keys():
                     self.heavy_available[d] = "pos_not_loaded" if ld["has_raw_sample"] else "negative"
         return didx,light_data,None
     
@@ -1342,9 +1408,25 @@ class DiffSamples(SavedSamples):
             for f in self.batch_files:
                 f.unlink()
 
+def get_ambiguous_gts(x,imsize=128):
+    if isinstance(x,str):
+        x = {"dataset_name": x.split("/")[0], "i": int(x.split("/")[1])}
+    else:
+        assert isinstance(x,dict), "expected x to be a string or a dict"
+        assert "dataset_name" in x.keys(), "expected x to have key 'dataset_name'"
+        assert "i" in x.keys(), "expected x to have key 'i'"
+    valid_multivote_datasets = ["lidc4","lidc15096"]
+    assert x["dataset_name"] in valid_multivote_datasets, f"expected dataset_name to be one of {valid_multivote_datasets}, found {x['dataset_name']}"
+    gts_didx = [f"{x['dataset_name']}/{x['i']+j}" for j in range(4)]
+    gts = []
+    h,w = imsize,imsize
+    for didx in gts_didx:
+        gts.append(torch.tensor(load_raw_image_label(didx,longest_side_resize=imsize)[1]).permute(2,0,1))
+    gts = torch.stack(gts,axis=0)
+    return gts, gts_didx
 
 def mahalanobis_distance(data):
-    #calculate mahalanobis distance for a given dataset, each row is a sample
+    """calculate mahalanobis distance for a given dataset, each row is a sample"""
     mean = np.mean(data, axis=0)
     cov = np.cov(data, rowvar=False)
     inv_covmat = np.linalg.inv(cov) 
@@ -1358,20 +1440,26 @@ def extract_from_samples(samples,
                          extract=["pred_int","pred_prob","gt","image","raw_image","raw_gt"],
                          sam_reshape=True,
                          inv_imagenet=True,
-                         raw_longest_side_resize=0):
+                         raw_longest_side_resize=0,
+                         ab_kw={}):
+    assert "pred" in samples.keys(), "expected samples to have key 'pred'. Found keys: "+str(samples.keys())
     if ab is None:
-        ab = AnalogBits(num_bits=samples["pred"].shape[1],shuffle_zero=True)
+        ab = AnalogBits(num_bits=samples["pred"].shape[1])
     extracted = {}
     bs = samples["pred"].shape[0]
     valid_keys = ["pred_int","pred_prob","gt","image","raw_image","raw_gt"]
     for k in extract:
         assert k in valid_keys, f"expected k to be one of {valid_keys}, found {k}"
     if "pred_int" in extract:
-        extracted["pred_int"] = ab.bit2int(samples["pred"])
+        extracted["pred_int"] = samples["pred_int"]
     if "pred_prob" in extract:
-        extracted["pred_prob"] = ab.bit2prob(samples["pred"])
+        if "pred_bit" in samples.keys():
+            #unsafe addition of kwargs here, since passing the ab_kw to ab_bit2prob is bothersome
+            if "num_bits" not in ab_kw.keys():
+                ab_kw["num_bits"] = samples["pred_bit"].shape[1]
+            extracted["pred_prob"] = ab_bit2prob(samples["pred_bit"],**ab_kw)
     if "gt" in extract:
-        extracted["gt"] = ab.bit2int(samples["x"])
+        extracted["gt"] = samples["gt_int"]
     if "image" in extract:
         image_found = False
         if "model_kwargs" in samples.keys():
@@ -1505,6 +1593,14 @@ def kernel_hist(y,std_mult=0.1,n_points=200,minval=None,maxval=None,kernel="gaus
     for ti in t:
         h.append(np.sum(kernel_func(y-ti))*coef)
     return t,h
+
+def maybe_flatten(x):
+    """Takes a list as input, if the list is a list of lists then it concatenates each list into a single list"""
+    assert isinstance(x,list), "expected x to be a list"
+    if all([isinstance(xi,list) for xi in x]):
+        return sum(x,[])
+    else:
+        return x
 
 def main():    
     parser = argparse.ArgumentParser()

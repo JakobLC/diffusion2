@@ -15,7 +15,7 @@ import json
 import argparse
 import time
 from pprint import pprint
-from source.utils.fp16_utils import (
+from source.utils.fp16 import (
     make_master_params,
     master_params_to_model_params,
     model_grads_to_master_grads,
@@ -23,34 +23,35 @@ from source.utils.fp16_utils import (
     zero_grad,
 )
 import datetime
-from source.utils.argparse_utils import (save_args, TieredParser,load_existing_args, 
+from source.utils.argparsing import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
 from source.sampling import DiffusionSampler
-from source.utils.plot_utils import plot_forward_pass,make_loss_plot,mask_overlay_smooth
-from source.utils.data_utils import (CatBallDataset, custom_collate_with_info, 
+from source.utils.plot import plot_forward_pass,make_loss_plot,mask_overlay_smooth
+from source.utils.dataloading import (CatBallDataset, custom_collate_with_info, 
                       SegmentationDataset, points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
 from source.models.unet import create_unet_from_args, get_sam_image_encoder
 from source.cont_gaussian_diffusion import create_diffusion_from_args
-from source.utils.mixed_utils import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
+from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
                    format_relative_path,set_random_seed,is_infinite_and_not_none,
                    get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
                    shaprint,to_dev,model_arg_is_trivial,nice_split,imagenet_preprocess,
                    sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict,
                    format_model_kwargs,unet_kwarg_to_tensor)
 from jlc import load_state_dict_loose, MatplotlibTempBackend
-from source.utils.metric_and_loss_utils import get_all_metrics
+from source.utils.metric_and_loss import get_all_metrics, get_likelihood
 from torchvision.transforms.functional import resize
 from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
                                     dynamic_image_keys,cond_kwargs_int2bit,
                                     num_tokens_from_token_info, is_valid_cond_vit_setup,
                                     ModelInputKwargs,all_input_keys,unet_vit_inputs_from_args)
+from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
                     "dummymodel","unet_print","token_info_overview","unet_input_dict",
-                    "vit_input_dict","restart_step2","no_kwargs","no_train_step","unet_channels"]
+                    "vit_input_dict","restart_step2","no_kwargs","unet_channels"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -144,6 +145,8 @@ class DiffusionModelTrainer:
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
         
+        self.ab_kwargs = ab_kwargs_from_args(self.args)
+
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
         self.kvs_step_buffer = []            
@@ -207,7 +210,7 @@ class DiffusionModelTrainer:
             self.best_metric = 0.0
             self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
-            save_args(self.args)
+            save_args(self.args,do_nothing=(Path(self.args.save_path)/"args.json").exists())
             self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}")
         elif self.args.mode in ["cont","gen"]:
             self.step = ckpt["step"]
@@ -322,6 +325,7 @@ class DiffusionModelTrainer:
         return self.model, swap_pointers_func
 
     def get_kwargs(self, batch, gen=False, del_none=True, force_image=False):
+        #x is gt_int
         x,info = batch
         if self.args.image_encoder!="none":
             if self.args.image_size!=x.shape[-1]:
@@ -385,7 +389,7 @@ class DiffusionModelTrainer:
         #end of bs loop
         if self.args.image_encoder!="none":
             model_kwargs["image_features"] = self.get_image_features(model_kwargs,bs)
-        model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.cgd.ab)
+        model_kwargs = cond_kwargs_int2bit(model_kwargs,ab_kw=self.ab_kwargs)
         model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
     
@@ -407,10 +411,18 @@ class DiffusionModelTrainer:
 
     def run_train_step(self, batch):
         zero_grad(self.model_params)
-        x,model_kwargs,info = self.get_kwargs(batch)
+        gt_int,model_kwargs,info = self.get_kwargs(batch)
 
-        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
+        gt_bit = ab_int2bit(gt_int,**self.ab_kwargs)
 
+        output = self.cgd.train_loss_step(model=self.model,
+                                          x=gt_bit,
+                                          loss_mask=(gt_int.cpu()!=self.args.padding_idx).float(),
+                                          model_kwargs=model_kwargs)
+        output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])
+        output["gt_int"] = gt_int
+        
         output = {**output,**model_kwargs}
         
         loss = output["loss"]
@@ -424,7 +436,10 @@ class DiffusionModelTrainer:
         else:
             self.optimize_normal()
         #logging
-        metrics = get_all_metrics(output,ab=self.cgd.ab)
+        metrics = get_all_metrics(output,
+                                  ignore_zero=not self.args.agnostic,
+                                  ambiguous=False, 
+                                  ab_kw=self.ab_kwargs)
         self.log_train_step(output,metrics)
         
         return output,metrics
@@ -435,11 +450,21 @@ class DiffusionModelTrainer:
                 self.run_vali_step(next(self.vali_dl))
         self.dump_kvs()
         self.kvs_buffer = {}
-        
+
     def run_vali_step(self, batch):
-        x,model_kwargs,info = self.get_kwargs(batch)
-        output = self.cgd.train_loss_step(self.model,x,model_kwargs=model_kwargs)
-        metrics = get_all_metrics(output,ab=self.cgd.ab)
+        gt_int,model_kwargs,info = self.get_kwargs(batch)
+        gt_bit = ab_int2bit(gt_int,**self.ab_kwargs)
+        output = self.cgd.train_loss_step(model=self.model,
+                                          x=gt_bit,
+                                          loss_mask=(gt_int.cpu()!=self.args.padding_idx).float(),
+                                          model_kwargs=model_kwargs)
+        output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
+        output["gt_int"] = gt_int
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])
+        metrics = get_all_metrics(output,
+                                  ignore_zero=not self.args.agnostic,
+                                  ambiguous=False,
+                                  ab_kw=self.ab_kwargs)
         self.log_vali_step(output,metrics)
         
     def log_vali_step(self,output,metrics,prefix="vali_"):
@@ -570,14 +595,7 @@ class DiffusionModelTrainer:
             self.model.train()
             
             batch = next(self.train_dl)
-            if self.args.debug_run=="no_train_step":
-                if self.step==1:
-                    output,metrics = self.run_train_step(batch)
-                    self.no_train_step_output = output,metrics
-                else:
-                    output,metrics = self.no_train_step_output
-            else:
-                output,metrics = self.run_train_step(batch)
+            output,metrics = self.run_train_step(batch)
             pbar.update(1)
 
             if self.step % self.args.log_vali_interval == 0 and self.args.log_vali_interval>0:
@@ -586,8 +604,9 @@ class DiffusionModelTrainer:
             if self.step % self.args.update_forward_pass_plot_interval == 0 and self.args.update_forward_pass_plot_interval>0:
                 with MatplotlibTempBackend(backend="agg"):
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",
-                                      output,metrics,ab=self.cgd.ab,sample_names=batch[-1],
-                                      imagenet_stats=self.args.crop_method.startswith("sam"))
+                                      output,metrics,
+                                      imagenet_stats=self.args.crop_method.startswith("sam"),
+                                      ab_kw=self.ab_kwargs)
             
             if self.step % self.args.gen_interval == 0 and self.args.gen_interval>0:
                 self.generate_samples()
@@ -783,13 +802,19 @@ class DiffusionModelTrainer:
         for opts in list_of_sample_opts:
             sampler = DiffusionSampler(trainer=self, opts=opts)
             _, metric_dict = sampler.sample()
+            
             metric_kvs = {}
             for k,v in metric_dict.items():
-                metric_kvs[k] = sum(v,[]) if isinstance(v,list) else v
+                if isinstance(v,list):
+                    if isinstance(v[0],list):
+                        metric_kvs[k] = sum(v,[])
+                    else:
+                        metric_kvs[k] = v
+                else:
+                    metric_kvs[k] = v
             for m in max_reduction_measures:
                 metric_kvs["max_"+m] = [max(v) for v in metric_dict[m]]
             self.kvs_gen_buffer.update(metric_kvs)
-            
             #maybe save best ckpt
             if (self.args.mode!="gen" and 
                 self.args.save_best_ckpt and 
@@ -806,6 +831,23 @@ class DiffusionModelTrainer:
                                         only_keep_keys=None if self.args.best_ckpt_full else [model_key])
             self.dump_kvs_gen()
             gen_setup_idx += 1
+
+def trainer_from_sample_opts(sample_opts,verbose=True):
+    ckpt_name = get_ckpt_name(sample_opts.name_match_str,return_multiple_matches=False)
+    if verbose: print("\nckpt_name:",ckpt_name)
+    if len(ckpt_name)==0:
+        print("No ckpt found")
+        return
+    if verbose: print(str(Path(ckpt_name).parent / "args.json"))
+    model_id = load_existing_args(str(Path(ckpt_name).parent / "args.json"),"args",verify_keys=False).model_id
+    if verbose: print("\nmodel_id:",model_id)
+    args = load_existing_args(model_id,"args",verify_keys=True)
+    if sample_opts.seed>=0:
+        args.seed = sample_opts.seed
+    args.mode = "gen"
+    args.ckpt_name = ckpt_name
+    trainer = DiffusionModelTrainer(args)
+    return trainer
 
 def main():
     import argparse

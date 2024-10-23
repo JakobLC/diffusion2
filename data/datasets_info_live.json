@@ -364,7 +364,7 @@
         "type": "medical",
         "live": true,
         "symmetries": "all",
-        "num_samples": 45609,
+        "num_samples": 45431,
         "num_classes": 2,
         "file_format": "png",
         "rel_weight": 0.5,
@@ -372,9 +372,49 @@
         "bg_prob": 0.5,
         "overlap": false,
         "samples_per_split": [
-            36552,
-            4501,
-            4556
+            36412,
+            4490,
+            4529
+        ],
+        "thin_bg": "never",
+        "quality": "high"
+    },
+    {
+        "dataset_name": "lidc4",
+        "type": "medical",
+        "live": true,
+        "symmetries": "all",
+        "num_samples": 62972,
+        "num_classes": 2,
+        "file_format": "png",
+        "rel_weight": 0.5,
+        "aug": "medical_grey",
+        "bg_prob": 0.5,
+        "overlap": false,
+        "samples_per_split": [
+            50488,
+            6524,
+            5960
+        ],
+        "thin_bg": "never",
+        "quality": "high"
+    },
+    {
+        "dataset_name": "lidc15096",
+        "type": "medical",
+        "live": true,
+        "symmetries": "all",
+        "num_samples": 60384,
+        "num_classes": 2,
+        "file_format": "png",
+        "rel_weight": 0.5,
+        "aug": "medical_grey",
+        "bg_prob": 0.5,
+        "overlap": false,
+        "samples_per_split": [
+            46788,
+            6884,
+            6712
         ],
         "thin_bg": "never",
         "quality": "high"

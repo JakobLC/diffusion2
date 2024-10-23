@@ -85,7 +85,8 @@
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
         "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
-        "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "]
+        "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "],
+        "padding_idx": [255,                        "Padding index used for the ground truth. TYPE: positive integer. DEFAULT: 255. "]
     },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],

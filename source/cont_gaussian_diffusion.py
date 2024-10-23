@@ -3,9 +3,8 @@
 import enum
 import numpy as np
 import torch
-from source.utils.data_utils import AnalogBits
-from source.utils.mixed_utils import normal_kl, construct_points, nice_split
-from source.utils.metric_and_loss_utils import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
+from source.utils.mixed import normal_kl, construct_points, nice_split
+from source.utils.metric_and_loss import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
 import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):
@@ -166,19 +165,17 @@ class SamplerType(enum.Enum):
 
 class ContinuousGaussianDiffusion():
     def __init__(self, 
-                 analog_bits,
                  schedule_name, 
                  input_scale, 
                  model_pred_type, 
                  weights_type, 
-                 time_cond_type, 
+                 time_cond_type,
                  sampler_type,
                  var_type,
                  loss_type,
                  logsnr_min=-10.0,
                  logsnr_max=10.0):
         """class to handle the diffusion process"""
-        self.ab = analog_bits
         self.loss_type = type_from_maybe_str(loss_type,LossType)
         self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
@@ -240,14 +237,10 @@ class ContinuousGaussianDiffusion():
         assert len(self_cond)==bs
         return self_cond
 
-    def train_loss_step(self, model, x, model_kwargs={}, eps=None, t=None):
+    def train_loss_step(self, model, x, loss_mask=None, model_kwargs={}, eps=None, t=None):
         """compute one training step and return the loss"""
         self_cond = self.convert_self_cond(model_kwargs,x.shape[0])
 
-        if self.ab is not None:
-            assert x.shape[self.ab.bit_dim]==1, f"analog bit dimension, {self.ab.bit_dim}, must be 1, got {x.shape[self.ab.bit_dim]}"
-            loss_mask = torch.logical_not(self.ab.int2pad(x).cpu()).float()
-            x = self.ab.int2bit(x)
         if "points" in model_kwargs.keys():
             if model_kwargs["points"] is not None:
                 model_kwargs["points"] = construct_points(model_kwargs["points"],x)
@@ -260,10 +253,6 @@ class ContinuousGaussianDiffusion():
         alpha_t = self.alpha(t)
         sigma_t = self.sigma(t)
         x_t = mult_(alpha_t,x) + mult_(sigma_t,eps)
-        """if "semantic" in model_kwargs.keys():
-            if not isinstance(model_kwargs["semantic"],list):
-                print(model_kwargs["semantic"])
-                assert 0"""
         if any(self_cond):
             with torch.no_grad():
                 output = model(x_t, t, **model_kwargs)
@@ -284,19 +273,24 @@ class ContinuousGaussianDiffusion():
             else:
                 losses = mult_(loss_weights,ce2_loss(pred_x,x,loss_mask))
         loss = torch.mean(losses)
-        out =  {"loss_weights": loss_weights,
+        output =  {"loss_weights": loss_weights,
                 "loss_mask": loss_mask,
                 "loss": loss,
                 "losses": losses, 
-                "pred_x": pred_x,
-                "t": t, 
-                "x": x,
+
+                "pred_bit": pred_x,
                 "pred_eps": pred_eps,
+
+
+                "gt_bit": x,
+                "gt_eps": eps,
+
                 "x_t": x_t,
-                "eps": eps,
-                "raw_model_output": output,
+                "t": t, 
+                
                 "self_cond": model_kwargs['self_cond']}
-        return out
+        
+        return output
     
     def get_x_from_eps(self,eps,x_t,alpha_t,sigma_t):
         """returns the predicted x from eps"""
@@ -378,12 +372,6 @@ class ContinuousGaussianDiffusion():
             raise NotImplementedError(sampler_type)
         
         guidance_weight = transform_guidance_weight(guidance_weight,x_init)
-        if self.ab is not None:
-            if self.ab.onehot:
-                assert x_init.shape[self.ab.bit_dim]==self.ab.num_classes, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_classes}, got {x_init.shape[self.ab.bit_dim]}"
-            else:
-                assert x_init.shape[self.ab.bit_dim]==self.ab.num_bits, f"analog bit dimension, {self.ab.bit_dim}, must have size {self.ab.num_bits}, got {x_init.shape[self.ab.bit_dim]}"
-        
         if progress_bar:
             trange = tqdm.tqdm(range(num_steps-1, -1, -1), desc="Batch progress.")
         else:
@@ -433,7 +421,7 @@ class ContinuousGaussianDiffusion():
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
         
-        sample_output["pred"] = x_t
+        sample_output["pred_bit"] = x_t
         return sample_output
 
     def to_t_cond(self, t):
@@ -511,10 +499,7 @@ def transform_guidance_weight(gw, x):
         return w
 
 def create_diffusion_from_args(args):
-    ab = AnalogBits(num_bits=args.diff_channels,onehot=args.onehot)
-
-    cgd = ContinuousGaussianDiffusion(analog_bits=ab,
-                                    schedule_name=args.noise_schedule,
+    cgd = ContinuousGaussianDiffusion(schedule_name=args.noise_schedule,
                                     input_scale=args.input_scale,
                                     model_pred_type=args.predict,
                                     weights_type=args.loss_weights,
