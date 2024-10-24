@@ -38,7 +38,7 @@ from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
                    get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
                    shaprint,to_dev,model_arg_is_trivial,nice_split,imagenet_preprocess,
                    sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict,
-                   format_model_kwargs,unet_kwarg_to_tensor)
+                   format_model_kwargs,unet_kwarg_to_tensor, keep_step_rows_and_save)
 from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss import get_all_metrics, get_likelihood
 from torchvision.transforms.functional import resize
@@ -51,7 +51,7 @@ from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl","cond_vit_info",
                     "dummymodel","unet_print","token_info_overview","unet_input_dict",
-                    "vit_input_dict","restart_step2","no_kwargs","unet_channels"]
+                    "vit_input_dict","restart_step5","no_kwargs","unet_channels"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -70,10 +70,10 @@ class DiffusionModelTrainer:
             self.exit_flag = True
             return
         
-        if self.args.debug_run=="restart_step2":
-            self.restart_step2 = True
+        if self.args.debug_run=="restart_step5" and sum([s.find("event=restart")>=0 for s in self.args.training_history])==0:
+            self.restart_step5 = True
         else:
-            self.restart_step2 = False
+            self.restart_step5 = False
 
         if not self.restart_flag:
             self.args.seed = set_random_seed(self.args.seed)
@@ -419,8 +419,13 @@ class DiffusionModelTrainer:
                                           x=gt_bit,
                                           loss_mask=(gt_int.cpu()!=self.args.padding_idx).float(),
                                           model_kwargs=model_kwargs)
+        
+        if output["pred_bit"].isnan().any():
+            self.log("NaN in output, stopping training.")
+            self.restart_flag = True
+            return output,{}
         output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
-        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])[0]
         output["gt_int"] = gt_int
         
         output = {**output,**model_kwargs}
@@ -460,7 +465,7 @@ class DiffusionModelTrainer:
                                           model_kwargs=model_kwargs)
         output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
         output["gt_int"] = gt_int
-        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"])[0]
         metrics = get_all_metrics(output,
                                   ignore_zero=not self.args.agnostic,
                                   ambiguous=False,
@@ -476,9 +481,9 @@ class DiffusionModelTrainer:
         kvs_step = {}
         if "loss" in self.args.log_train_metrics.split(","):
             kvs_step["loss"] = output["loss"].item()
-            if np.isnan(kvs_step["loss"]) or (self.restart_step2 and self.step>2):
+            if np.isnan(kvs_step["loss"]) or (self.restart_step5 and self.step>5):
                 self.num_nan_losses += 1
-                if self.num_nan_losses>20 or (self.restart_step2 and self.step>2):
+                if self.num_nan_losses>20 or (self.restart_step5 and self.step>5):
                     self.log("Too many NaN losses, stopping training.")
                     self.restart_flag = True
             else:
@@ -638,26 +643,45 @@ class DiffusionModelTrainer:
                 if ckpt_exists:
                     self.args.ckpt_name = self.last_save_name if hasattr(self,"last_save_name") else ""
                     self.args.mode = "cont"
-                self.restart_processing(num_restarts)
+                    from_ckpt_step = self.step - (self.step % self.args.save_interval)
+                else:
+                    from_ckpt_step = -1
+                self.restart_processing(num_restarts, from_ckpt_step=from_ckpt_step)
                 self.init()
                 self.train_loop()
             else:
                 self.log(f"Exceeded max_training_restarts={self.args.max_training_restarts}, stopping training.")
-
         else:
             self.update_training_history(f"event=finished, step={self.step}, time={get_time()}")
             self.log("Training loop finished.")
     
-    def restart_processing(self,num_restarts):
+    def restart_processing(self,num_restarts,from_ckpt_step=-1):
         restart_folder = Path(self.args.save_path)/"restart_logs"/f"restart_{num_restarts+1}"
         if not restart_folder.exists():
             os.makedirs(restart_folder, exist_ok=True)
-        files_to_move = ["log.txt","logging.csv","logging_step.csv"]
+        
+        files_to_move = ["log.txt","logging.csv","logging_step.csv","logging_gen.csv"]
         for file in files_to_move:
             file_old = restart_folder.parent.parent/file
             if file_old.exists():
-                os.rename(file_old,restart_folder.parent/file)
-
+                os.rename(file_old,restart_folder/file)
+        
+        if from_ckpt_step>0:
+            #copy the restarted files with all content before the ckpt step
+            keep_step_rows_and_save(load_name = restart_folder/"log.txt",
+                                    save_name = restart_folder.parent.parent/"log.txt")
+            #keep first from_ckpt_step rows from logging_step.csv
+            keep_step_rows_and_save(load_name = restart_folder/"logging_step.csv",
+                                    save_name = restart_folder.parent.parent/"logging_step.csv",
+                                  max_row_idx = from_ckpt_step)
+            #keep all rows with a step columns value<=from_ckpt_step in logging.csv, logging_gen.csv
+            keep_step_rows_and_save(load_name = restart_folder/"logging.csv",
+                                    save_name = restart_folder.parent.parent/"logging.csv",
+                                    max_step  = from_ckpt_step)
+            keep_step_rows_and_save(load_name = restart_folder/"logging_gen.csv",
+                                    save_name = restart_folder.parent.parent/"logging_gen.csv",
+                                    max_step  = from_ckpt_step)
+            
     def update_training_history(self,event,do_nothing=False):
         if not do_nothing:
             if not isinstance(self.args.training_history,list):

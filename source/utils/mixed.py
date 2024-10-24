@@ -914,6 +914,99 @@ def ambiguous_info_from_fn(fn):
     #assert all([fn_dict[k] is not None for k in keys]), f"expected all keys to be non-None. Found {fn_dict} for fn={fn}"
     return fn_dict
 
+def tensor_info(x,newlines=True):
+    """Returns a string to describe a torch.Tensor (or numpy ndarray by converting)"""
+    type_str = type(x).__name__
+    shape_str = "x".join([str(i) for i in x.shape])
+    dtype_str = str(x.dtype)
+    if isinstance(x,np.ndarray):
+        x = torch.tensor(x)
+    original_numel = x.numel()
+    d = {}
+    special_values = torch.any(torch.isnan(x)) or torch.any(torch.isinf(x))
+    if special_values:
+        nans = torch.isnan(x)
+        if nans.any():
+            d["NAN"] = nans.sum().item()
+            d["NAN_ratio"] = d["NAN"]/original_numel
+            x = x[~nans]
+        plus_inf = torch.logical_and(torch.isinf(x),x>0)
+        if plus_inf.any():
+            d["+INF"] = plus_inf.sum().item()
+            d["+INF_ratio"] = d["+INF"]/original_numel
+            x = x[~plus_inf]
+        minus_inf = torch.logical_and(torch.isinf(x),x<0)
+        if minus_inf.any():
+            d["-INF"] = minus_inf.sum().item()
+            d["-INF_ratio"] = d["-INF"]/original_numel
+            x = x[~minus_inf]
+
+    #convert bool to float
+    if x.dtype==torch.bool:
+        x = x.float()
+    d = {"type": type_str,
+        "shape": shape_str, 
+        "numel": original_numel,
+        "dtype": dtype_str, 
+        **d}
+    if x.numel()>0:
+        d = {"min": x.min().item(), 
+            "max": x.max().item(), 
+            "mean": x.mean().item(), 
+            "std": x.std().item(),
+            **d}
+        #how bins in the min-max interval are non-empty when using as many bins as data points
+        v = x.cpu().numpy().flatten()
+        d["fill"] = (np.histogram(v,bins=len(v),range=(d["min"],d["max"]))[0]>0).mean().item()
+
+    s = ""
+    for k,v in d.items():
+        
+        if isinstance(v,float):
+            should_be_scientific = not (1e-4 < abs(v) < 1e4) and v!=0
+            fmt = ".3e" if should_be_scientific else ".3f"
+        elif isinstance(v,int):
+            fmt = "d" if abs(v)<1e4 else "e"
+        else:
+            assert isinstance(v,(str)), f"v={v} is of type {type(v)}"
+            fmt = ""
+
+        
+        if newlines:
+            max_key_len = max([len(k) for k in d.keys()])
+            fmt = fmt.replace(".3","8.3").replace("d","8d")
+            s += f"{k:{max_key_len}}: {v:{fmt}},\n"
+        else:
+            s += f"{k}: {v:{fmt}}, "
+    return s
+
+def keep_step_rows_and_save(load_name,save_name,max_step=None,max_row_idx=None):
+    """Loads a csv file and resaves it as a new file by some criterion of the rows.
+    """
+    if isinstance(load_name,Path):
+        load_name = str(load_name)
+    if isinstance(save_name,Path):
+        save_name = str(save_name)
+    if (max_step is not None) or (max_row_idx is not None):
+        loaded = np.loadtxt(load_name,delimiter=",",dtype=str)
+        header = loaded[0]
+        if max_row_idx is None:
+            data = loaded[1:]
+        else:
+            data = loaded[1:max_row_idx+1]
+        if max_step is not None:
+            assert "step" in header.tolist(), "step column not found in header"
+            step_idx=header.tolist().index("step")
+            data = data[data[:,step_idx].astype(float).astype(int)<=max_step]
+        loaded = np.concatenate([header[None],data],axis=0)
+        np.savetxt(save_name,loaded,delimiter=",",fmt="%s")
+    else:
+        #simply copy a txt-like file
+        with open(load_name,"r") as f:
+            lines = f.readlines()
+        with open(save_name,"w") as f:
+            f.writelines(lines)
+
 def main():
     import argparse
     

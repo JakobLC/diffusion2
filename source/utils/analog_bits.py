@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import warnings
+from source.utils.mixed import tensor_info
 
 """class AnalogBits(object):
     def __init__(self,num_bits=8,
@@ -208,7 +209,9 @@ def ab_likelihood(x_gt,x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         indexer[bit_dim] = x_gt
         likelihood = x[tuple(indexer)]
     else:
-        assert np.abs(x_gt).max()<=1.0, f"Expected x_gt to be in bit form in the range [-1,1], got {x_gt.min()} to {x_gt.max()}"
+        if not np.abs(x_gt).max()<=1.0:#, f"Expected x_gt to be in bit form in the range [-1,1], got {x_gt.min()} to {x_gt.max()}"
+            print("TENSOR INFO:\n",tensor_info(x_gt))
+            assert 0
         likelihood = np.prod(1-0.5*np.abs(x_gt-x),axis=bit_dim,keepdims=True)
     if was_torch:
         likelihood = torch.from_numpy(likelihood).to(device)

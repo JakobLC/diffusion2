@@ -3,7 +3,7 @@ import torch
 import os
 from PIL import Image
 from pathlib import Path
-from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, confusion_matrix, pair_confusion_matrix
+from sklearn.metrics import confusion_matrix
 from source.utils.dataloading import load_raw_image_label
 from scipy.optimize import linear_sum_assignment
 from skimage.morphology import binary_dilation,disk
@@ -41,7 +41,13 @@ def get_likelihood(pred,gt,mask,outside_mask_fill_value=0.0,clamp=True,ab_kw={})
     else:
         mask = mask.to(pred.device)
     bs = pred.shape[0]
-    likelihood_images = ab_likelihood(pred,gt,**ab_kw)
+    try:
+        likelihood_images = ab_likelihood(pred,gt,**ab_kw)
+    except Exception as e:
+        from source.utils.mixed import tensor_info
+        print("Error in get_likelihood")
+        print("Tensor info gt:\n",tensor_info(gt))
+        print("Tensor info pred:\n",tensor_info(pred))
     if clamp:
         likelihood_images = likelihood_images.clamp(min=0.0,max=1.0)
     likelihood_images = likelihood_images*mask + outside_mask_fill_value*(1-mask)
@@ -280,16 +286,16 @@ def hungarian_iou(pred,gt,ignore_zero=False,match_zero=False,return_assignment=F
 
     conf_rowsum,conf_colsum = conf_rowsum[:,None],conf_colsum[None,:]
     if len(uq_gt)==1 and len(uq_pred)==1:
-        intersection = np.array([[len(gt)]])
+        intersection = np.array([[1]])
     else:
-        intersection = confusion_matrix(pred, gt)
+        intersection = confusion_matrix(gt, pred)
     union = conf_rowsum + conf_colsum - intersection
     iou_hungarian_mat = intersection / union
     iou_hungarian_mat_for_lsa = iou_hungarian_mat.copy()
     if match_zero:
         #force optimal assignment to match zero with zero, if it is present in both gt and pred
         iou_hungarian_mat_for_lsa[uq_gt==0,:         ] = 0
-        iou_hungarian_mat_for_lsa[:           ,uq_pred==0] = 0
+        iou_hungarian_mat_for_lsa[:       ,uq_pred==0] = 0
         iou_hungarian_mat_for_lsa[uq_gt==0,uq_pred==0] = 1
 
     assignment = lsa_no_warning(iou_hungarian_mat_for_lsa, maximize=True)

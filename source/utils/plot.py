@@ -242,7 +242,11 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
             column_names.append("step")
             data = np.concatenate([data,np.arange(1,len(data)+1).reshape(-1,1)],axis=1)
         for j,k in enumerate(column_names):
-            all_logging[["gen_","step_",""][i]+k] = data[:,j].astype(get_dtype(data[:,j]))
+            try:
+                all_logging[["gen_","step_",""][i]+k] = data[:,j].astype(get_dtype(data[:,j]))
+            except:
+                print(f"Data shape {data.shape}, j={j}, k={k}, i={i}, column_names={column_names}")
+                
     if len(all_logging.keys())==0:
         return
     plot_columns = [["loss","vali_loss"],
@@ -510,7 +514,7 @@ def plot_grid(filename,
               text_inside=False,
               sample_names=None,
               imagenet_stats=True,
-              show_keys=dynamic_image_keys+["image","target_bit","pred_bit","points"],
+              show_keys=dynamic_image_keys+["image","gt_bit","pred_bit","points"],
               ab_kw={}):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
@@ -643,6 +647,7 @@ def plot_forward_pass(filename,
         if isinstance(output[k],list):
             output[k] = unet_kwarg_to_tensor(output[k])
         assert isinstance(output[k],torch.Tensor), f"expected output[{k}] to be a torch.Tensor, found {type(output[k])}"
+        assert len(output[k])==bs, f"expected output[{k}].shape[0] to be {bs}, found {output[k].shape[0]}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
         output[k] = output[k][:bs]
