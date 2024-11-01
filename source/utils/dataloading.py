@@ -186,7 +186,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       conditioning=False,
                       load_cond_probs=None,
                       load_matched_items=True,
-                      save_matched_items=False):
+                      save_matched_items=False,
+                      imagenet_norm=True):
         self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
         self.load_cond_auto = load_cond_probs is not None
@@ -220,8 +221,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.gen_mode = False
         assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
         if crop_method.startswith("sam"):
-            self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx)
-            self.sam_aug_big = get_sam_aug(1024,padval=padding_idx)
+            self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
+            self.sam_aug_big = get_sam_aug(1024,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
         else:
             raise NotImplementedError("crop_method not implemented for non-sam")
         self.crop_method = crop_method
@@ -941,9 +942,10 @@ def load_raw_image_label_from_didx(didx,longest_side_resize=0,data_root=None):
     gts = [t[1] for t in tuples]
     return ims,gts
 
-def get_sam_aug(size,padval=255):
+def get_sam_aug(size,padval=255,imagenet_norm_p=1):
+    #SAM uses the default imagenet mean and std, also default in A.Normalize
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
-                     A.Normalize(always_apply=True, p=1), #SAM uses the default imagenet mean and std, which is also default in Albumentations.Normalize
+                     A.Normalize(always_apply=imagenet_norm_p>=1.0, p=imagenet_norm_p),
                      A.PadIfNeeded(min_height=size, 
                                    min_width=size, 
                                    border_mode=cv2.BORDER_CONSTANT, 
@@ -1164,7 +1166,8 @@ def get_dataset_from_args(args_or_model_id=None,
                             conditioning=conditioning,
                             load_cond_probs=load_cond_probs,
                             save_matched_items=args.dataloader_save_processing,
-                            shuffle_labels=args.agnostic
+                            shuffle_labels=args.agnostic,
+                            imagenet_norm=args.imagenet_norm,
                             )
     if return_type=="ds":
         return ds
@@ -1209,160 +1212,3 @@ def dummy_label(n=128,num_classes=10,as_torch=True):
         return torch.tensor(label).unsqueeze(0)
     else:
         return label
-
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--unit_test", type=int, default=-1)
-    parser.add_argument("--process", type=int, default=-1)
-    args = parser.parse_args()
-    if args.process==0:
-        print("PROCESSING sam features for native validation sets")
-        save_sam_features(sam_idx_or_name=0,
-                        split="vali",
-                        split_method="native",
-                        datasets="cityscapes,coco,ade20k",
-                        batch_size=4,
-                        progress_bar=True)
-    elif args.process==1:
-        print("PROCESSING sam features for all datasets")
-        save_sam_features(sam_idx_or_name=0,
-                        split="all",
-                        split_method="random",
-                        datasets="all",
-                        batch_size=4,
-                        progress_bar=True)
-    if args.unit_test==0:
-        print("UNIT TEST 0: display batch of categorical ball data")
-        import jlc
-        import matplotlib.pyplot as plt
-        dataloader = torch.utils.data.DataLoader(CatBallDataset(size=64,dataset_len=10),batch_size=10,shuffle=False,collate_fn=custom_collate_with_info)
-        x,info = next(iter(dataloader))
-        im = torch.stack([info_i["image"] for info_i in info],dim=0)
-        images = torch.cat((x,im),dim=0).clamp(0,1)
-        jlc.montage(images)
-        plt.show()
-    elif args.unit_test==1:
-        print("UNIT TEST 1: display batch of segmentation data")
-        import jlc
-        import matplotlib.pyplot as plt
-        datasets = "non-medical"
-        dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",
-                                                                     datasets=datasets,
-                                                                     image_size=128,
-                                                                     map_excess_classes_to="largest",
-                                                                     semantic_prob=0.5,
-                                                                     shuffle_labels=True,
-                                                                     ),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
-        x,info = next(iter(dataloader))
-        im = torch.stack([info_i["image"] for info_i in info],dim=0)
-        images = torch.cat((x.repeat(1,3,1,1)/7,im*0.5+0.5),dim=0).clamp(0,1)
-        text = [str(info_i["dataset_name"])+","+str(info_i["label_path"]) for info_i in info]*2
-        jlc.montage(images,n_col=10,text=text,text_color="red")
-        plt.show()
-    elif args.unit_test==2:
-        print("UNIT TEST 2: display edges with cv2 of the label")
-        import cv2
-        import jlc
-        import matplotlib.pyplot as plt
-        datasets = "non-medical"
-        dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",datasets=datasets,image_size=128),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
-        x,info = next(iter(dataloader))
-        im = torch.stack([info_i["image"] for info_i in info],dim=0)
-        x = label_boundaries(x)
-        dataset = [info_i["dataset_name"] for info_i in info]
-        text = dataset*2
-        images = torch.cat((x.repeat(1,3,1,1),im*0.5+0.5),dim=0).clamp(0,1)
-        jlc.montage(images,n_col=10,text=text,text_color="red")
-        plt.show()
-    elif args.unit_test==3:
-        print("UNIT TEST 3: display n random crops of the label")
-        import cv2
-        import jlc
-        import matplotlib.pyplot as plt
-        num_images_vis = 10
-        num_crops_vis = 10
-        dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",
-                                                                     datasets="non-medical",#"coift,hrsod".split(","),#
-                                                                     image_size=128,
-                                                                     crop_method="full_image"),
-                                                 batch_size=num_images_vis,shuffle=True,collate_fn=custom_collate_with_info)
-        dataloader.dataset.num_crops = 3
-        dataloader.dataset.crop_method = "most_border"
-        gcp = dataloader.dataset.get_crop_params
-        _,info = next(iter(dataloader))
-        crops = []
-
-        fig,ax = plt.subplots(2,num_images_vis)
-        print(ax.shape)
-        for i in range(num_images_vis):
-            label = np.array(Image.open(os.path.join(dataloader.dataset.data_root,info[i]["dataset_name"],info[i]["label_path"])))
-            image = np.array(Image.open(os.path.join(dataloader.dataset.data_root,info[i]["dataset_name"],info[i]["image_path"])))
-            crops.append([])
-            for j in range(num_crops_vis):
-                crop_x,crop_y = gcp(label)
-                crops[i].append((crop_x,crop_y))
-            ax[0,i].imshow(image)
-            ax[1,i].imshow(label)
-            for x,y in crops[i]:
-                ax[1,i].plot([x[0],x[0],x[1],x[1],x[0]],[y[0],y[1],y[1],y[0],y[0]],color="red")
-
-        plt.show()
-        im = torch.stack([info_i["image"] for info_i in info],dim=0)
-        images = torch.cat((x.repeat(1,3,1,1),im*0.5+0.5),dim=0).clamp(0,1)
-        jlc.montage(images,n_col=10,text=text,text_color="red")
-        plt.show()
-    elif args.unit_test==4:
-        print("UNIT TEST 4: cityscapes semantic segmentation")
-        import jlc
-        import matplotlib.pyplot as plt
-        datasets = "cityscapes"
-        dataset = SegmentationDataset(split="train",
-                                    datasets=datasets,
-                                    image_size=128,
-                                    map_excess_classes_to="largest",
-                                    semantic_prob=1.0,
-                                    shuffle_labels=False,
-                                    shuffle_datasets=False,
-                                    )
-        x,info = dataset[16]
-        print(info["i"])
-        im = info["image"]
-        label = x
-        plt.subplot(1,2,1)
-        plt.imshow(im.permute(1,2,0)*0.5+0.5)
-        plt.subplot(1,2,2)
-        plt.imshow(label[0])
-        plt.show()
-    elif args.unit_test==5:
-        print("UNIT TEST 5: total_boundary_pixels")
-        import jlc
-        import matplotlib.pyplot as plt
-        datasets = "non-medical"
-        dataloader = torch.utils.data.DataLoader(SegmentationDataset(split="train",datasets=datasets,image_size=128),batch_size=20,shuffle=True,collate_fn=custom_collate_with_info)
-        x,info = next(iter(dataloader))
-        im = torch.stack([info_i["image"] for info_i in info],dim=0)
-        tot = [total_boundary_pixels(label) for label in x]
-        dataset = [info_i["dataset_name"] for info_i in info]
-        text = dataset+tot
-        maxvals_dim123 = torch.amax(x,dim=(1,2,3),keepdim=True)
-        images = torch.cat((x.repeat(1,3,1,1)/maxvals_dim123,im*0.5+0.5),dim=0).clamp(0,1)
-        jlc.montage(images,n_col=10,text=text,text_color="red")
-        plt.show()
-    elif args.unit_test==6:
-        print("UNIT TEST 6: remove matched items")
-        delete_all_matched_items(dry=False,verbose=True)
-    elif args.unit_test==7:
-        print("UNIT TEST 7: bbox_image_from_label")
-        import matplotlib.pyplot as plt
-        random_label = dummy_label()
-        bbox = bbox_image_from_label(random_label).numpy()
-        plt.subplot(1,2,1)
-        plt.imshow(random_label.numpy()[0])
-        plt.subplot(1,2,2)
-        plt.imshow(bbox[0])
-        plt.show()
-
-if __name__=="__main__":
-    main()

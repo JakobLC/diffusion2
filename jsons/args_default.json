@@ -7,7 +7,8 @@
         "seed": [-1,                                "Seed for random number generator. TYPE: non-negative integer or -1 (random). DEFAULT: -1. "],
         "training_history": ["",                    "Variable for storing training history. TYPE: str. DEFAULT: ''. "],
         "origin": ["",                              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
-        "ckpt_name": ["",                           "Path to load ckpt from. Empty string for ckpt_name='./saves/ver-*/*[model_name]*/ckpt_*.pt'. TYPE: DEFAULT: '' . "]
+        "ckpt_name": ["",                           "Path to load ckpt from. Empty string for ckpt_name='./saves/ver-*/*[model_name]*/ckpt_*.pt'. TYPE: DEFAULT: '' . "],
+        "mode": ["new",                             "Which mode to run in? new: new training, cont: continue from ckpt, load: load ckpt and make new TYPE: One of ['new','cont','load']. DEFAULT: 'new'. "]
     },
     "diffusion": {
         "no_diffusion": [false,                     "TODO, not implemented. Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false. "],
@@ -86,7 +87,8 @@
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
         "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
         "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "],
-        "padding_idx": [255,                        "Padding index used for the ground truth. TYPE: positive integer. DEFAULT: 255. "]
+        "padding_idx": [255,                        "Padding index used for the ground truth. TYPE: positive integer. DEFAULT: 255. "],
+        "imagenet_norm": [true,                     "Should the imagenet normalization be used? TYPE: boolean. DEFAULT: true. "]
     },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],
@@ -101,7 +103,6 @@
         "update_forward_pass_plot_interval": [200,  "Update forward pass plot every n steps. TYPE: positive integer. DEFAULT: 200. "], 
         "num_vali_batches": [8,                     "Number of batches to use for validation each vali_interval. TYPE: positive integer or 0 (no validation). DEFAULT: 8. "],
         "run_without_test": [false,                 "Should all evaluation be skipped? TYPE: boolean. DEFAULT: false. "],
-        "mode": ["new",                             "Which mode to run in? new: new training, cont: continue from ckpt, load: load ckpt and make new TYPE: One of ['new','cont','load']. DEFAULT: 'new'. "],
         "save_best_ckpt": [true,                    "Should the best checkpoint be tracked and saved? TYPE: boolean. DEFAULT: false. "],
         "best_ckpt_metric": ["max_ari",             "Which metric to use for best checkpoint tracking. TYPE: string. DEFAULT: 'max_ari'. "],
         "best_ckpt_gen_setup_idx": [0,              "Which gen setup idx to use for best checkpoint tracking. TYPE: integer. DEFAULT: 0. "],

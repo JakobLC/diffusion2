@@ -540,7 +540,7 @@
                 "lr": "0.003;0.001;0.0003;0.0001;0.00003;0.00001"
             },
             "nc_sweep": {"num_channels": "32;64;96;128"},
-            "b_sweep": { "input_scale": "0.3;0.1;0.03;0.01;0.003;0.001"},
+            "b_sweep": { "input_scale": "0.3;0.1;0.03;0.01;0.003"},
             "loss_w_sweep": {"loss_weights": "SNR;SNR_trunc;uniform"},
             "loss_f_sweep": {"loss_type": "ce1;ce2"},
             "bce": {"bce_loss": true},
@@ -549,7 +549,14 @@
                     "num_channels": 128},
             "128": {"image_size": 128},
             "long": {"max_iter": 100000, "lr_decay_steps": 50000, "gen_interval": 5000, "num_channels": 64, "deeper_net": true},
-            "15096": {"datasets": "lidc15096"}
+            "15096": {"datasets": "lidc15096"},
+            "v5": {"datasets": "lidc15096", 
+                    "max_iter": 50000, 
+                    "train_batch_size": 16, 
+                    "gen_interval": 1000, 
+                    "lr_warmup_steps": 1000, 
+                    "lr_decay_steps": 10000, 
+                    "gen_setups": "XL[vali],XL[train]"}
         },
         "datasets": "lidc",
         "p_points": 0,

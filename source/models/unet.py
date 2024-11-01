@@ -1,5 +1,6 @@
 from abc import abstractmethod
 
+import sys
 import math
 import copy
 import numpy as np
@@ -312,14 +313,7 @@ class UNetModel(nn.Module):
     :param num_res_blocks: number of residual blocks per downsample.
     :param attention_resolutions: a collection of downsample rates at which
         attention will take place. May be a set, list, or tuple.
-        For example, if this contains 4, then at 4x downsampling, attention
-        will be used.
-    :param dropout: the dropout probability.
-    :param channel_mult: channel multiplier for each level of the UNet.
-    :param conv_resample: if True, use learned convolutions for upsampling and
-        downsampling.
-    :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param use_checkpoint: use gradient checkpointing to reduce memory usage.
+        For example, if this contains 4, then at 4x downsampling, attention__init__
     :param num_heads: the number of attention heads in each attention layer.
     """
 
@@ -346,6 +340,7 @@ class UNetModel(nn.Module):
         vit_args=None,
         unet_input_dict=None,
         vit_feature_depth=1,
+        is_lidc_unet=False,
     ):
         super().__init__()
         self.debug_run = debug_run
@@ -362,6 +357,7 @@ class UNetModel(nn.Module):
         self.has_vit = False
         self.vit = None
         self.vit_injection_type="none"
+        self.is_lidc_unet = is_lidc_unet
         if vit_args is not None:
             if len(vit_args["input_dict"])>0:
                 self.has_vit = True
@@ -371,8 +367,18 @@ class UNetModel(nn.Module):
         
         if not self.has_vit:
             assert self.has_unet, "either vit_args (with non-empty input dict) or unet_input_dict must be provided"
-
-        if not self.has_unet:
+        
+        if self.is_lidc_unet:
+            sys.path.append('/home/jloch/Desktop/diff/GeneralizedProbabilisticUNet')
+            from src.probabilistic_unet.unet import UNet as GenProbUNet
+            self.gen_prob_unet = GenProbUNet(input_channels=1,
+                                            num_classes=1,
+                                            num_filters=32,
+                                            initializers={'w':'he_normal', 'b':'normal'},
+                                            apply_last_layer=True,
+                                            norm=True)
+            self.fp16_attrs = ["gen_prob_unet"]
+        elif not self.has_unet:
             assert self.vit_args is not None, "vit_args must be provided if there is no unet"
             ch = self.vit_args["out_chans"]
             self.fp16_attrs = []
