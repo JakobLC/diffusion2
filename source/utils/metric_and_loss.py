@@ -48,6 +48,7 @@ def get_likelihood(pred,gt,mask,outside_mask_fill_value=0.0,clamp=True,ab_kw={})
         print("Error in get_likelihood")
         print("Tensor info gt:\n",tensor_info(gt))
         print("Tensor info pred:\n",tensor_info(pred))
+        raise e
     if clamp:
         likelihood_images = likelihood_images.clamp(min=0.0,max=1.0)
     likelihood_images = likelihood_images*mask + outside_mask_fill_value*(1-mask)
@@ -61,7 +62,7 @@ def get_likelihood(pred,gt,mask,outside_mask_fill_value=0.0,clamp=True,ab_kw={})
 
 def get_mse_metrics(output):
     metrics = {}
-    if ("pred_x" in output.keys()) and ("x" in output.keys()):
+    if ("pred_bit" in output.keys()) and ("x" in output.keys()):
         metrics["mse_x"] = mse_loss(output["gt_bit"],output["pred_bit"],output["loss_mask"]).tolist()
     if ("pred_eps" in output.keys()) and ("eps" in output.keys()):
         metrics["mse_eps"] = mse_loss(output["gt_eps"],output["pred_eps"],output["loss_mask"]).tolist()
@@ -600,7 +601,7 @@ def get_ambiguous_metrics(pred,gt,shorthand=True,reduce_to_mean=True):
     assert gt.shape[0]==pred.shape[0], "gt and pred must have the same height"
     assert gt.shape[1]==pred.shape[1], "gt and pred must have the same width"
     if gt.shape[2]>10 or pred.shape[2]>10:
-        raise ValueError("gt and pred must have at most 10 channels. This is a safety measure to prevent accidental misuse (e.g. permutation).")
+        pass#raise ValueError("gt and pred must have at most 10 channels. This is a safety measure to prevent accidental misuse (e.g. permutation).")
     measures = collective_insight(pred,gt)
     ged, cross_mat = generalized_energy_distance(pred,gt)
     measures["generalized_energy_distance"] = ged

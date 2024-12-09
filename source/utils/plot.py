@@ -17,16 +17,18 @@ from source.utils.mixed import (bracket_glob_fix, save_dict_list_to_json,
 from source.utils.analog_bits import ab_bit2prob
 from source.utils.metric_and_loss import get_likelihood
 from source.utils.dataloading import get_dataset_from_args, load_raw_image_label
+from source.models.unet import dynamic_image_keys
 import cv2
 import pandas as pd
 import scipy.ndimage as nd
-from models.cond_vit import dynamic_image_keys
+#from models.cond_vit import dynamic_image_keys
 from jlc import (RenderMatplotlibAxis, darker_color,
                  distance_transform_edt_border,mask_overlay_smooth,
                  get_mask,render_axis_ticks,darker_color,get_matplotlib_color,
                  add_text_axis_to_image,to_xy_anchor,render_text_gridlike,
                  item_to_rect_lists)
 from sklearn.cluster import KMeans
+import warnings
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
@@ -71,9 +73,9 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                 if data.size==0:
                     continue
                 if "gen_id" not in column_names:
-                    continue
+                    ConnectionRefusedError
                 if search_gen_setups_instead:
-                    file_gen_ids = data[:,column_names.index("setup_name")].astype(str)
+                    file_gen_ids = data[:,column_names.index("gen_setup")].astype(str)
                 else:
                     file_gen_ids = data[:,column_names.index("gen_id")].astype(str)
                 match_idx = set()
@@ -120,6 +122,7 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                 table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
                 save_paths.extend([v["save_path"] for _ in range(len(match_idx))])
     if table.shape[0]==0:
+        warnings.warn("No matches found")
         if return_table:
             return table
         else:
@@ -211,7 +214,14 @@ def pretty_point(im,footprint=None,radius=0.05):
         pretty_point_image = torch.tensor(pretty_point_image).permute(2,0,1).to(device)
     return pretty_point_image
 
-def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_subplot=(8,2),remove_old=True):
+def make_loss_plot(save_path,
+                   step,
+                   save=True,
+                   show=False,
+                   fontsize=14,
+                   figsize_per_subplot=(8,2),
+                   remove_old=True,
+                   is_ambiguous=False):
     filename = os.path.join(save_path,"logging.csv")
     filename_gen = os.path.join(save_path,"logging_gen.csv")
     filename_step = os.path.join(save_path,"logging_step.csv")
@@ -253,8 +263,8 @@ def make_loss_plot(save_path,step,save=True,show=False,fontsize=14,figsize_per_s
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
                     ["iou","vali_iou"],
-                    ["gen_hiou","gen_max_hiou"],#both vali and train
-                    ["gen_ari","gen_max_ari"],#both vali and train
+                    ["gen_GED"] if is_ambiguous else ["gen_hiou","gen_max_hiou"],
+                    ["gen_iou"] if is_ambiguous else ["gen_ari","gen_max_ari"],
                     ["step_loss"],
                     ["likelihood","vali_likelihood"]]
     plot_columns_new = []
@@ -410,7 +420,7 @@ def concat_inter_plots(foldername,concat_filename,num_timesteps,remove_children=
     images = np.concatenate(images,axis=0)
     images = Image.fromarray(images)
     images.save(concat_filename)
-    left = ["gt_bit","final pred_x","image"]*batch_size
+    left = ["gt_bit","final pred_","image"]*batch_size
     right = ["x_t","pred_bit","pred_eps"]*batch_size
     t_vec = np.array(range(num_timesteps, 0, -1))/num_timesteps
     top = bottom = ["","t="]+[f"{t_vec[j]:.2f}" for j in range(num_timesteps)]
@@ -474,13 +484,16 @@ def plot_inter(foldername,sample_output,model_kwargs,save_i_idx=None,plot_text=F
         images[0].append(map_dict["points"](model_kwargs["points"][ii],i) if contains_nontrivial_key_val("points",model_kwargs) else zero_image)
         images[1].append(zero_image)
         images[2].append(zero_image)
-        text = [["gt_bit"],["final pred_x"],["image"]]
+        text = [["gt_bit"],["final pred_bit"],["image"]]
         for k_i,k in enumerate(["x_t","pred_bit","pred_eps"]):
             for j in range(num_timesteps):
                 if k in sample_output["inter"].keys():
                     images[k_i].append(map_dict[k](sample_output["inter"][k][j][i],i))
                     text_j = ("    t=" if j==0 else "")+f"{t[j]:.2f}" if k_i==0 else ""
                     text[k_i].append(text_j)
+                else:
+                    images[k_i].append(zero_image)
+                    text[k_i].append("")
         filename = os.path.join(foldername,f"intermediate_{i+num_inter_exists:03d}.png")
         filenames.append(filename)
         images = sum(images,[])

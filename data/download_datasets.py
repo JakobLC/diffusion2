@@ -27,6 +27,7 @@ import clip
 import torch
 import pydicom
 import pickle
+import pycocotools.mask as mask_util
 
 def default_do_step():
     return {"unpack": 0,
@@ -871,6 +872,51 @@ class DatasetDownloader:
                 image = Image.fromarray(image)
                 label = Image.fromarray(label)
                 return image,label,info
+        elif name=="entityseg":
+            train_path = "/home/jloch/Desktop/diff/BIG_dataset/entityseg_train_lr.json"
+            test_path = "/home/jloch/Desktop/diff/BIG_dataset/entityseg_val_lr.json"
+            with open(train_path) as f:
+                train_loaded = json.load(f)
+            with open(test_path) as f:
+                test_loaded = json.load(f)
+            file_name_dict = {}
+            id_to_filename = {}
+            for d in train_loaded["images"]:
+                id_to_filename[d["id"],0] = d["file_name"]
+                file_name_dict[d["file_name"]] = {"ann_ids": [], 
+                                                "split_idx": 0}
+            for d in test_loaded["images"]:
+                id_to_filename[d["id"],2] = d["file_name"]
+                file_name_dict[d["file_name"]] = {"ann_ids": [],
+                                                "split_idx": 2}
+                
+            file_name_list = list(file_name_dict.keys())
+            for ann_id,ann in enumerate(train_loaded["annotations"]+test_loaded["annotations"]):
+                s = (0 if ann_id<len(train_loaded["annotations"]) else 2)
+                fn = id_to_filename[ann["image_id"],s]
+                file_name_dict[fn]["ann_ids"].append(ann_id)
+            class_dict = {0: "background"}
+            for cat in train_loaded["categories"]:
+                class_dict[cat["id"]+1] = cat["name"]
+
+            def load_image_label_info(file_name):
+                d = file_name_dict[file_name]
+                image = np.array(Image.open(os.path.join("/home/jloch/Desktop/diff/BIG_dataset",file_name)))
+                h,w,c = np.array(image).shape
+                if c==1:
+                    image = np.repeat(image,3,axis=-1)
+                elif c==4:
+                    image = image[:,:,:3]
+                else:
+                    assert c==3, f"Image has an unexpected number of {c} channels. Expected 1,3 or 4."
+                seg = np.zeros((h,w),dtype=np.uint8)
+                info = {"classes": [0],
+                        "split_idx": d["split_idx"]}
+                for k,ann_id in enumerate(d["ann_ids"]):
+                    ann = (train_loaded["annotations"]+test_loaded["annotations"])[ann_id]
+                    seg += mask_util.decode(ann["segmentation"])*(k+1)
+                    info["classes"].append(ann["category_id"]+1)
+                return Image.fromarray(image),Image.fromarray(seg),info
         else:
             raise ValueError(f"Dataset {name} not supported.")
         if do_step["delete_f_before"]:

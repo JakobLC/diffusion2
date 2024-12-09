@@ -3,8 +3,9 @@
 import enum
 import numpy as np
 import torch
-from source.utils.mixed import normal_kl, construct_points, nice_split
+from source.utils.mixed import normal_kl, construct_points, nice_split, get_padding_slices
 from source.utils.metric_and_loss import mse_loss,ce1_loss,ce2_loss,ce2_logits_loss
+from source.utils.argparsing import compare_strs
 import tqdm
 
 def add_(coefs,x,batch_dim=0,flat=False):
@@ -42,39 +43,14 @@ def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
     float64 = lambda x: torch.tensor(float(x),dtype=torch.float64)
     if schedule_name=="linear":
         gamma = lambda t: torch.sigmoid(-torch.log(torch.expm1(1e-4+10*t*t)))
-    elif schedule_name.startswith("cosine"):
-        num_params = len(schedule_name.split("_"))-1
-        #format: cosine_start_end_tau
-        tau = float64(1) if num_params<3 else float64(schedule_name.split("_")[3])
-        end = float64(0) if num_params<2 else float64(schedule_name.split("_")[2])
-        start = float64(1) if num_params<1 else float64(schedule_name.split("_")[1])
-        def gamma(t):
-            v_start = torch.cos(start * torch.pi / 2) ** (2 * tau)
-            v_end = torch.cos(end * torch.pi / 2) ** (2 * tau)
-            output = torch.cos((t * (end - start) + start) * torch.pi / 2) ** (2 * tau)
-            output = (v_end - output) / (v_end - v_start)
-            return output
-        
-    elif schedule_name.startswith("sigmoid"):
-        num_params = len(schedule_name.split("_"))-1
-        #format: cosine_start_end_tau
-        sigmoid = lambda x: 1.0/(1.0+torch.exp(-x))
-        tau = float64(1) if num_params<3 else float64(schedule_name.split("_")[3])
-        end = float64(3) if num_params<2 else float64(schedule_name.split("_")[2])
-        start = float64(-3) if num_params<1 else float64(schedule_name.split("_")[1])
-        def gamma(t):
-            v_start = sigmoid(start / tau)
-            v_end = sigmoid(end / tau)
-            output = sigmoid((t * (end - start) + start) / tau)
-            output = (v_end - output) / (v_end - v_start)
-            return output
+    elif schedule_name=="cosine":
+        gamma = lambda t: torch.cos(t*torch.pi/2)**2
     elif schedule_name=="linear_simple":
         gamma = lambda t: 1-t
     elif schedule_name=="parabola":
-        #gamma = lambda t: (1-t**2)**2 expanded:
-        gamma = lambda t: 1-2*t**2+t**4
+        gamma = lambda t: 1-2*t**2+t**4 #(1-t**2)**2 expanded
     else:
-        raise ValueError(f"Unknown schedule name: {schedule_name}, must be one of ['linear', 'cosine_[start]_[end]_[tau]', 'sigmoid_[start]_[end]_[tau]', 'linear_simple']")
+        raise NotImplementedError(schedule_name)
     
     b = (b if torch.is_tensor(b) else torch.tensor(b)).to(torch.float64)
     gamma_wrap1 = input_scaling_wrap(gamma,b)
@@ -85,7 +61,7 @@ def get_named_gamma_schedule(schedule_name,b,logsnr_min=-20.0,logsnr_max=20.0):
 def input_scaling_wrap(gamma,b=1.0):
     input_scaling = (b-1.0).abs().item()>1e-9
     if input_scaling:
-        gamma_input_scaled = lambda t: b*gamma(t)/((b-1)*gamma(t)+1)
+        gamma_input_scaled = lambda t: b*b*gamma(t)/((b*b-1)*gamma(t)+1)
     else:
         gamma_input_scaled = gamma
     return gamma_input_scaled
@@ -145,6 +121,7 @@ class WeightsType(enum.Enum):
     SNR_plus1 = enum.auto()
     SNR_trunc = enum.auto()
     uniform = enum.auto()
+    gamma = enum.auto()
 
 class TimeCondType(enum.Enum):
     """Time condition type the model uses"""
@@ -174,7 +151,8 @@ class ContinuousGaussianDiffusion():
                  var_type,
                  loss_type,
                  logsnr_min=-10.0,
-                 logsnr_max=10.0):
+                 logsnr_max=10.0,
+                 decouple_loss_weights=False):
         """class to handle the diffusion process"""
         self.loss_type = type_from_maybe_str(loss_type,LossType)
         self.gamma = get_named_gamma_schedule(schedule_name,b=input_scale,logsnr_min=logsnr_min,logsnr_max=logsnr_max)
@@ -183,9 +161,10 @@ class ContinuousGaussianDiffusion():
         self.var_type = type_from_maybe_str(var_type,VarType)
         self.weights_type = type_from_maybe_str(weights_type,WeightsType)
         self.sampler_type = type_from_maybe_str(sampler_type,SamplerType)
+        self.decouple_loss_weights = decouple_loss_weights
         
     def snr(self,t):
-        """returns the signal to noise ratio"""
+        """returns the signal to noise ratio, aka alpha^2/sigma^2"""
         return self.gamma(t)/(1-self.gamma(t))
     
     def alpha(self,t):
@@ -199,8 +178,15 @@ class ContinuousGaussianDiffusion():
     def logsnr(self,t):
         """returns the log signal-to-noise ratio"""
         return torch.log(self.snr(t))
-    
-    def loss_weights(self, t, use_float64=True):
+
+    def diff_logsnr(self,t):
+        """returns the derivative of the log signal-to-noise ratio"""
+        t_req_grad = torch.autograd.Variable(t, requires_grad = True)
+        with torch.enable_grad():
+            t_grad = torch.autograd.grad(self.logsnr(t_req_grad).sum(),t_req_grad,create_graph=True)[0]
+        return t_grad
+
+    def loss_weights(self, t):
         snr = self.snr(t)
         if self.weights_type==WeightsType.SNR:
             weights = snr
@@ -210,6 +196,10 @@ class ContinuousGaussianDiffusion():
             weights = torch.maximum(snr,torch.ones_like(snr))
         elif self.weights_type==WeightsType.uniform:
             weights = torch.ones_like(snr)
+        elif self.weights_type==WeightsType.gamma: # aka sigmoid loss from simpler diffusion/VDM++
+            weights = self.gamma(t) 
+        if self.decouple_loss_weights:
+            weights *= -self.diff_logsnr(t)
         return weights
     
     def sample_t(self,bs):
@@ -302,7 +292,9 @@ class ContinuousGaussianDiffusion():
         #return (1/sigma_t)*(x_t-alpha_t*x)
         return mult_(1/sigma_t,x_t) - mult_(alpha_t/sigma_t,x)
     
-    def get_predictions(self, output, x_t, alpha_t, sigma_t, clip_x=False,guidance_weight=None,model_output_guidance=None):
+    def get_predictions(self, output, x_t, alpha_t, sigma_t, clip_x=False,
+                        guidance_weight=None,model_output_guidance=None,
+                        replace_padding=False,imshape=None):
         """returns predictions based on the equation x_t = alpha_t*x + sigma_t*eps"""
         if self.model_pred_type==ModelPredType.EPS:
             pred_eps = output
@@ -328,12 +320,20 @@ class ContinuousGaussianDiffusion():
             pred_eps = self.get_eps_from_x(pred_x,x_t,alpha_t,sigma_t)
 
         if guidance_weight is not None:
-            pred_eps = (1+guidance_weight)*pred_eps - guidance_weight*self.get_predictions(model_output_guidance,x_t,alpha_t,sigma_t,clip_x=False)[1]
+            pred_eps = (1+guidance_weight)*pred_eps - guidance_weight*self.get_predictions(model_output_guidance,x_t,
+                                                                                           alpha_t,sigma_t,
+                                                                                           clip_x=False,
+                                                                                           replace_padding=False)[1]
             pred_x = self.get_x_from_eps(pred_eps,x_t,alpha_t,sigma_t)
         if clip_x:
             assert not pred_x.requires_grad
             pred_x = torch.clamp(pred_x,-1,1)
             #pred_eps = (1/sigma_t)*(x_t-alpha_t*pred_x) Should this be done? TODO
+        if replace_padding:
+            assert len(imshape)==len(pred_x), f"len(imshape)={len(imshape)}, len(pred_x.shape)={len(pred_x)}"
+            for i in range(len(pred_x)):
+                s = get_padding_slices(pred_x[i],imshape[i])
+                pred_x[i][s] = -1
         return pred_x, pred_eps
         
     def ddim_step(self, i, pred_x, pred_eps, num_steps):
@@ -355,15 +355,16 @@ class ContinuousGaussianDiffusion():
             logsnr_t=self.logsnr(t),
             logsnr_s=self.logsnr(s))
         if i==0:
-            return x_s_dist['pred_x']
+            return x_s_dist['pred_bit']
         else:
             return x_s_dist['mean'] + x_s_dist['std'] * torch.randn_like(x_t)
         
     def sample_loop(self, model, x_init, num_steps, sampler_type, clip_x=False, model_kwargs={},
                     guidance_weight=0.0, progress_bar=False, save_i_steps=[], save_i_idx=[],
-                    guidance_kwargs="",save_entropy_score=False):
+                    guidance_kwargs="",save_entropy=False, replace_padding=False, imshape=None):
         self_cond = self.convert_self_cond(model_kwargs,x_init.shape[0])
-
+        if replace_padding:
+            assert imshape is not None, "imshape (list of image shapes before reshaping) must be provided if replace_padding is True"
         if sampler_type == 'ddim':
             body_fun = lambda i, pred_x, pred_eps, x_t: self.ddim_step(i, pred_x, pred_eps, num_steps)
         elif sampler_type == 'ddpm':
@@ -380,11 +381,11 @@ class ContinuousGaussianDiffusion():
         sample_output = {}
         intermediate_save = len(save_i_steps)>0 and len(save_i_idx)>0
         if intermediate_save:
-            inter_keys = ["x_t","pred_x","pred_eps","model_output","model_output_guidance","i","t"]
+            inter_keys = ["x_t","pred_bit","pred_eps","model_output","model_output_guidance","i","t"]
             sample_output["inter"] = {k: [] for k in inter_keys}
         
-        if save_entropy_score:
-            sample_output["entropy_score"] = []
+        if save_entropy:
+            sample_output["entropy"] = []
 
         x_t = x_init
         
@@ -405,14 +406,16 @@ class ContinuousGaussianDiffusion():
                                                     sigma_t=sigma_t,
                                                     clip_x=clip_x,
                                                     guidance_weight=guidance_weight,
-                                                    model_output_guidance=model_output_guidance)
+                                                    model_output_guidance=model_output_guidance,
+                                                    replace_padding=replace_padding,
+                                                    imshape=imshape)
             if intermediate_save:
                 if i in save_i_steps:
                     for key,value in zip(inter_keys,[x_t,pred_x,pred_eps,model_output,model_output_guidance,i,t]):
                         sample_output["inter"][key].append(inter_save_map(value,save_i_idx))
 
-            if save_entropy_score:
-                sample_output["entropy_score"].append(entropy_score_from_predx(pred_x))
+            if save_entropy:
+                sample_output["entropy"].append(entropy_from_predx(pred_x).tolist())
 
             if any(self_cond):
                 model_kwargs['self_cond'] = [(pred_x[i] if self_cond[i] else None) for i in range(len(x_t))]
@@ -421,6 +424,8 @@ class ContinuousGaussianDiffusion():
 
         assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype
         
+        if save_entropy:
+            sample_output["entropy"] = torch.tensor(sample_output["entropy"]).T.tolist()
         sample_output["pred_bit"] = x_t
         return sample_output
 
@@ -453,7 +458,7 @@ class ContinuousGaussianDiffusion():
         out = self.q_distribution(
             x_t=x_t, logsnr_t=logsnr_t, logsnr_s=logsnr_s,
             x=pred_x, x_logvar=x_logvar)
-        out['pred_x'] = pred_x
+        out['pred_bit'] = pred_x
         return out
     
     def q_distribution(self, x, x_t, logsnr_s, logsnr_t, x_logvar):
@@ -499,8 +504,12 @@ def transform_guidance_weight(gw, x):
         return w
 
 def create_diffusion_from_args(args):
+    if compare_strs(args.model_version,"1.4.0","<"):
+        exponent = 0.5
+    else:
+        exponent = 1
     cgd = ContinuousGaussianDiffusion(schedule_name=args.noise_schedule,
-                                    input_scale=args.input_scale,
+                                    input_scale=args.input_scale**exponent,
                                     model_pred_type=args.predict,
                                     weights_type=args.loss_weights,
                                     time_cond_type=args.time_cond_type,
@@ -508,26 +517,23 @@ def create_diffusion_from_args(args):
                                     var_type="small" if args.sigma_small else "large",
                                     loss_type=args.loss_type,
                                     logsnr_min=args.logsnr_min,
-                                    logsnr_max=args.logsnr_max)
+                                    logsnr_max=args.logsnr_max,
+                                    decouple_loss_weights=args.decouple_loss_weights)
     return cgd
 
-def entropy_score_from_predx(predx,mean_reduce=True):
-    num_bits = predx.shape[1]
-    entropy = entropy_from_predx(predx,mean_reduce=False,as_onehot=False).sum(1)
-    entropy_score = 1-entropy*torch.log(-2**num_bits)
-    if mean_reduce:
-        entropy_score = torch.mean(entropy_score)
-    return entropy_score
-
-def entropy_from_predx(predx,mean_reduce=True,as_onehot=False):
-    num_bits = predx.shape[1]
-    if as_onehot:
-        probs = AnalogBits(num_bits=num_bits).bit2prob(predx)
+def entropy_from_predx(predx,reduce_spatial=True,reduce_bits=True,reduce_batch=False,onehot=False):
+    assert len(predx.shape)==4, f"expected 4D tensor, got {predx.shape}"
+    if onehot:
+        probs = predx
     else:
         #each number is a probability, so we must add the complementary probability
         probs = predx.unsqueeze(1)*0.5+0.5
         probs = torch.cat([probs,1-probs],axis=1)
-    entropy = -torch.sum(probs*torch.log(probs+1e-9),dim=1)
-    if mean_reduce:
-        entropy = torch.mean(entropy)
+    entropy = -(probs*torch.log(probs+1e-12)).sum(1)
+    if reduce_spatial:
+        entropy = entropy.mean((2,3))
+    if reduce_bits:
+        entropy = entropy.mean(1)
+    if reduce_batch:
+        entropy = entropy.mean(0)
     return entropy

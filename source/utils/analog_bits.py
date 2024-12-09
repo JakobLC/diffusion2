@@ -184,7 +184,7 @@ def ab_bit2prob(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         onehot = torch.from_numpy(onehot).to(device)
     return onehot
 
-def ab_likelihood(x_gt,x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
+def ab_likelihood(x,x_gt,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
     """ Converts a bit representation to a likelihood of the bit being correct."""
     num_classes = 2**num_bits
     if isinstance(x,torch.Tensor):

@@ -665,6 +665,22 @@ def quantile_normalize(x, alpha=0.001, q=None):
     x = np.clip(x,0,1)
     return x
 
+def get_padding_slices(x,shape):
+    assert len(x.shape)>=2, "expected at least 2 dimensions in x"
+    assert x.shape[-1]==x.shape[-2], "expected a square image, found "+str(x.shape)
+    assert len(shape)>=2, "expected len(shape)>=2, found "+str(shape)
+    new_h,new_w = sam_resize_index(*shape[:2],resize=x.shape[-1])
+    slices = [slice(None) for _ in range(len(x.shape)-2)]
+    if new_h==x.shape[-2] and new_w==x.shape[-1]:
+        slices += [slice(new_h,new_h),slice(new_w,new_w)]
+    elif new_w==x.shape[-1]:
+        slices += [slice(new_h,x.shape[-2]),slice(None)]
+    elif new_h==x.shape[-2]:
+        slices += [slice(None),slice(new_w,x.shape[-1])]
+    else:
+        raise ValueError(f"Expected at least one of new_h or new_w to be equal to x.shape[-2] or x.shape[-1] with SAM crops. Found new_h={new_h} and new_w={new_w} for x.shape={x.shape}")
+    return slices
+
 def apply_mask(x,mask,is_shape=True):
     assert len(x.shape)>=2, "expected at least 2 dimensions in x"
     assert x.shape[-1]==x.shape[-2], "expected a square image, found "+str(x.shape)
@@ -956,7 +972,7 @@ def tensor_info(x,newlines=True):
             "std": x.std().item(),
             **d}
         #how bins in the min-max interval are non-empty when using as many bins as data points
-        v = x.cpu().numpy().flatten()
+        v = x.cpu().detach().numpy().flatten()
         d["fill"] = (np.histogram(v,bins=len(v),range=(d["min"],d["max"]))[0]>0).mean().item()
 
     s = ""
@@ -1006,6 +1022,13 @@ def keep_step_rows_and_save(load_name,save_name,max_step=None,max_row_idx=None):
             lines = f.readlines()
         with open(save_name,"w") as f:
             f.writelines(lines)
+
+def assert_one_to_one_list_of_str(list1,list2):
+    assert isinstance(list1,list) and isinstance(list2,list), "Expected list, found: "+str(type(list1))+" and "+str(type(list2))
+    for k in list1+list2:
+        assert isinstance(k,str), "Expected str, found: "+str(type(k))
+        assert k in list1, "Expected "+k+" from list2 to be in list1="+str(list1)
+        assert k in list2, "Expected "+k+" from list1 to be in list2="+str(list2)
 
 def main():
     import argparse

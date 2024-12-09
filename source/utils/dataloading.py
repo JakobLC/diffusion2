@@ -16,9 +16,9 @@ import warnings
 import sys
 if not str(Path(__file__).parent.parent) in sys.path:
     sys.path.append(str(Path(__file__).parent.parent))
-from source.models.unet import get_sam_image_encoder
+from source.models.unet import get_sam_image_encoder, cond_image_prob_keys, dynamic_image_keys
 import tqdm
-from source.models.cond_vit import ModelInputKwargs, cond_image_keys, cond_image_prob_keys, dynamic_image_keys
+#from source.models.cond_vit import ModelInputKwargs, cond_image_keys, cond_image_prob_keys, dynamic_image_keys
 from source.utils.mixed import (load_json_to_dict_list, save_dict_list_to_json,
                                 sam_resize_index,is_nan_float,get_named_datasets, 
                                 nice_split,str_to_seed)

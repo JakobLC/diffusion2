@@ -14,7 +14,8 @@
         "concat_inter_filename"       : ["",              "Place to save concatenated intermediate plot. Empty string saves in default save folder. TYPE: str. DEFAULT: ''"],
         "origin"                      : ["",              "Variable for storing arguments which differed wrt. defaults and their tier/values. TYPE: str. DEFAULT: ''. "],
         "default_save_folder"         : ["",              "Default folder to save samples in, empty string defaults to [model_folder]/samples/. TYPE: str. DEFAULT: ''"],
-        "datasets"                    : ["",              "Datasets to use for sampling. Only available in gen mode. TYPE: str. DEFAULT: ''"]
+        "datasets"                    : ["",              "Datasets to use for sampling. Only available in gen mode. TYPE: str. DEFAULT: ''"],
+        "num_samples"                 : [8,               "Number of samples (unique images) to produce votes for. TYPE: int. DEFAULT: 8"]
     },
     "model options": {
         "clip_denoised"               : [true,            "Whether to clip denoised samples to [0,1] range. TYPE: bool. DEFAULT: true"],
@@ -30,7 +31,8 @@
         "use_image"                   : [true,            "Whether to use the image as input to the model. TYPE: bool. DEFAULT: true"],
         "postprocess"                 : ["none",          "Which postprocessing to use. One of ['none','area0.005']. TYPE: str. DEFAULT: 'none'"],
         "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],
-        "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"]
+        "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"],
+        "replace_padding"             : [true,            "Whether to replace padding with zeros. TYPE: bool. DEFAULT: false"]
     },
     "meta options": {
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],
@@ -49,7 +51,6 @@
     },
     "how much to sample": {
         "num_votes"                   : [3,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],
-        "num_samples"                 : [8,               "Number of samples (unique images) to produce votes for. TYPE: int. DEFAULT: 8"],
         "num_inter_steps"             : [10,              "Number of unique intermediate steps to save for saving/plotting (limited by num_timesteps also). TYPE: int. DEFAULT: 10"],
         "num_inter_samples"           : [8,               "Number of intermediate samples to save for saving/plotting. TYPE: int. DEFAULT: 8"],
         "num_grid_samples"            : [8,               "Number of samples to use for a grid plot. TYPE: int. DEFAULT: 8"],

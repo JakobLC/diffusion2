@@ -817,5 +817,29 @@
             6884,
             6712
         ]
+    },
+    {
+        "dataset_name": "entityseg",
+        "urls": [],
+        "num_samples": 33227,
+        "num_classes": 645,
+        "file_format": ".jpg",
+        "samples_per_split": [
+            31913,
+            0,
+            1314
+        ]
+    },
+    {
+        "dataset_name": "lidc15096",
+        "urls": [],
+        "num_samples": 60384,
+        "num_classes": 2,
+        "file_format": ".png",
+        "samples_per_split": [
+            35616,
+            11172,
+            13596
+        ]
     }
 ]

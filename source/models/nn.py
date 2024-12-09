@@ -79,6 +79,38 @@ def swap_ema(target_params, source_params):
         src.data.copy_(temp)
 
 
+def identity_module(module,raise_error=True):
+    """
+    Make valid layers do an identity mapping by setting parameters appropriately.
+    Asserts that the number of input and output channels are the same.
+    """
+    try:
+        valid_layers = [nn.Linear,nn.Conv2d]
+        assert isinstance(module, tuple(valid_layers)), f"module should be one of the valid layers: {valid_layers}, found: {module}"
+        if isinstance(module, nn.Linear):
+            assert module.in_features == module.out_features, f"module should have same number of input and output features, found: {module.in_features} and {module.out_features}"
+            module.weight.data.copy_(torch.eye(module.in_features))
+            module.bias.data.zero_()
+        elif isinstance(module, nn.Conv2d):
+            assert module.in_channels == module.out_channels, f"module should have same number of input and output channels, found: {module.in_channels} and {module.out_channels}"
+            module.weight.data.zero_()
+            module.bias.data.zero_()
+            #set central pixels to 1s such that no change in input
+            for i in range(module.out_channels):
+                module.weight.data[i,i,module.kernel_size[0]//2,module.kernel_size[1]//2] = 1
+        success = 1
+    except AssertionError as e:
+        if raise_error:
+            raise e
+        success = 0
+    return success
+
+def total_model_norm(model):
+    t = 0
+    for p in model.parameters():
+        t += p.norm().item() ** 2
+    return t ** 0.5
+
 def zero_module(module):
     """
     Zero out the parameters of a module and return it.

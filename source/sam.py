@@ -193,7 +193,7 @@ def get_segmentation(anns,h,w):
 
 def evaluate_sam(datasets="ade20k",
                  model_type=0,
-                 model_name_for_dataloader="qual[T0]",
+                 model_name_for_dataloader="default",
                  num_return_segments=0,
                  split="vali",
                  ratio_of_dataset=1.0,

@@ -412,9 +412,29 @@
         "bg_prob": 0.5,
         "overlap": false,
         "samples_per_split": [
-            46788,
-            6884,
-            6712
+            35616,
+            11172,
+            13596
+        ],
+        "thin_bg": "never",
+        "quality": "high"
+    },
+    {
+        "dataset_name": "entityseg",
+        "type": "pictures",
+        "live": true,
+        "symmetries": "horizontal",
+        "num_samples": 33227,
+        "num_classes": 645,
+        "file_format": "jpg",
+        "rel_weight": 1.0,
+        "aug": "pictures",
+        "bg_prob": 0.5,
+        "overlap": false,
+        "samples_per_split": [
+            31913,
+            0,
+            1314
         ],
         "thin_bg": "never",
         "quality": "high"

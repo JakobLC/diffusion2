@@ -14,7 +14,7 @@ from collections import defaultdict
 import tqdm
 from pathlib import Path
 from source.sam import (sam12_info, all_sam_setups,evaluate_sam)
-from source.utils.dataloading import (AnalogBits,load_raw_image_label,
+from source.utils.dataloading import (load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func)
 import copy
@@ -153,13 +153,19 @@ class SavedSamplesManager:
         list_of_save_dicts = [ss.save(save_path=None,return_instead_of_save=True) for ss in self.saved_samples]
         torch.save(list_of_save_dicts,save_path)
     
-    def load(self,load_path):
+    def load(self,load_path, verbose=False):
         list_of_save_dicts = torch.load(load_path)
         ss_list = []
         for save_dict in list_of_save_dicts:
             ss = SavedSamples()
             ss.load(save_dict)
             ss_list.append(ss)
+        if verbose:
+            print(f"Loaded {len(ss_list)} saved samples")
+            #print number of heavy keys
+            maxnamelen = max([len(ss.name) for ss in ss_list])
+            for ss in ss_list:
+                print(f"{ss.name:{maxnamelen}}: {len(ss.heavy_keys()):4} heavy, {len(ss.light_data):4} light")
         self.add_saved_samples(ss_list)
 
     def load_by_ids(self,model_id_match_str="*",gen_id_match_str="*",load_heavy=False,load_light=True):
@@ -317,10 +323,10 @@ class SavedSamplesManager:
             ss = self.saved_samples[k]
             ss_names.append(ss.name)
 
-            metrics_k = ss.get_light_data(didx_plot,keys=metrics_keys,return_type="list")
+            metrics_k = ss.get_light_data(didx_plot,keys=metrics_keys)
             metrics_k = concat_dict_list(metrics_k,ignore_weird_values=True)["metrics"]
             preds_k = ss.get_segmentations(didx_plot)
-            preds.append(preds_k)
+            preds.append([preds_k_i.cpu().numpy() for preds_k_i in preds_k])
             metrics.append(metrics_k)
         if resize_width is not None:
             assert isinstance(resize_width,int), "expected resize_width to be an int"
@@ -502,7 +508,7 @@ class SavedSamplesManager:
         keyslist = [["metrics",m] for m in metric_names]
         for k in ss_idx:
             ss = self.saved_samples[k]
-            metrics_k = ss.get_light_data(intersection_didx,return_type="list")
+            metrics_k = ss.get_light_data(intersection_didx)
             metrics_k = [index_with_keylist(item,keyslist) for item in metrics_k]
             metrics_k = {m: np.array(maybe_flatten([item[j] for item in metrics_k])) for j,m in enumerate(metric_names)}
             metrics.append(metrics_k)
@@ -686,9 +692,9 @@ class SavedSamplesManager:
         intersection_didx = self.intersection_didx(heavy_only=False,ss_idx=[ss_idx1,ss_idx2])
         if len(intersection_didx)==0:
             raise ValueError("No overlapping didx found")
-        vals1 = self.saved_samples[ss_idx1].get_light_data(intersection_didx,keys=[["metrics",metric1]],return_type="list")
+        vals1 = self.saved_samples[ss_idx1].get_light_data(intersection_didx,keys=[["metrics",metric1]])
         vals1 = np.array(concat_dict_list(vals1,ignore_weird_values=True)["metrics"][metric1])
-        vals2 = self.saved_samples[ss_idx2].get_light_data(intersection_didx,keys=[["metrics",metric2]],return_type="list")
+        vals2 = self.saved_samples[ss_idx2].get_light_data(intersection_didx,keys=[["metrics",metric2]])
         vals2 = np.array(concat_dict_list(vals2,ignore_weird_values=True)["metrics"][metric2])
         
         plt.scatter(vals1,vals2)
@@ -899,7 +905,8 @@ class SavedSamples:
                 name = None,
                 mem_threshold=4e9,
                 segment_key="pred_int",
-                is_ambiguous=False):
+                is_ambiguous=False,
+                np_to_torch=True):
         assert all([(x is None) or is_nontrivial_list(x) for x in [light_data,heavy_data,didx]]), "expected all of [light_data,heavy_data,didx] to be None or a non-empty list"
         self.reset()
         if any([x is not None for x in [light_data,heavy_data,didx]]):
@@ -908,6 +915,8 @@ class SavedSamples:
             self.mem_threshold = mem_threshold
         self.segment_key = segment_key
         self.is_ambiguous = is_ambiguous
+        if np_to_torch:
+            self.np_to_torch()
         if name is not None:
             self.name = name
         else:
@@ -984,6 +993,14 @@ class SavedSamples:
             return save_dict
         else:
             torch.save(save_dict,save_path)
+
+    def np_to_torch(self):
+        """Converts all heavy data to torch tensors"""
+        for i in range(len(self.heavy_data)):
+            if self.heavy_data[i] is not None:
+                for k,v in self.heavy_data[i].items():
+                    if isinstance(v,np.ndarray):
+                        self.heavy_data[i][k] = torch.from_numpy(v)
 
     def load(self,save_path_or_dict):
         if isinstance(save_path_or_dict,dict):
@@ -1083,17 +1100,17 @@ class SavedSamples:
             assert all(found), f"did not find didx={didx[idx_ints.index(-1)]}"
         return didx,idx_ints
     
-    def get_light_data(self,indexer,return_type="ordereddict",keys=None):
+    def get_light_data(self,indexer,return_type="list",keys=None):
         didx,idx = self.normalize_indexer(indexer)
         light_data = [self.light_data[i] for i in idx]
         if keys is not None:
             light_data = extract_from_dict_list(light_data,keys)
         return lists_of_dicts_as_type(didx,light_data,return_type,add_didx_to_list=keys is None)
     
-    def get_heavy_data(self,indexer,include_light_data=False,return_type="ordereddict",keys=None):
+    def get_heavy_data(self,indexer,include_light_data=False,return_type="list",keys=None):
         didx,idx = self.normalize_indexer(indexer)
         if include_light_data:
-            heavy_data = [{**self.heavy_data[i],**self.light_data[i]} for i in range(idx)]
+            heavy_data = [{**self.heavy_data[i],**self.light_data[i]} for i in idx]
         else:
             heavy_data = [self.heavy_data[i] for i in idx]
         if keys is not None:
@@ -1336,6 +1353,8 @@ class DiffSamples(SavedSamples):
         self.sample_opts = id_dict[gen_id]
         if len(self.sample_opts["raw_samples_folder"])>0:
             self.raw_samples_files = sorted(list(Path(self.sample_opts["raw_samples_folder"]).glob(glob_str)))
+            if len(self.raw_samples_files)==0:
+                warnings.warn(f"no files found in {self.sample_opts['raw_samples_folder']} with glob_str={glob_str}")
             self.mem_per_batch = os.path.getsize(self.raw_samples_files[0])
             self.mem_all = self.mem_per_batch*len(self.raw_samples_files)
         else:
@@ -1506,16 +1525,20 @@ def extract_from_sample_list(sample_list,**kwargs):
     assert isinstance(sample_list,list), "expected sample_list to be a list"
     return seperate_dict_to_list(extract_from_samples(concat_dict_list(sample_list),**kwargs))
 
-def plot_qual_seg(ims,preds,gts=None,names=None,
-                      transposed=False,
-                      resize_width=128,
-                      border=0,
-                      show_image_alone=True,
-                      alpha_mask=0.6):
+def plot_qual_seg(ims,preds,
+                  gts=None,
+                  names=None,
+                transposed=False,
+                resize_width=128,
+                border=0,
+                show_image_alone=True,
+                alpha_mask=0.6):
     """
     Function for plotting columns of different to compare segmentations.
     Ground truth is also considered a prediction.
     """
+    assert isinstance(ims,list), "expected ims to be a list"
+    assert all([isinstance(im,np.ndarray) for im in ims]), "expected all ims to be numpy arrays"
     ims = copy.deepcopy(ims)
     preds = copy.deepcopy(preds)
     if isinstance(preds,dict):
@@ -1540,6 +1563,8 @@ def plot_qual_seg(ims,preds,gts=None,names=None,
     else:
         n_methods = len(preds)
         n_samples = len(ims)
+        assert all([len(x)==n_samples for x in preds]), "expected all preds to have the same length as ims"
+        assert all([isinstance(x,np.ndarray) for pred_i in preds for x in pred_i]), "expected all preds to be numpy arrays"
         if names is None:
             names = [f"Method {i}" for i in range(n_methods)]
         imsizes = []

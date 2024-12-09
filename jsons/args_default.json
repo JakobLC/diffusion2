@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.3.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.3.1."],
+    "model_version": ["1.4.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.1."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -15,7 +15,7 @@
         "noise_schedule": ["cosine",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: cosine. "],
         "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
-        "input_scale": [0.01,                       "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float. "],
+        "input_scale": [0.1,                        "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float. DEFAULT: 0.1. "],
         "logsnr_min": [-20.0,                       "Minimum value for logsnr. TYPE: float. DEFAULT: -20.0. "],
         "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 20.0. "]
     },
@@ -26,7 +26,7 @@
         "dropout": [0.0,                            "UNet dropout probability. TYPE: float. DEFAULT: 0.0. "],
         "predict": ["x",                            "How to parmeterize x_t. TYPE: One of ['x','v','eps','both','p','p_logits']. DEFAULT: 'x'. "],
         "use_scale_shift_norm": [false,             "Should scaling and shifting of normalization layers be be used for class conditioning? otherwise simply linear addition. TYPE: boolean. DEFAULT: false. "],
-        "num_res_blocks": [3,                       "Number of residual blocks per scale. TYPE: positive integer. DEFAULT: 3. "],
+        "num_res_blocks": ["3",                     "Number of residual blocks per scale. TYPE: positive integer. DEFAULT: '3'. "],
         "num_heads": [4,                            "Number of attention heads for downsampling and middle blocks. TYPE: positive integer. DEFAULT: 4. "], 
         "num_heads_upsample": [-1,                  "Number of attention heads for upsampling. TYPE: positive integer or -1 (same as num_heads). DEFAULT: -1. "],
         "num_channels": [64,                        "Base channel number. TYPE: positive integer. DEFAULT: 64. "],
@@ -39,10 +39,12 @@
         "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
         "unet_spatialness": ["0,1,2,3" ,            "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
-        "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: ''. "],
-        "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
-        "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
-        "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "]
+        "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "],
+        "identity_init": [false,                    "Should the model be initialized with identity weights? TYPE: boolean. DEFAULT: false. "],
+        "new_upsample_method": [false,              "Should the new upsample method be used? TYPE: boolean. DEFAULT: false. "],
+        "one_skip_per_reso": [false,                "Should only one skip connection be used per resolution? TYPE: boolean. DEFAULT: false. "],
+        "patch_size": [1,                           "Size of the patches in pixels for the UNet/UViT. TYPE: positive integer. DEFAULT: 1. "],
+        "mlp_attn": [false,                         "Should the MLP instead of ResNetBlocks be used at the attention resolutions? TYPE: boolean. DEFAULT: false. "]
     },
     "Model input sampling probs (or args controlling inputs)": {
         "cond_img_size": [-1,                       "Image size for inputs given to the conditional net TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
@@ -62,8 +64,11 @@
     "training": {
         "semantic_dl_prob": [0.0,                   "Probability of the label from the dataloader being semantic, otherwise instance. TYPE: float. DEFAULT: 0.0. "],
         "lr": [0.0001,                              "Learning rate. TYPE: float. DEFAULT: 0.0001. "],
-        "loss_weights": ["SNR_plus1",               "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc']. DEFAULT: 'SNR'. "],
+        "loss_weights": ["SNR_plus1",               "Which loss weights function to use? TYPE: One of ['uniform','SNR','SNR_plus1','SNR_trunc','gamma']. DEFAULT: 'SNR'. "],
         "loss_type": ["mse",                        "Which loss type to use? TYPE: One of ['mse','ce1','ce2']. DEFAULT: 'mse'. "],
+        "loss_multiscales": [0,                     "Number of multiscales to use for the loss. TYPE: positive integer or 0 (no multiscale). DEFAULT: 0. "],
+        "decouple_loss_weights": [false,            "Should the loss weights be decoupled noise schedule? TYPE: boolean. DEFAULT: false. "],
+        "power_loss_levels": [0,                    "Number of power loss levels to use. TYPE: positive integer or 0 (no power loss). DEFAULT: 0. "],
         "betas": ["0.9,0.999",                      "Adam betas. TYPE: comma separated list of floats. DEFAULT: '0.9,0.999'. "],
         "bce_loss": [false,                         "Should BCE loss be used? TYPE: boolean. DEFAULT: false. "],
         "min_label_size": [0.0,                     "Minimum relative label mask size in relation to the image. TYPE: float. DEFAULT: 0.01. "],
@@ -106,7 +111,7 @@
         "save_best_ckpt": [true,                    "Should the best checkpoint be tracked and saved? TYPE: boolean. DEFAULT: false. "],
         "best_ckpt_metric": ["max_ari",             "Which metric to use for best checkpoint tracking. TYPE: string. DEFAULT: 'max_ari'. "],
         "best_ckpt_gen_setup_idx": [0,              "Which gen setup idx to use for best checkpoint tracking. TYPE: integer. DEFAULT: 0. "],
-        "best_ckpt_full": [false,                   "Should the full model (ema+training+opt) be saved for the best checkpoint? TYPE: boolean. DEFAULT: true. "],
+        "best_ckpt_full": [false,                   "Should the full model (ema+training+opt) be saved for the best checkpoint? TYPE: boolean. DEFAULT: false. "],
         "debug_run": ["",                           "Should a debug run be performed? TYPE: str. DEFAULT: ''"],
         "load_state_dict_loose": [false,            "Should we allow loose matching of ckpt weights (if normal state_dict() can't be matched)? TYPE: boolean. DEFAULT: false. "],
         "max_training_restarts": [3,                "Maximum number of restarts of training. TYPE: positive integer or 0 (no restarts). DEFAULT: 0. "],
@@ -128,7 +133,9 @@
         "semantic_dl_prob": {"<=1.2.1": 0.5},
         "vit_spatialness": {"<1.3.0": "0,1,2,3"},
         "p_self_cond": {"<1.3.0": 0.5},
-        "unet_spatialness": {"<1.3.1": "2,3"}
+        "unet_spatialness": {"<1.3.1": "2,3"},
+        "input_scale": {"<1.4.0": 0.01},
+        "num_res_blocks": {"<1.4.1": 3}
     },
     "deprecated": {
         "cond_type": ["none",                       "TODO, not implemented. Which conditioning type to use? TYPE: One of ['none','class','domain','both']. DEFAULT: 'none'. "],
@@ -169,7 +176,10 @@
         "self_cond_batched": [false,                "Should self conditioning be identical on a per-batch-basis? TYPE: boolean. DEFAULT: false. "],
         "self_cond": [false,                        "Should self conditioning during diffusion be used? TYPE: boolean. DEFAULT: false. "],
         "class_type": ["none",                      "Which class type to use? TYPE: One of ['none','datasets' (TODO),'num_classes']. DEFAULT: 'none'. "],
-        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "]
+        "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "],
+        "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: ''. "],
+        "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
+        "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "]
     },
     "renamed": {
         "image_prob": "p_image",
