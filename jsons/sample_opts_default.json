@@ -28,6 +28,7 @@
         "split"                       : ["vali",          "Dataset split to use for sampling. One of ['train','vali','test']. TYPE: str. DEFAULT: 'vali'"],
         "split_method"                : ["",              "Which split method to use? Empty for inhereted from model. TYPE: One of ['random','native_train','native', '']. DEFAULT: ''. "],
         "kwargs_mode"                 : ["train_image",   "How to get kwargs for the model forward passes. Either a str of comma-sep key names to use or one of ['train', 'train_image', 'only_image', 'all', 'none']. TYPE: str. DEFAULT: 'train'"],
+        "cond_num_labels"             : [-1,              "Number of labels to condition with if this is included in kwargs. -1 for #in GT. TYPE: int. DEFAULT: 1"],
         "use_image"                   : [true,            "Whether to use the image as input to the model. TYPE: bool. DEFAULT: true"],
         "postprocess"                 : ["none",          "Which postprocessing to use. One of ['none','area0.005']. TYPE: str. DEFAULT: 'none'"],
         "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],

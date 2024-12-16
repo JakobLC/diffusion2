@@ -3,7 +3,7 @@ import torch
 import os
 from PIL import Image
 from pathlib import Path
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, adjusted_rand_score
 from source.utils.dataloading import load_raw_image_label
 from scipy.optimize import linear_sum_assignment
 from skimage.morphology import binary_dilation,disk
@@ -205,7 +205,7 @@ def get_segment_metrics(pred,gt,
     assert gt.shape[0]==bs, f"pred and gt must have the same batch size. Found pred.shape={pred.shape}, gt.shape={gt.shape}"
     metric_dict = {"iou": partial(standard_iou,ignore_zero=ignore_zero),
                    "hiou": partial(hungarian_iou,ignore_zero=ignore_zero),
-                   "ari": adjusted_rand_score_stable}
+                   "ari": adjusted_rand_score}
     metrics = list(metric_dict.keys())
     #has to be defined inline for ab to be implicitly passed
 
@@ -610,8 +610,66 @@ def get_ambiguous_metrics(pred,gt,shorthand=True,reduce_to_mean=True):
     measures["iou"] = [binary_iou(*cm_ij) for cm_ij in sum(cross_mat,[])]
     measures["ari"] = [binary_ari(*cm_ij) for cm_ij in sum(cross_mat,[])]
     measures["hiou"] = [max(binary_iou(*cm_ij),binary_iou(*hiou_perm(*cm_ij))) for cm_ij in sum(cross_mat,[])]
+    measures["ncc"] = variance_ncc_dist(pred.transpose((2,0,1)),gt.transpose((2,0,1))) 
     if reduce_to_mean:
         for k,v in measures.items():
             if isinstance(v,list):
                 measures[k] = np.mean(v)
     return measures
+
+
+def variance_ncc_dist(sample_arr, gt_arr):
+    """
+    :param sample_arr: expected shape N x X x Y 
+    :param gt_arr: M x X x Y
+    :return: 
+    """
+    if len(gt_arr.shape) == 3:
+        #expand to onehot in 3rd axis
+        gt_arr = np.concatenate([1-gt_arr[...,None],gt_arr[...,None]], axis=-1)
+    if len(sample_arr.shape) == 3:
+        #expand to onehot in 3rd axis
+        sample_arr = np.concatenate([1-sample_arr[...,None],sample_arr[...,None]], axis=-1)
+    mean_seg = np.mean(sample_arr, axis=0)
+
+    N = sample_arr.shape[0]
+    M = gt_arr.shape[0]
+
+    sX = sample_arr.shape[1]
+    sY = sample_arr.shape[2]
+
+    E_ss_arr = np.zeros((N,sX,sY))
+    for i in range(N):
+        E_ss_arr[i,...] = pixel_wise_xent(sample_arr[i,...], mean_seg)
+
+    E_ss = np.mean(E_ss_arr, axis=0)
+
+    E_sy_arr = np.zeros((M,N, sX, sY))
+    for j in range(M):
+        for i in range(N):
+            E_sy_arr[j,i, ...] = pixel_wise_xent(sample_arr[i,...], gt_arr[j,...])
+
+    E_sy = np.mean(E_sy_arr, axis=1)
+
+    ncc_list = []
+    for j in range(M):
+        ncc_list.append(ncc(E_ss, E_sy[j,...]))
+    return ncc_list
+
+def pixel_wise_xent(m_samp, m_gt, eps=1e-8):
+
+
+    log_samples = np.log(m_samp + eps)
+
+    return -1.0*np.sum(m_gt*log_samples, axis=-1)
+
+def ncc(a,v, zero_norm=True, eps=1e-8):
+    a = a.flatten()
+    v = v.flatten()
+    if zero_norm:
+        a = (a - np.mean(a)) / (np.std(a) * len(a)+eps)
+        v = (v - np.mean(v)) / (np.std(v)+eps)
+    else:
+        a = (a) / (np.std(a) * len(a)+eps)
+        v = (v) / (np.std(v)+eps)
+    return np.correlate(a,v)

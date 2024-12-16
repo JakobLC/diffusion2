@@ -52,7 +52,7 @@ from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl",
                     "dummymodel","unet_print","token_info_overview","unet_input_dict",
-                    "restart_step5","no_kwargs","unet_channels","block_info"]
+                    "restart_step5","no_kwargs","unet_channels","block_info","num_params"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -127,6 +127,9 @@ class DiffusionModelTrainer:
             self.device = torch.device("cpu")
         
         self.log(f"Number of trainable parameters (UNet): {n_trainable}")
+    
+        if self.args.debug_run=="num_params":
+            exit()
 
         self.log("Saving to: "+self.args.save_path)
 
@@ -167,8 +170,10 @@ class DiffusionModelTrainer:
             assert len(self.master_params) == len(self.ema_params[0])
             
         if self.args.mode in ["cont","load","gen"]:
-            self.log_loss_scale = ckpt["log_loss_scale"]
-            self.best_metric = (ckpt["best_metric"] if ckpt["best_metric"] is not None else 0.0) if "best_metric" in ckpt.keys() else 0.0
+            self.log_loss_scale = ckpt.get("log_loss_scale",INITIAL_LOG_LOSS_SCALE)
+            self.best_metric = ckpt.get("best_metric",None)
+            if self.best_metric is None:
+                self.best_metric = float("inf") if "-" in self.args.best_ckpt_metric else float("-inf") 
             self.fixed_batch = ckpt["fixed_batch"]
             if self.args.load_state_dict_loose and self.args.mode=="load":
                 _ = load_state_dict_loose(self.model,ckpt["model"])
@@ -628,6 +633,7 @@ class DiffusionModelTrainer:
                 ckpt_exists = self.step>=self.args.save_interval
                 if ckpt_exists:
                     self.args.ckpt_name = self.last_save_name if hasattr(self,"last_save_name") else ""
+                    self.log(f"Restarting from ckpt: {self.args.ckpt_name}")
                     self.args.mode = "cont"
                     from_ckpt_step = self.step - (self.step % self.args.save_interval)
                 else:

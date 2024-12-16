@@ -13,11 +13,14 @@ special_argkeys = ["deprecated","dynamic","version_backwards_compatability","ren
 dont_load_argskeys = [k for k in special_argkeys if k!="dynamic"]
 
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
+    if ";" in s:
+        return sum([get_ckpt_name(x,saves_folder,return_multiple_matches) for x in s.split(";")],[])
     s_orig = copy.copy(s)
     if len(s)==0:
         return s
     assert not s.find("./")>=0, "name_match_str is already relative to saves_folder. Do not use ./ in name_match_str."
     # converts to format:  ver*/*/*.pt
+    print("Trying to find ckpt name from s=",s)
     num_sep = s.count("/")
     if num_sep==0:
         s = "ver-*/"+s+"/ckpt_*.pt"
@@ -31,7 +34,9 @@ def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
             s = s+".pt"
     if s.find("*") >= 0:
         matching_paths = list(Path(saves_folder).glob(bracket_glob_fix(s)))
+        print(f"Found {len(matching_paths)} matches for s={s}.")
         if len(matching_paths) == 0:
+            print("Raising ValueError.")
             raise ValueError(f"No models match the expression: {s_orig}, consider using a starred expression. The string was modified to: {s}.")
         elif len(matching_paths)==1:
             s = str(matching_paths[0])
@@ -407,7 +412,17 @@ class TieredParser():
         return args
     
     def parse_types(self, args):
-        args_dict = {k: v if isinstance(v,list) else self.type_dict[k](v) for k,v in args.items()}
+        #args_dict = {k: v if isinstance(v,list) else self.type_dict[k](v) for k,v in args.items()}
+        args_dict = {}
+        for k,v in args.items():
+            try:
+                if isinstance(v,list):
+                    args_dict[k] = [self.type_dict[k](v2) for v2 in v]
+                else:
+                    args_dict[k] = self.type_dict[k](v)
+            except:
+                print(f"Error parsing key={k} with value={v} and type={self.type_dict[k]}.")
+                raise
         args = argparse.Namespace(**args_dict)
         return args
     
@@ -458,7 +473,12 @@ def get_type_from_default(default_v):
     assert isinstance(default_v,(float,int,str,bool)), f"default_v={default_v} is not a valid type."
     if isinstance(default_v, str):
         assert default_v.find(";")<0, f"semicolon not supported in default arguments"
-        t2 = lambda x: str(x[:-1]) if x.endswith(",") else str(x)
+        def t2(x):
+            assert isinstance(x,str), f"x={x} is not a valid type."
+            if x.endswith(","):
+                return str(x[:-1])
+            else:
+                return str(x)
     else:
         t2 = type(default_v)
     t = list_wrap_type(str2bool if isinstance(default_v, bool) else t2)

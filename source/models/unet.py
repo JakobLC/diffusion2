@@ -991,6 +991,7 @@ def create_unet_from_args(args):
                 new_upsample_method=args["new_upsample_method"],
                 patch_size=args["patch_size"],
                 mlp_attn=args["mlp_attn"],
+                num_middle_res_blocks=args["num_middle_res_blocks"],
                 )
     if args["identity_init"]:
         unet.initialize_as_identity()

@@ -40,7 +40,6 @@ from source.training import DiffusionModelTrainer
 # [12] add support for non-agnostic multi dataset with analog bits
 # [14] unet add shared dynamic inputs channels and class embed instead
 # [15] fix restart logs so you keep steps up until ckpt loading
-# [16] likelihood not working with diff_channels=1
 
 def main(**modified_args):
     args = TieredParser().get_args(modified_args=modified_args)

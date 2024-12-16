@@ -122,7 +122,7 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                 table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
                 save_paths.extend([v["save_path"] for _ in range(len(match_idx))])
     if table.shape[0]==0:
-        warnings.warn("No matches found")
+        warnings.warn("Gen table is empty")
         if return_table:
             return table
         else:
@@ -140,7 +140,9 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
         for k in table.keys():
             pretty_col = ["" for _ in range(len(table["save_path"])+2)]
             
-            if table[k][0].replace(".","").isdigit() and table[k][0].find(".")>=0:
+            if (isinstance(table[k][0],str)
+                and table[k][0].replace(".","").isdigit() 
+                and table[k][0].find(".")>=0):
                 idx = slice(pretty_digit_limit+2)
             else:
                 idx = slice(None)

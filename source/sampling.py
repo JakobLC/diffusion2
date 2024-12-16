@@ -327,7 +327,7 @@ class DiffusionSampler(object):
         gt_int = gt_int.cpu()
         gt_bit = gt_bit.cpu()
         votes = torch.stack(votes,dim=0).cpu()
-        votes_int = ab_bit2int(votes)
+        votes_int = ab_bit2int(votes, **self.ab_kwargs)
         if self.opts.postprocess!="none":
             if self.opts.postprocess=="area0.005":
                 votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.005},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
@@ -443,6 +443,11 @@ class DiffusionSampler(object):
                 not_found_kwargs = [k for k in model_kwargs_use if k not in model_kwargs.keys()]
                 raise ValueError(f"Could not find the following requested kwargs from the dataloader: {not_found_kwargs}")
             model_kwargs = {k: model_kwargs[k] for k in model_kwargs_use}
+        if "num_labels" in model_kwargs.keys():
+            assert isinstance(model_kwargs["num_labels"],list), f"Labels must be a list. Found: {model_kwargs['num_labels']}"
+            for i in range(len(model_kwargs["num_labels"])):
+                if self.opts.cond_num_labels>0:
+                    model_kwargs["num_labels"][i].fill_(self.opts.cond_num_labels)
         if "points" in model_kwargs.keys():
             model_kwargs["points"] = construct_points(model_kwargs["points"],ab_int2bit(gt_int),as_tensor=False)
         return gt_int,model_kwargs,info
