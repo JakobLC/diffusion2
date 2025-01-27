@@ -18,10 +18,10 @@ from source.utils.dataloading import (load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func)
 import copy
-from source.utils.metric_and_loss import get_segment_metrics
+from source.utils.metric_and_loss import get_segment_metrics, get_ambiguous_metrics
 from source.utils.mixed import (imagenet_preprocess, ambiguous_info_from_fn,
                          load_json_to_dict_list,sam_resize_index, 
-                         postprocess_list_of_segs,wildcard_match)
+                         postprocess_list_of_segs,wildcard_match,postprocess_batch)
 from source.utils.plot import (mask_overlay_smooth, darker_color, 
                               get_matplotlib_color,index_dict_with_bool,
                               render_text_gridlike)
@@ -1001,6 +1001,14 @@ class SavedSamples:
                 for k,v in self.heavy_data[i].items():
                     if isinstance(v,np.ndarray):
                         self.heavy_data[i][k] = torch.from_numpy(v)
+    
+    def torch_to_np(self):
+        """Converts all heavy data to numpy arrays"""
+        for i in range(len(self.heavy_data)):
+            if self.heavy_data[i] is not None:
+                for k,v in self.heavy_data[i].items():
+                    if isinstance(v,torch.Tensor):
+                        self.heavy_data[i][k] = v.cpu().numpy()
 
     def load(self,save_path_or_dict):
         if isinstance(save_path_or_dict,dict):
@@ -1279,12 +1287,28 @@ class SavedSamples:
         if len(didx)<len(self.didx):
             warnings.warn(f"only {len(didx)} of {len(self.didx)} samples are postprocessed")
         heavy_data = self.get_heavy_data(didx,return_type="list")
-        if "gt" in self.heavy_keys():
+        light_data = self.get_light_data(didx,return_type="list")
+        if self.is_ambiguous:
+            gts_in_light_data = np.all(["gts_didx" in ld for ld in light_data])
+            gts_in_heavy_data = np.all(["gts_didx" in hd for hd in heavy_data])
+            gts_in_info_ld = np.all(["gts_didx" in ld.get("info",{}) for ld in light_data])
+            gts_in_info_hd = np.all(["gts_didx" in hd.get("info",{}) for hd in heavy_data])
+            if gts_in_light_data:
+                gts = [ld["gts_didx"] for ld in light_data]
+            elif gts_in_heavy_data:
+                gts = [hd["gts_didx"] for hd in heavy_data]
+            elif gts_in_info_ld:
+                gts = [ld["info"]["gts_didx"] for ld in light_data]
+            elif gts_in_info_hd:
+                gts = [hd["info"]["gts_didx"] for hd in heavy_data]
+            else:
+                gts = [hd["gt"] for hd in heavy_data]
+                #assert atleast 3 non-trivial dims in first gt
+                assert len(gts[0].squeeze().shape)>=3, f"expected at least 3 non-trivial dimensions in gt, found {gts[0].shape}"
+        elif "gt" in self.heavy_keys():
             gts = [hd["gt"] for hd in heavy_data]
         elif "raw_gt" in self.heavy_keys():
             gts = [hd["raw_gt"] for hd in heavy_data]
-        elif self.is_ambiguous and "gts_didx" in self.light_data[0].keys():
-            gts = [ld["gts_didx"] for ld in self.light_data]
         else:
             _,gts = load_raw_image_label_from_didx(didx)
             #add the gts to heavy_data
@@ -1295,14 +1319,18 @@ class SavedSamples:
         if postprocess_kwargs is None:
             segments_pp = segments
         else:
-            raise NotImplementedError("This code is broken now. Check input sizes to postprocess_list_of_segs")
-            segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
+            if self.is_ambiguous:
+                segments_pp = [postprocess_batch(s_i,seg_kwargs=postprocess_kwargs) for s_i in segments]
+            else:
+                raise NotImplementedError("Probably doesn't work, uncomment and try. Fix shapes and type")
+                segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
-            #print("gts:",[gt.shape for gt in gts[:5]])
-            #print("segs:",[seg.shape for seg in segments_pp[:5]])
             metrics = []
             for seg,gt in zip(segments_pp,gts):
-                metrics.append(get_segment_metrics(seg,gt,ambiguous=self.is_ambiguous)) 
+                if self.is_ambiguous:
+                    metrics.append(get_ambiguous_metrics(seg.permute(1,2,0).cpu().numpy(),gt))
+                else:
+                    metrics.append(get_segment_metrics(seg,gt)) 
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]
@@ -1343,13 +1371,16 @@ class DiffSamples(SavedSamples):
                 mem_threshold=4e9,
                 load_heavy=False,
                 load_light=True,
-                glob_str="raw_sample_batch*.pt"
+                glob_str="raw_sample_batch*.pt",
+                is_ambiguous=None,
                 ):
         super().__init__(mem_threshold=mem_threshold)
         id_dict = TieredParser("sample_opts").load_and_format_id_dict()
         assert gen_id in id_dict.keys(), f"gen_id {gen_id} not found in id_dict. Closest matches are {get_closest_matches(gen_id,id_dict.keys())}"
         self.gen_id = gen_id
         self.name = gen_id
+        if is_ambiguous is not None:
+            self.is_ambiguous = is_ambiguous
         self.sample_opts = id_dict[gen_id]
         if len(self.sample_opts["raw_samples_folder"])>0:
             self.raw_samples_files = sorted(list(Path(self.sample_opts["raw_samples_folder"]).glob(glob_str)))
@@ -1364,28 +1395,26 @@ class DiffSamples(SavedSamples):
         if load_heavy:
             self.load_heavy_data()
 
-    def read_heavy_data(self,read_didx=None,extract=True):
+    def read_heavy_data(self,read_didx=None,extract=True,amb_cat_key="pred_int"):
         if not (len(self.sample_opts["raw_samples_folder"])>0 and self.sample_opts["save_raw_samples"]):
             warnings.warn("no raw_samples_folder found or save_raw_samples is False")
             return None
         heavy_data = []
         didx = []
+        ack = amb_cat_key
         for i in range(len(self.raw_samples_files)):
             batch = torch.load(self.raw_samples_files[i])
             batch_didx = didx_from_info(batch["info"])
             bs = len(batch["info"])
             for b in range(bs):
                 didx_i = batch_didx[b]
-                if read_didx is None:
-                    append_b = True
-                else:
-                    append_b = didx_i in read_didx
-                if append_b:
+                if (read_didx is None) or (didx_i in read_didx):
                     item = index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b)
                     if self.heavy_available[didx_i]=="pos_loaded":
                         j = didx.index(didx_i)
-                        assert self.is_ambiguous, "Found repeat votes, but add_multi_votes is False for didx_i="+didx_i
-                        heavy_data[j]["pred_int"] = torch.cat([heavy_data[j]["pred_int"],item["pred_int"]],dim=0)
+                        assert self.is_ambiguous, "Found repeat votes, but self.is_ambiguous is False for didx_i="+didx_i
+                        assert ack in heavy_data[j].keys(), "expected pred_int to be in heavy_data[j].keys(), found "+str(heavy_data[j].keys())
+                        heavy_data[j][ack] = torch.cat([heavy_data[j][ack],item[ack]],dim=0)
                     else:
                         didx.append(didx_i)
                         heavy_data.append(item)

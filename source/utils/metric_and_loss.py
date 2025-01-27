@@ -10,6 +10,7 @@ from skimage.morphology import binary_dilation,disk
 import warnings
 from functools import partial
 from source.utils.analog_bits import ab_likelihood
+from utils.mixed import shaprint
 
 def get_all_metrics(output,ignore_zero=False,ambiguous=False,ab_kw={}):
     assert isinstance(output,dict), "output must be an output dict"
@@ -587,19 +588,26 @@ def hiou_perm(TP,FP,FN,TN):
 
 def get_ambiguous_metrics(pred,gt,shorthand=True,reduce_to_mean=True):
     """returns a dictionary of metrics for binary ambiguous segmentation"""
-    assert isinstance(gt,(np.ndarray,list,dict)), "gt must be a numpy array, list of didx strings or dict (with field gts_didx)"
+    assert isinstance(gt,(np.ndarray,list,dict)), "gt must be a numpy array, list of didx strings or dict (with field gts_didx), found type: "+str(type(gt))
     if not isinstance(gt,np.ndarray):
         if isinstance(gt,dict):
-            gt = gt["gts_didx"]
-        assert len(gt)>0, "gt must be a non-empty list of didx strings or a numpy array"
-        assert all([isinstance(gt_i,str) for gt_i in gt]), "If gt is a list, it must be a list of strings or dicts. Found types: "+str([type(gt_i) for gt_i in gt])
-        max_hw = max(pred.shape[-2:])
-        gt = np.concatenate([load_raw_image_label(gt_i,max_hw)[1] for gt_i in gt],axis=2)
-    assert isinstance(pred,np.ndarray), "pred must be a numpy array"
+            load_labels = True
+            if "amb_label" in gt:
+                gt = gt["amb_label"]
+                load_labels = False
+            else:
+                assert "gts_didx" in gt, "gt must be a dict with the field 'gts_didx' or 'amb_label'"
+                gt = gt["gts_didx"]
+        if load_labels:
+            assert len(gt)>0, "gt must be a non-empty list of didx strings or a numpy array"
+            assert all([isinstance(gt_i,str) for gt_i in gt]), "If gt is a list, it must be a list of strings or dicts. Found types: "+str([type(gt_i) for gt_i in gt])
+            max_hw = max(pred.shape[-2:])
+            gt = np.concatenate([load_raw_image_label(gt_i,max_hw)[1] for gt_i in gt],axis=2)
+    assert isinstance(pred,np.ndarray), "pred must be a numpy array, found type: "+str(type(pred))
     assert len(gt.shape)==3, "gt must be a 3D numpy array in (H,W,C_gt) format"
     assert len(pred.shape)==3, "pred must be a 3D numpy array in (H,W,C_pred) format"
-    assert gt.shape[0]==pred.shape[0], "gt and pred must have the same height"
-    assert gt.shape[1]==pred.shape[1], "gt and pred must have the same width"
+    assert gt.shape[0]==pred.shape[0], f"gt and pred must have the same height, {shaprint(gt,return_str=1,do_print=0)} vs {shaprint(pred,return_str=1,do_print=0)}"
+    assert gt.shape[1]==pred.shape[1], f"gt and pred must have the same width, {shaprint(gt,return_str=1,do_print=0)} vs {shaprint(pred,return_str=1,do_print=0)}"
     if gt.shape[2]>10 or pred.shape[2]>10:
         pass#raise ValueError("gt and pred must have at most 10 channels. This is a safety measure to prevent accidental misuse (e.g. permutation).")
     measures = collective_insight(pred,gt)
@@ -609,12 +617,17 @@ def get_ambiguous_metrics(pred,gt,shorthand=True,reduce_to_mean=True):
         measures = {shorthand_dict[k]:v for k,v in measures.items()}
     measures["iou"] = [binary_iou(*cm_ij) for cm_ij in sum(cross_mat,[])]
     measures["ari"] = [binary_ari(*cm_ij) for cm_ij in sum(cross_mat,[])]
+    measures["dice"] = [binary_dice(*cm_ij) for cm_ij in sum(cross_mat,[])]
     measures["hiou"] = [max(binary_iou(*cm_ij),binary_iou(*hiou_perm(*cm_ij))) for cm_ij in sum(cross_mat,[])]
     measures["ncc"] = variance_ncc_dist(pred.transpose((2,0,1)),gt.transpose((2,0,1))) 
     if reduce_to_mean:
         for k,v in measures.items():
             if isinstance(v,list):
-                measures[k] = np.mean(v)
+                measures[k] = np.mean(v).item()
+            #convert float64 to float
+            if isinstance(measures[k],np.float64):
+                measures[k] = measures[k].item()
+            assert isinstance(measures[k],float), f"value for k={k} must be a float, found type: {type(measures[k])}"
     return measures
 
 

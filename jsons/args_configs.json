@@ -614,6 +614,8 @@
             "no_tanh": {"final_activation": "none"},
             "loss_weights_sweep": {"loss_weights": "SNR;SNR_trunc;uniform"},
             "decoup": {"decouple_loss_weights": true, "loss_weights": "gamma"},
+            "decoup_sweep": {"decouple_loss_weights": true, "loss_weights": "gamma_-2;gamma_-1;gamma_0;gamma_1;gamma_2"},
+            "c0": {},
             "c1": {"num_res_blocks": "2,2,4,8", "channel_multiplier": "1,1,2,3", "attention_resolutions": "-1","num_middle_res_blocks": 4},
             "c2": {"num_res_blocks": "1,2,3,4", "channel_multiplier": "1,1,2,4", "attention_resolutions": "-1","num_middle_res_blocks": 4},
             "c3": {"num_res_blocks": "1,2,3,6", "channel_multiplier": "1,1,2,4", "attention_resolutions": "","num_middle_res_blocks": 4},
@@ -622,7 +624,14 @@
             "long": {"lr_decay_steps": 50000, "max_iter": 200000, "gen_setups": "lidc_amb[vali][all],lidc_amb[train]","gen_interval": 5000},
             "c4": {"num_res_blocks": "1,2,2,2,4"},
             "c5": {"num_res_blocks": "3", "channel_multiplier": "1,1,2,2,2,4", "num_middle_res_blocks": 3},
-            "c6": {"num_res_blocks": "1,1,2,2,2,4", "channel_multiplier": "1,1,2,2,2,4", "num_middle_res_blocks": 3}
+            "c6": {"num_res_blocks": "1,1,2,2,2,4", "channel_multiplier": "1,1,2,2,2,4", "num_middle_res_blocks": 3},
+            "long2": {"max_iter": 100000, "gen_setups": "lidc_amb[vali][all],lidc_amb[train]","gen_interval": 2000},
+            "gen_prob_arch": {"use_gen_prob_unet": true},
+            "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"},
+            "aug64": {"image_size": 64, "input_scale": 0.3, "crop_method": "sam_lidc64", "loss_weights": "SNR",
+                "gen_setups": "lidc_amb[vali],lidc_amb[train]"},
+            "short": {"max_iter": 25000},
+            "super_long": {"max_iter": 400000, "gen_interval": 5000, "gen_setups": "lidc_amb[vali][all],lidc_amb[train]", "lr_decay_steps": 100000}
         },
         "p_points": 0,
         "p_num_labels": 0,
@@ -643,5 +652,40 @@
         "best_ckpt_metric": "-GED",
         "p_self_cond": 0,
         "p_image": 1
+    },
+    "lidcv8": {
+        "versions": {
+            "short": {"max_iter": 25000},
+            "long": {"max_iter": 100000, "gen_setups": 
+            "lidc_amb[vali][all],lidc_amb[train]","gen_interval": 2000},
+            "super_long": {"max_iter": 400000, "gen_interval": 5000, "gen_setups": 
+            "lidc_amb[vali][all],lidc_amb[train]", "lr_decay_steps": 100000},
+            "aug64": {"image_size": 64, "input_scale": 0.3, "crop_method": "sam_lidc64"},
+            "decoup_sweep": {"decouple_loss_weights": true, "loss_weights": "gamma_-2;gamma_-1;gamma_0;gamma_1;gamma_2"},
+            "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"},
+            "gen_prob_arch": {"use_gen_prob_unet": true}
+        },
+        "p_points": 0,
+        "p_num_labels": 0,
+        "agnostic": false,
+        "diff_channels": 1,
+        "datasets": "lidc15096", 
+        "max_iter": 50000, 
+        "train_batch_size": 8, 
+        "gen_interval": 1000, 
+        "image_size": 128,
+        "lr_warmup_steps": 1000, 
+        "lr_decay_steps": 10000,
+        "num_channels": 32,
+        "input_scale": 0.1,
+        "gen_setups": "lidc_amb[vali],lidc_amb[train]",
+        "best_ckpt_metric": "-GED",
+        "p_self_cond": 0,
+        "p_image": 1,
+        "num_res_blocks": "1,2,3,4",
+        "channel_multiplier": "1,1,2,4",
+        "attention_resolutions": "-1",
+        "num_middle_res_blocks": 4,
+        "predict": "x"
     }
 }

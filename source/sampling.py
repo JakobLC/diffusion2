@@ -95,6 +95,7 @@ class DiffusionSampler(object):
                 self.gts_didx = gts_didx
                 self.dataloader = get_dataset_from_args(self.args,
                                                     self.opts.split,
+                                                    ambiguous_mode=self.opts.ambiguous_mode,
                                                     mode="pri_didx",
                                                     prioritized_didx=pri_didx)
             else:
@@ -184,7 +185,7 @@ class DiffusionSampler(object):
         assert self.opts.num_samples>=0, "num_samples must be non-negative."
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
-        assert self.opts.postprocess in ['none','area0.005'], f"postprocess={self.opts.postprocess} is not a valid option."
+        assert self.opts.postprocess in ['none','area0.005','rel_area0.5'], f"postprocess={self.opts.postprocess} is not a valid option."
 
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
@@ -222,7 +223,7 @@ class DiffusionSampler(object):
                                             save_i_steps=self.save_i_steps,
                                             save_i_idx=[bq["save_inter_steps"] for bq in batch_queue],
                                             guidance_kwargs=self.opts.guidance_kwargs,
-                                            save_entropy=True,
+                                            save_entropy=self.opts.save_entropy,
                                             replace_padding=self.opts.replace_padding,
                                             imshape=[info_i["imshape"] for info_i in info],
                                             )
@@ -231,7 +232,8 @@ class DiffusionSampler(object):
                 self.run_on_single_batch(sample_output,batch_queue,x_init,gt_bit,model_kwargs,batch_ite,info)
                 for i in range(sample_output["pred_bit"].shape[0]):
                     votes.append(sample_output["pred_bit"][i])
-                    entropy.append(sample_output["entropy"][i] if "entropy" in sample_output.keys() else None)
+                    if "entropy" in sample_output.keys():
+                        entropy.append(sample_output["entropy"][i])
                     if batch_queue[i]["vote"]==self.opts.num_votes-1:
                         model_kwargs_i = {k: 
                                           (model_kwargs[k][i] if model_kwargs[k] is not None else None) 
@@ -331,9 +333,8 @@ class DiffusionSampler(object):
         if self.opts.postprocess!="none":
             if self.opts.postprocess=="area0.005":
                 votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.005},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
-            elif self.opts.postprocess=="relarea0.5":
-                raise NotImplementedError("relarea0.5")
-                votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.5},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
+            elif self.opts.postprocess=="rel_area0.5":
+                votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_rel_area", "min_area": 0.5},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
             else:
                 raise ValueError(f"postprocess={self.opts.postprocess} is not a valid option.")
         if self.opts.ambiguous_mode:
@@ -343,7 +344,14 @@ class DiffusionSampler(object):
         ign0 = not self.args.agnostic
         if self.opts.ambiguous_mode:
             metrics = get_ambiguous_metrics(apply_mask(votes_int,info["imshape"]).squeeze(1).permute(1,2,0).cpu().numpy(),info,
-                                            reduce_to_mean=False)
+                                            reduce_to_mean=True)
+            if self.opts.add_amb_postprocess_metrics:
+                areas = [votes_int[i].float().mean().item() for i in range(votes_int.shape[0])]
+                max_area = max(areas)
+                votes_int_pp = torch.stack([v_i if a>0.5*max_area else torch.zeros_like(v_i) for v_i,a in zip(votes_int,areas)])
+                metrics_pp = get_ambiguous_metrics(apply_mask(votes_int_pp,info["imshape"]).squeeze(1).permute(1,2,0).cpu().numpy(),info,
+                                            reduce_to_mean=True)
+                metrics.update({f"{k}_pp": v for k,v in metrics_pp.items()})
         else:
             metrics = []
             for i in range(len(votes)):
@@ -353,7 +361,8 @@ class DiffusionSampler(object):
                     metrics_i = get_segment_metrics(votes_int[i],gt_int,mask=mask,ignore_zero=ign0)
                 metrics.append(metrics_i)
             metrics = {k: [m[k] for m in metrics] for k in metrics[0].keys()}
-        metrics["entropy"] = entropy
+        if len(entropy)>0:
+            metrics["entropy"] = entropy
         save_sample = self.opts.return_samples or bqi["save_grid"]
         if save_sample:
             self.samples.append({"pred_bit": votes,

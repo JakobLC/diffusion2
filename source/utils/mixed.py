@@ -544,7 +544,12 @@ def postprocess_batch(seg_tensor,seg_kwargs={},overwrite=False,keep_same_type=Tr
         crop_slice = tuple(crop_slice)
         list_of_segs.append(transform(seg_tensor[i])[crop_slice])
         crop_slices.append(crop_slice)
-    list_of_segs = postprocess_list_of_segs(list_of_segs,seg_kwargs=seg_kwargs,overwrite=overwrite)
+    if seg_kwargs.get("mode","")==("min_rel_area"):
+        areas = [seg.mean() for seg in list_of_segs]
+        area_thresh = max(areas)*seg_kwargs.get("min_area",0.5)
+        list_of_segs = [seg if area>area_thresh else np.zeros_like(seg) for seg,area in zip(list_of_segs,areas)]
+    else:
+        list_of_segs = postprocess_list_of_segs(list_of_segs,seg_kwargs=seg_kwargs,overwrite=overwrite)
     
     if keep_same_type:
         if input_mode=="torch":
@@ -610,11 +615,21 @@ def postprocess_seg(seg,
     np.ndarray, shape (H,W) or (H,W,1), dtype np.uint8
         The postprocessed segmentation.
     """
-    assert mode in ["num_objects", "min_area", "gauss_raw", "gauss_survive"], f"expected mode to be one of ['num_objects', 'min_area', 'gauss_raw', 'gauss_survive'], found {mode}"
+    assert mode in ["num_objects", "min_area", "gauss_raw", "gauss_survive","min_rel_area"], f"expected mode to be one of ['num_objects', 'min_area', 'gauss_raw', 'gauss_survive'], found {mode}"
     assert replace_with in ["gauss", "new", "nearest"], f"expected replace_with to be one of ['gauss', 'new', 'nearest'], found {replace_with}"
+    if torch.is_tensor(seg):
+        was_torch = True
+        seg = seg.cpu().numpy()
+    else:
+        was_torch = False
     assert isinstance(seg,np.ndarray), "expected seg to be an np.ndarray"
     assert seg.dtype==np.uint8
-    assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1)
+    if mode!="min_rel_area":
+        assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1)
+    else:
+        assert len(seg.shape)==3 and seg.shape[-1]>1, "expected seg to be of shape (H,W,C) with C>1, found "+str(seg.shape)
+        if seg.shape[2]>seg.shape[0] or seg.shape[2]>seg.shape[1]:
+            warnings.warn("Expected the channel dimension to be smaller and last than spacial dims. Found shape: "+str(seg.shape))
     if not overwrite:
         seg = seg.copy()
     gauss_seg = None
@@ -638,6 +653,14 @@ def postprocess_seg(seg,
         gauss_seg = segmentation_gaussian_filter(seg,sigma=sigma_in_pixels)
         uq = np.unique(gauss_seg)
         remove_mask = np.logical_not(np.isin(seg,uq))
+    elif mode=="min_rel_area":
+        areas = seg.mean(axis=(0,1))
+        area_thresh = max(areas)*min_area
+        seg_new = []
+        for i in range(len(areas)):
+            seg_new.append(seg[:,:,i] if areas[i]>area_thresh else np.zeros_like(seg[:,:,i]))
+        seg = np.stack(seg_new,axis=-1)
+
     if np.all(remove_mask):
         return np.zeros_like(seg)
     replace_vals = None
@@ -652,6 +675,8 @@ def postprocess_seg(seg,
         elif replace_with=="gauss":
             replace_vals = segmentation_gaussian_filter(seg,sigma=sigma_in_pixels,skip_spatial=remove_mask)
         seg[remove_mask] = replace_vals[remove_mask]
+    if was_torch:
+        seg = torch.tensor(seg)
     return seg
 
 def quantile_normalize(x, alpha=0.001, q=None):

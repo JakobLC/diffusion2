@@ -21,7 +21,7 @@ import tqdm
 #from source.models.cond_vit import ModelInputKwargs, cond_image_keys, cond_image_prob_keys, dynamic_image_keys
 from source.utils.mixed import (load_json_to_dict_list, save_dict_list_to_json,
                                 sam_resize_index,is_nan_float,get_named_datasets, 
-                                nice_split,str_to_seed)
+                                nice_split,str_to_seed,ambiguous_info_from_fn)
 from source.utils.argparsing import get_current_default_version,load_existing_args,TieredParser
 import shutil
 import pandas as pd
@@ -187,7 +187,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       load_cond_probs=None,
                       load_matched_items=True,
                       save_matched_items=False,
-                      imagenet_norm=True):
+                      imagenet_norm=True,
+                      ambiguous_mode=False,):
+        self.ambiguous_mode = ambiguous_mode
         self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
         self.load_cond_auto = load_cond_probs is not None
@@ -219,10 +221,12 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.save_matched_items = save_matched_items
         self.load_matched_items = load_matched_items
         self.gen_mode = False
-        assert crop_method in ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big"]
+        legal_crops = ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big","sam_lidc64"]
+        assert crop_method in legal_crops, f"crop_method must be one of {legal_crops}, got {crop_method}"
         if crop_method.startswith("sam"):
             self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
             self.sam_aug_big = get_sam_aug(1024,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
+            self.lidc64_aug = get_lidc64_aug()
         else:
             raise NotImplementedError("crop_method not implemented for non-sam")
         self.crop_method = crop_method
@@ -713,7 +717,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         """takes a uint8 label map and depending on the method, maps
         each label to a number between 0 and max_num_classes-1. also
         keeps track of which classes correspond to idx and adds this 
-        dict to info.""" 
+        dict to info."""
         has_cond = len(info.get("cond",{}))>0
         semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
         info["semantic"] = semantic
@@ -730,7 +734,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
         class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic,info=info)
         label = label.astype(int)
         label[label==self.padding_idx] = -1
-        label = np.vectorize(old_to_new.get)(label)
+        if not self.ambiguous_mode:
+            label = np.vectorize(old_to_new.get)(label)
 
         info["idx_to_class_name"] = idx_to_class_name
         info["idx_to_dataset_idx"] = idx_to_dataset_idx
@@ -768,8 +773,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
     def preprocess(self,image,label,info):
         #if image is smaller than image_size, pad it
         if self.crop_method.startswith("sam"):
+            image,label = self.augment(image,label,info)
             if self.crop_method=="sam_big":
                 augmented = self.sam_aug_big(image=image,mask=label)
+            elif self.crop_method=="sam_lidc64":
+                augmented = self.lidc64_aug(image=image,mask=label)
             else:
                 assert self.crop_method=="sam_small"
                 augmented = self.sam_aug_small(image=image,mask=label)
@@ -854,6 +862,18 @@ class SegmentationDataset(torch.utils.data.Dataset):
                                 v[2]] for k,v in info["cond"].items()}
         return image,label,info
     
+    def load_all_ambiguous_labels(self,info):
+        i = info["i"]
+        fn_info = ambiguous_info_from_fn(info["fn"])
+        labels = []
+        for j in range(-fn_info["m_i"],fn_info["m_tot"]-fn_info["m_i"]):
+            idx = i+j
+            label_path = os.path.join(self.data_root,
+                                      info["dataset_name"],
+                                      os.path.join("f"+str(idx//1000),str(idx)+"_la.png"))
+            labels.append(open_image_fast(label_path,num_channels=0))
+        return np.stack(labels,axis=-1),fn_info["m_i"]
+
     def __getitem__(self, idx):
         idx,load_cond,load_cond_probs,is_cond_call = self.process_input(idx)
         info = copy.deepcopy(self.items[idx])
@@ -863,7 +883,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image_path = os.path.join(self.data_root,dataset_name,info["image_path"])
         label_path = os.path.join(self.data_root,dataset_name,info["label_path"])
         image = open_image_fast(image_path,num_channels=3)
-        label = open_image_fast(label_path,num_channels=0) #num_channels=0 means 2D
+        if self.ambiguous_mode:
+            label,m_i = self.load_all_ambiguous_labels(info)
+        else:
+            label = open_image_fast(label_path,num_channels=0) #num_channels=0 means 2D
+
         image,label = self.preprocess(image,label,info)
         if is_cond_call:
             if not self.crop_method.startswith("sam"):
@@ -873,9 +897,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
         if not self.crop_method.startswith("sam"): #TODO, not implemented
             image,label = self.augment(image,label,info)
             image = image.astype(np.float32)*(2/255)-1
-        
+        if self.ambiguous_mode:
+            info["amb_label"] = label
+            label = label[:,:,m_i]
         image,label,info = self.images_to_torch(image,label,info)
-        
         info["image"] = image
         if self.sfi>=0:
             if info["sam"][self.sfi]:
@@ -955,6 +980,12 @@ def get_sam_aug(size,padval=255,imagenet_norm_p=1):
                                    p=1, 
                                    position=A.PadIfNeeded.PositionType.TOP_LEFT)])
     return sam_aug
+
+def get_lidc64_aug():
+    lidc64_aug = A.Compose([A.RandomCrop(width=64, height=64, always_apply=True, p=1),
+                     A.Normalize(always_apply=True, p=1),
+                     ])
+    return lidc64_aug
 
 def open_image_fast(image_path,
                     num_channels=None):
@@ -1123,6 +1154,7 @@ def get_dataset_from_args(args_or_model_id=None,
                           mode="training",
                           return_type="dli",
                           load_cond_probs_override=None,
+                          ambiguous_mode=False,
                           ):
     if args_or_model_id is None:
         #use default args with data
@@ -1168,6 +1200,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             save_matched_items=args.dataloader_save_processing,
                             shuffle_labels=args.agnostic,
                             imagenet_norm=args.imagenet_norm,
+                            ambiguous_mode=ambiguous_mode,
                             )
     if return_type=="ds":
         return ds

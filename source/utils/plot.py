@@ -42,7 +42,9 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    include_mode="last",
                    record_from_sample_opts=[],
                    record_from_args=[],
-                   sort_by_key=["save_path"]):
+                   sort_by_key=["save_path"],
+                   do_map_to_float=True,
+                   round_digits=3):
     if isinstance(record_from_sample_opts,str):
         record_from_sample_opts = [record_from_sample_opts]
     if isinstance(record_from_args,str):
@@ -72,8 +74,6 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                 data = np.genfromtxt(str(fn), dtype=str, delimiter=",")[1:]
                 if data.size==0:
                     continue
-                if "gen_id" not in column_names:
-                    ConnectionRefusedError
                 if search_gen_setups_instead:
                     file_gen_ids = data[:,column_names.index("gen_setup")].astype(str)
                 else:
@@ -112,7 +112,7 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                         column_names.append(rfa)
                 if len(record_from_sample_opts)>0:
                     column_names += record_from_sample_opts
-                    empty_array = np.array(["" for _ in range(match_data_s.shape[0])]).reshape(-1,1)
+                    empty_array = np.array(["" for _ in range(match_data_s.shape[0])]).reshape(-1,1).repeat(len(record_from_sample_opts),axis=1)
                     match_data_s = np.concatenate([match_data_s,empty_array],axis=1)
                     gen_id_list = match_data_s[:,column_names.index("gen_id")].tolist()
                     for mds_i,gen_id in enumerate(gen_id_list):
@@ -121,12 +121,19 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                             match_data_s[mds_i,column_names.index(rfso)] = sample_opts[rfso]
                 table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
                 save_paths.extend([v["save_path"] for _ in range(len(match_idx))])
+            else:
+                warnings.warn(f"Could not find file {fn}")
     if table.shape[0]==0:
         warnings.warn("Gen table is empty")
         if return_table:
             return table
         else:
             return
+    else:
+        if do_map_to_float:
+            table = table.map(map_to_float)
+        if round_digits>0:
+            table = table.round(round_digits)
     table["save_path"] = save_paths
     if isinstance(sort_by_key,str):
         sort_by_key = sort_by_key.split(",")
@@ -163,6 +170,11 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
     if return_table:
         return table_pd
 
+def map_to_float(x):
+    try:
+        return float(x)
+    except:
+        return x
 
 def get_dtype(vec):
     vec0 = vec[0]
@@ -461,17 +473,17 @@ def plot_inter(foldername,sample_output,model_kwargs,save_i_idx=None,plot_text=F
         batch_size = len(save_i_idx)
     image_size = sample_output["pred_bit"].shape[-1]
     
-    im = np.zeros((batch_size,image_size,image_size,3))+0.5
+    """im = np.zeros((batch_size,image_size,image_size,3))+0.5
     aboi = lambda x,i: mask_overlay_smooth(im[i],ab_bit2prob(x.unsqueeze(0),**ab_kw)[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
     points_aboi = lambda x,i: aboi(pretty_point(x),i)
     normal_image2 = lambda x,i: normal_image(x,imagenet_stats=imagenet_stats)
     map_dict = {"x_t": aboi,
                 "pred_bit": aboi,
-                "pred_bit": aboi,
                 "gt_bit": aboi,
                 "pred_eps": aboi,
                 "image": normal_image2,
-                "points": points_aboi}
+                "points": points_aboi}"""
+    map_dict = get_map_dict(imagenet_stats,ab_kw)
     zero_image = np.zeros((image_size,image_size,3))
     has_classes = contains_nontrivial_key_val("classes",model_kwargs)
     if not os.path.exists(foldername):
@@ -480,17 +492,17 @@ def plot_inter(foldername,sample_output,model_kwargs,save_i_idx=None,plot_text=F
     num_inter_exists = len(glob.glob(bracket_glob_fix(os.path.join(foldername,"intermediate_*.png"))))
     for i in range(batch_size):
         ii = save_i_idx[i]
-        images = [[map_dict["gt_bit"](sample_output["gt_bit"][ii],i)],
-                  [map_dict["pred_bit"](sample_output["pred_bit"][ii],i)],
-                  [map_dict["image"](model_kwargs["image"][ii],i)] if contains_nontrivial_key_val("image",model_kwargs) else [zero_image]]
-        images[0].append(map_dict["points"](model_kwargs["points"][ii],i) if contains_nontrivial_key_val("points",model_kwargs) else zero_image)
+        images = [[map_dict["gt_bit"](sample_output["gt_bit"][ii])],
+                  [map_dict["pred_bit"](sample_output["pred_bit"][ii])],
+                  [map_dict["image"](model_kwargs["image"][ii])] if contains_nontrivial_key_val("image",model_kwargs) else [zero_image]]
+        images[0].append(map_dict["points"](model_kwargs["points"][ii]) if contains_nontrivial_key_val("points",model_kwargs) else zero_image)
         images[1].append(zero_image)
         images[2].append(zero_image)
         text = [["gt_bit"],["final pred_bit"],["image"]]
         for k_i,k in enumerate(["x_t","pred_bit","pred_eps"]):
             for j in range(num_timesteps):
                 if k in sample_output["inter"].keys():
-                    images[k_i].append(map_dict[k](sample_output["inter"][k][j][i],i))
+                    images[k_i].append(map_dict[k](sample_output["inter"][k][j][i]))
                     text_j = ("    t=" if j==0 else "")+f"{t[j]:.2f}" if k_i==0 else ""
                     text[k_i].append(text_j)
                 else:
@@ -564,7 +576,8 @@ def plot_grid(filename,
                 for j in range(num_votes):
                     images.extend([map_dict[k](output[k][i][j]) for i in range(bs)])
                     text1 = [k if text_inside else ""]+[""]*(bs-1)
-                    text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
+                    #text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
+                    text2 = ["" for i in range(bs)]
                     if j==0:
                         text1[0] = f"{measure}="+text1[0]
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
@@ -615,15 +628,20 @@ def bit_to_np(x,ab_kw):
 
 def get_map_dict(imagenet_stats,ab_kw):
     imgn_s = imagenet_stats
-    aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab_kw),alpha_mask=1.0)
+    nb = ab_kw.get("num_bits",6)
+    if nb==1 or nb==3:
+        aboi = lambda x: normal_image(x,imagenet_stats=False)
+    else:
+        aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab_kw),alpha_mask=1.0)
     aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3],ab_kw),alpha_mask=0.6)
     points_aboi = lambda x: aboi(pretty_point(x))
     err_im = lambda x: error_image(x)
     lik_im = lambda x: likelihood_image(x)
     normal_image2 = lambda x: normal_image(x,imagenet_stats=imagenet_stats)
-    aboi_keys = "x_t,pred_bit,pred_eps,gt_bit,eps,self_cond".split(",")
+    aboi_keys = "x_t,pred_bit,pred_eps,gt_bit,gt_eps,self_cond".split(",")
     map_dict = {"image": normal_image2,
                 "err_x": err_im,
+                "err_eps": err_im,
                 "points": points_aboi,
                 "likelihood": lik_im}
     for k in aboi_keys:
@@ -641,8 +659,8 @@ def plot_forward_pass(filename,
                       sort_samples_by_t=True,
                       sample_names=None,
                       imagenet_stats=True,
-                      show_keys=["image","gt_bit","pred_bit","err_x","likelihood","self_cond",
-                                 "points"]+dynamic_image_keys,
+                      show_keys=["image","gt_bit","pred_bit","err_x","likelihood","pred_eps","gt_eps","x_t",
+                                 "self_cond","points"]+dynamic_image_keys,
                       ab_kw={}):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
@@ -665,8 +683,8 @@ def plot_forward_pass(filename,
         assert len(output[k])==bs, f"expected output[{k}].shape[0] to be {bs}, found {output[k].shape[0]}"
         assert output[k].shape[-1]==image_size, f"expected output[{k}].shape[2] to be {image_size}, found {output.shape[2]}"
         assert output[k].shape[-2]==image_size, f"expected output[{k}].shape[1] to be {image_size}, found {output.shape[1]}"
-        output[k] = output[k][:bs]
         assert k in map_dict.keys(), f"No plotting method found in map_dict for key {k}"
+        output[k] = output[k][:bs]
     mask = (output["loss_mask"].to(output["gt_bit"].device) if "loss_mask" in output.keys() else 1.0)
     output["err_x"] = (output["pred_bit"]-output["gt_bit"])*mask
     if "mse_x" not in metrics.keys():

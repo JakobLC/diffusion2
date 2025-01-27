@@ -1,9 +1,8 @@
 import copy
-import functools
 import os
 from pathlib import Path
-import psutil
 import numpy as np
+import psutil
 import torch
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -12,9 +11,7 @@ import jlc
 import traceback
 import torch.nn.functional as F
 import json
-import argparse
 import time
-from pprint import pprint
 from source.utils.fp16 import (
     make_master_params,
     master_params_to_model_params,
@@ -22,24 +19,21 @@ from source.utils.fp16 import (
     unflatten_master_params,
     zero_grad,
 )
-import datetime
 from source.utils.argparsing import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
 from source.sampling import DiffusionSampler
-from source.utils.plot import plot_forward_pass,make_loss_plot,mask_overlay_smooth
-from source.utils.dataloading import (CatBallDataset, custom_collate_with_info, 
-                      SegmentationDataset, points_image_from_label,
+from source.utils.plot import plot_forward_pass,make_loss_plot
+from source.utils.dataloading import (points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
-from source.models.unet import (create_unet_from_args, get_sam_image_encoder, ModelInputKwargs, 
-                            dynamic_image_keys, cond_kwargs_int2bit)
+from source.models.unet import (create_unet_from_args, get_sam_image_encoder, 
+                    ModelInputKwargs, dynamic_image_keys, cond_kwargs_int2bit)
 from source.cont_gaussian_diffusion import create_diffusion_from_args
 from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
-                   format_relative_path,set_random_seed,is_infinite_and_not_none,
-                   get_time,AlwaysReturnsFirstItemOnNext,format_save_path,
-                   shaprint,to_dev,model_arg_is_trivial,nice_split,imagenet_preprocess,
-                   sam_resize_index, prettify_classname,fix_clip_matrix_in_state_dict,
-                   format_model_kwargs,unet_kwarg_to_tensor, keep_step_rows_and_save)
+                    format_relative_path,set_random_seed,is_infinite_and_not_none,
+                    get_time,AlwaysReturnsFirstItemOnNext,format_save_path,shaprint,
+                    to_dev,nice_split,prettify_classname,fix_clip_matrix_in_state_dict,
+                    format_model_kwargs,unet_kwarg_to_tensor, keep_step_rows_and_save)
 from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss import get_all_metrics, get_likelihood
 from torchvision.transforms.functional import resize
@@ -70,6 +64,8 @@ class DiffusionModelTrainer:
             print(self.args.model_name)
             self.exit_flag = True
             return
+        elif self.args.debug_run=="anomaly":
+            torch.autograd.set_detect_anomaly(True)
         
         if self.args.debug_run=="restart_step5" and sum([s.find("event=restart")>=0 for s in self.args.training_history])==0:
             self.restart_step5 = True
@@ -169,12 +165,11 @@ class DiffusionModelTrainer:
         
             assert len(self.master_params) == len(self.ema_params[0])
             
-        if self.args.mode in ["cont","load","gen"]:
+        if self.args.mode in ["cont","load"]:
             self.log_loss_scale = ckpt.get("log_loss_scale",INITIAL_LOG_LOSS_SCALE)
             self.best_metric = ckpt.get("best_metric",None)
             if self.best_metric is None:
                 self.best_metric = float("inf") if "-" in self.args.best_ckpt_metric else float("-inf") 
-            self.fixed_batch = ckpt["fixed_batch"]
             if self.args.load_state_dict_loose and self.args.mode=="load":
                 _ = load_state_dict_loose(self.model,ckpt["model"])
                 self.master_params = self._state_dict_to_master_params(self.model.state_dict())
@@ -190,7 +185,13 @@ class DiffusionModelTrainer:
                     if "ema_"+str(ema_rate) in ckpt.keys():
                         self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
             self.model_params = list(self.model.parameters())
-            
+        elif self.args.mode=="gen":
+            self.model.load_state_dict(ckpt["model"])
+            self.master_params = self._state_dict_to_master_params(ckpt["model"])
+            for i, ema_rate in enumerate(self.ema_rates):
+                if "ema_"+str(ema_rate) in ckpt.keys():
+                    self.ema_params[i] = self._state_dict_to_master_params(ckpt["ema_"+str(ema_rate)])
+            self.model_params = list(self.model.parameters())
 
         self.list_of_sample_opts = []
         for gen_setup in self.args.gen_setups.split(","):
@@ -201,12 +202,11 @@ class DiffusionModelTrainer:
             self.step = 0
             self.log_loss_scale = INITIAL_LOG_LOSS_SCALE
             self.best_metric = float("inf") if "-" in self.args.best_ckpt_metric else float("-inf") # minus is minimization instead of maximization
-            self.fixed_batch = None
             self.log_kv_step(self.args.log_train_metrics.split(","))
             save_args(self.args,do_nothing=(Path(self.args.save_path)/"args.json").exists())
             self.update_training_history(f"event={self.args.mode}, step={self.step}, time={get_time()}")
         elif self.args.mode in ["cont","gen"]:
-            self.step = ckpt["step"]
+            self.step = ckpt.get("step",0)
             self.args.model_id = json.loads((Path(self.args.save_path)/"args.json").read_text())[0]["model_id"]
             #if sample_opts file exists, replace the gen_ids with the ones from the file
             id_dict = TieredParser("sample_opts").load_and_format_id_dict()
@@ -231,7 +231,6 @@ class DiffusionModelTrainer:
         elif self.args.mode=="data":
             self.log("Data mode, no training loop.")
             self.step = 0
-            self.fixed_batch = None
 
         self.restart_flag = False
         self.log("Init complete.")
@@ -244,8 +243,6 @@ class DiffusionModelTrainer:
             if self.args.debug_run=="no_dl":
                 dataloader = AlwaysReturnsFirstItemOnNext(dataloader)
                 setattr(self,split+"_dl",dataloader)
-            elif self.args.debug_run=="anomaly":
-                torch.autograd.set_detect_anomaly(True)
             elif self.args.debug_run=="only_dl":
                 for _ in tqdm(dataloader):
                     pass
@@ -279,8 +276,7 @@ class DiffusionModelTrainer:
                      "model": self._master_params_to_state_dict(self.master_params),
                      "optimizer": self.opt.state_dict(),
                      "log_loss_scale": self.log_loss_scale,
-                     "best_metric": self.best_metric,
-                     "fixed_batch": self.fixed_batch}
+                     "best_metric": self.best_metric}
         for ema_rate, params in zip(self.ema_rates, self.ema_params):
             save_dict["ema_"+str(ema_rate)] = self._master_params_to_state_dict(params)
         save_name = str(Path(self.args.save_path)/f"{name_str}{additional_str}{self.step:06d}.pt")
@@ -320,7 +316,10 @@ class DiffusionModelTrainer:
         else:
             x = x.to(self.device)
         if hasattr(self,"model"):
-            used_inputs = list(self.model.unet_input_dict.keys())
+            if type(self.model).__name__=="GenProbUNet":
+                used_inputs = ["image"]
+            else:
+                used_inputs = list(self.model.unet_input_dict.keys())
         else:
             mik = ModelInputKwargs(self.args)
             mik.construct_kwarg_table()
@@ -828,7 +827,8 @@ class DiffusionModelTrainer:
                 else:
                     metric_kvs[k] = v
             for m in max_reduction_measures:
-                metric_kvs["max_"+m] = [max(v) for v in metric_dict[m]]
+                if isinstance(metric_dict[m][0],list):
+                    metric_kvs["max_"+m] = [max(v) for v in metric_dict[m]]
             self.kvs_gen_buffer.update(metric_kvs)
             #maybe save best ckpt
             if (self.args.mode!="gen" and 
@@ -859,7 +859,7 @@ def trainer_from_sample_opts(sample_opts,verbose=True):
     if verbose: print(str(Path(ckpt_name).parent / "args.json"))
     model_id = load_existing_args(str(Path(ckpt_name).parent / "args.json"),"args",verify_keys=False).model_id
     if verbose: print("\nmodel_id:",model_id)
-    args = load_existing_args(model_id,"args",verify_keys=True)
+    args = load_existing_args(model_id,"args",verify_keys=False)
     if sample_opts.seed>=0:
         args.seed = sample_opts.seed
     args.mode = "gen"

@@ -12,9 +12,11 @@ from shutil import rmtree
 special_argkeys = ["deprecated","dynamic","version_backwards_compatability","renamed"]
 dont_load_argskeys = [k for k in special_argkeys if k!="dynamic"]
 
+to_list_if_str = lambda x: [x] if isinstance(x,str) else x
+
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     if ";" in s:
-        return sum([get_ckpt_name(x,saves_folder,return_multiple_matches) for x in s.split(";")],[])
+        return sum([to_list_if_str(get_ckpt_name(x,saves_folder,return_multiple_matches)) for x in s.split(";")],[])
     s_orig = copy.copy(s)
     if len(s)==0:
         return s
@@ -192,7 +194,7 @@ def str2bool(v):
             raise argparse.ArgumentTypeError("Cannot convert string: {} to bool".format(v))
     else:
         raise argparse.ArgumentTypeError("boolean value expected")
-
+    
 def str_with_semicolon_version(v):
     """
     Converts strings of the type 
@@ -230,7 +232,48 @@ def str_with_semicolon_version(v):
             v_out += s1+"["+s2+"]"+s3+";"
     v_out = v_out[:-1]
     return v_out.split(";")
+"""
+def str_with_semicolon_version(v):
+    assert "\x01" not in v, "v contains special character \x01, not allowed"
+    if ";" not in v:
+        return v
+    assert v.count("[")==v.count("]"), f"v={v} has mismatched brackets."
+    if v.count("[")==0:
+        return v
+    #replace semicolons outside brackets with a special character: \x01
+    v = list(v)
+    for i in range(len(v)):
+        if v[i]==";" and v[:i].count("[")==v[:i].count("]"):
+            v[i] = "\x01"
+    v = "".join(v)
+    if "\x01" in v:
+        return [str_with_semicolon_version(v_i) for v_i in v.split("\x01")]
+    #find first bracket with semicolon
+    bracket_start = -1
+    for i in range(v.count("[")):
+        bracket_start = v.find("[",bracket_start+1)
+        bracket_end = v.find("]",bracket_start)
+        if contains_semicolon := ";" in v[bracket_start+1:bracket_end]:
+            break
+            
+    if contains_semicolon:
+        split_contents = v[bracket_start+1:bracket_end].split(";")
+        return [str_with_semicolon_version(v[:bracket_start+1]+contents+v[bracket_end:]) for contents in split_contents]
+    else:
+        return v
+    
+def flatten_nested_list(nested_list):
+    flat_list = []
+    for item in nested_list:
+        if isinstance(item, list):
+            flat_list.extend(flatten_nested_list(item))
+        else:
+            flat_list.append(item)
+    return flat_list
 
+def str_with_semicolon_version_list(v):
+    return ";".join(flatten_nested_list(str_with_semicolon_version(v)))
+"""
 class TieredParser():
     def __init__(self,name="args",
                  tiers_dict={"modified_args": 0,
@@ -373,7 +416,7 @@ class TieredParser():
             assert "+"+pn in name_based_args.keys(), f"plus_name={pn} not found in name_based_args."
             plus_name_args.update(name_based_args["+"+pn])
         if "versions" in root_name_args.keys():
-                del root_name_args["versions"]
+            del root_name_args["versions"]
         return root_name_args, plus_name_args, ver_name_args
 
     def get_args(self,alt_parse_args=None,modified_args={}):

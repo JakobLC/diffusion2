@@ -16,6 +16,7 @@ from source.utils.mixed import (model_arg_is_trivial, nice_split, assert_one_to_
 from source.utils.analog_bits import ab_int2bit
 from source.models.nn import (SiLU,conv_nd,linear,avg_pool_nd,zero_module,normalization,
                               timestep_embedding,checkpoint,identity_module,total_model_norm)
+from source.models.gen_prob_unet import GenProbUNet
 import pandas as pd
 import warnings
 from argparse import Namespace
@@ -927,7 +928,7 @@ class UNetModel(nn.Module):
 def create_unet_from_args(args):
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
-    
+
     if args["channel_multiplier"]=="auto":
         image_size = args["image_size"]
         if image_size == 256:
@@ -971,6 +972,18 @@ def create_unet_from_args(args):
         #raise NotImplementedError("DummyModel not implemented")
         unet = DummyModel(out_channels)
     
+    if args["final_activation"]=="tanh_if_x":
+        if args["predict"]=="x":
+            final_act = "tanh"
+        else:
+            final_act = "none"
+    else:
+        final_act = args["final_activation"]
+
+
+    if args["use_gen_prob_unet"]:
+        return GenProbUNet(final_act=final_act)
+
     mik = ModelInputKwargs(args)
     mik.construct_kwarg_table()
     unet_input_dict = mik.get_input_dict()
@@ -984,7 +997,7 @@ def create_unet_from_args(args):
                 num_heads=args["num_heads"],
                 num_heads_upsample=args["num_heads_upsample"],
                 debug_run=args["debug_run"],
-                final_act=args["final_activation"],
+                final_act=final_act,
                 image_encoder_depth=args["image_encoder_depth"] if args["image_encoder"]!="none" else -1,
                 unet_input_dict=unet_input_dict,
                 one_skip_per_reso=args["one_skip_per_reso"],

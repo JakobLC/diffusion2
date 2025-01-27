@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.4.1",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.1."],
+    "model_version": ["1.4.3",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.3."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -37,7 +37,7 @@
         "diff_channels": [6,                        "Maximum number of diff channels, giving 2^diff_channels max labels in image. TYPE: positive integer. DEFAULT: 6. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
-        "final_activation": ["tanh",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none']. TYPE: string. DEFAULT: 'none'. "],
+        "final_activation": ["tanh_if_x",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none','tanh_if_x']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
         "unet_spatialness": ["0,1,2,3" ,            "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "],
@@ -45,7 +45,8 @@
         "new_upsample_method": [false,              "Should the new upsample method be used? TYPE: boolean. DEFAULT: false. "],
         "one_skip_per_reso": [false,                "Should only one skip connection be used per resolution? TYPE: boolean. DEFAULT: false. "],
         "patch_size": [1,                           "Size of the patches in pixels for the UNet/UViT. TYPE: positive integer. DEFAULT: 1. "],
-        "mlp_attn": [false,                         "Should the MLP instead of ResNetBlocks be used at the attention resolutions? TYPE: boolean. DEFAULT: false. "]
+        "mlp_attn": [false,                         "Should the MLP instead of ResNetBlocks be used at the attention resolutions? TYPE: boolean. DEFAULT: false. "],
+        "use_gen_prob_unet": [false,                "Should the UNet use generalized probablistic architechture? Only used for LIDC data. TYPE: boolean. DEFAULT: false. "]
     },
     "Model input sampling probs (or args controlling inputs)": {
         "cond_img_size": [-1,                       "Image size for inputs given to the conditional net TYPE: positive integer or -1 (same as image_size). DEFAULT: -1. "],
@@ -88,7 +89,7 @@
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'. "],
         "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0. "],
         "shuffle_zero": [true,                      "Should the zeroth channel (background) be shuffled? TYPE: boolean. DEFAULT: true. "],
-        "crop_method": ["sam_small",                "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big']. DEFAULT: 'sam_small'. "],
+        "crop_method": ["sam_small",                "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big','sam_lidc64']. DEFAULT: 'sam_small'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
         "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
@@ -124,7 +125,7 @@
         "p_points": {"<1.0.0": 0.25, "1.0.0<=x<1.2.2": 0.5},
         "dl_num_workers": {"<1.0.0": 0},
         "ignore_padded": {"<1.0.0": false},
-        "final_activation": {"<1.0.1": "none"},
+        "final_activation": {"<1.0.1": "none", "1.0.1<=x<1.4.3": "tanh"},
         "split_method": {"<1.0.1": "random"},
         "diff_channels": {"<1.0.2": 3},
         "crop_method": {"<1.1.0": "multicrop_most_border"},

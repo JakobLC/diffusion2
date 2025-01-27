@@ -129,12 +129,23 @@
     "lidc_amb": {
         "versions":{
             "vali": {},
+            "test": {"split": "test"},
             "train": {"split": "train"},
             "all": {"split_method": "native", "num_samples": -1},
             "save": {"save_raw_samples": true, "save_light_stats": true, "only_save_raw_pred": true, "num_save_raw_samples": 1e10},
             "gw_sweep": {"guidance_weight": "-0.1;-0.01;0.0;0.1;0.3;1.0;2.0;3.0;10.0", "num_timesteps":20},
-            "ts_sweep": {"num_timesteps": "2;5;10;20;50;100;200", "gen_id": "ts_sweep2_*", "sampler_type": "ddim"},
-            "ddim_sweep": {"sampler_type": "ddim", "num_timesteps": "2;5;10;20;50;100;200", "gen_id": "ddim_sweep_*"}
+            "ts_sweep": {"num_timesteps": "2;5;10;20;50;100;200;500;1000", "gen_id": "ts_sweep2_*", "sampler_type": "ddpm"},
+            "ddim_sweep": {"sampler_type": "ddim", "num_timesteps": "2;5;10;20;50;100;200;500;1000", "gen_id": "ddim_sweep_*"},
+            "ts_sweep_all": {"num_timesteps": "2;3;4;5;10;20;50;100;200;500;1000", "sampler_type": "ddpm;ddim"},
+            "pp": {"postprocess": "rel_area0.5"},
+            "pp2": {"add_amb_postprocess_metrics": true},
+            "best_ckpt": {"ema_idx": 0},
+            "vali_qual": {"num_samples": 64, "save_raw_samples": true, "num_save_raw_samples": 64,
+                          "plotting_functions": "", "save_light_stats": true, "seed": 24, "only_save_raw_pred": true},
+            "test_qual": {"num_samples": 64, "save_raw_samples": true, "num_save_raw_samples": 64, "split": "test",
+            "plotting_functions": "", "save_light_stats": true, "seed": 24, "only_save_raw_pred": true},
+            "ddpm10": {"sampler_type": "ddpm", "num_timesteps": 10},
+            "ddpm100": {"sampler_type": "ddpm", "num_timesteps": 100}
         },
         "num_timesteps": 10, 
         "sampler_type": "ddim",

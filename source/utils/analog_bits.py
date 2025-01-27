@@ -232,7 +232,7 @@ def ab_bit2int(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
     else:
         assert x.shape[bit_dim]==num_bits, "x.shape: "+str(x.shape)+", num_bits: "+str(num_bits)+", bit_dim: "+str(bit_dim)
     #convert to ints if necessary
-    if x.dtype in [np.float32,np.float64]:
+    if x.dtype in [np.float32,np.float64,np.float16]:
         x = (x>0).astype(np.uint8)
     if onehot:
         x = np.argmax(x,axis=bit_dim,keepdims=True)

@@ -115,13 +115,13 @@ class LossType(enum.Enum):
     CE1 = enum.auto()
     CE2 = enum.auto()
 
-class WeightsType(enum.Enum):
-    """Which type of output the model predicts."""
+"""class WeightsType(enum.Enum):
+    ""Which type of output the model predicts.""
     SNR = enum.auto()
     SNR_plus1 = enum.auto()
     SNR_trunc = enum.auto()
     uniform = enum.auto()
-    gamma = enum.auto()
+    gamma = enum.auto()"""
 
 class TimeCondType(enum.Enum):
     """Time condition type the model uses"""
@@ -159,7 +159,7 @@ class ContinuousGaussianDiffusion():
         self.model_pred_type = type_from_maybe_str(model_pred_type,ModelPredType)
         self.time_cond_type = type_from_maybe_str(time_cond_type,TimeCondType)
         self.var_type = type_from_maybe_str(var_type,VarType)
-        self.weights_type = type_from_maybe_str(weights_type,WeightsType)
+        self.weights_type = weights_type
         self.sampler_type = type_from_maybe_str(sampler_type,SamplerType)
         self.decouple_loss_weights = decouple_loss_weights
         
@@ -188,16 +188,20 @@ class ContinuousGaussianDiffusion():
 
     def loss_weights(self, t):
         snr = self.snr(t)
-        if self.weights_type==WeightsType.SNR:
+        if self.weights_type=="SNR":
             weights = snr
-        elif self.weights_type==WeightsType.SNR_plus1:
+        elif self.weights_type=="SNR_plus1":
             weights = 1+snr
-        elif self.weights_type==WeightsType.SNR_trunc:
+        elif self.weights_type=="SNR_trunc":
             weights = torch.maximum(snr,torch.ones_like(snr))
-        elif self.weights_type==WeightsType.uniform:
+        elif self.weights_type=="uniform":
             weights = torch.ones_like(snr)
-        elif self.weights_type==WeightsType.gamma: # aka sigmoid loss from simpler diffusion/VDM++
-            weights = self.gamma(t) 
+        elif self.weights_type.startswith("gamma"): # aka sigmoid loss from simpler diffusion/VDM++
+            if self.weights_type=="gamma":
+                weights = self.gamma(t)
+            else:
+                bias = float(self.weights_type.split("_")[1])
+                weights = self.gamma(t+bias)
         if self.decouple_loss_weights:
             weights *= -self.diff_logsnr(t)
         return weights
