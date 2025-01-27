@@ -686,6 +686,7 @@
         "channel_multiplier": "1,1,2,4",
         "attention_resolutions": "-1",
         "num_middle_res_blocks": 4,
-        "predict": "x"
+        "predict": "x",
+        "loss_weights": "SNR_trunc"
     }
 }

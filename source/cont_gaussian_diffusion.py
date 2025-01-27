@@ -184,6 +184,7 @@ class ContinuousGaussianDiffusion():
         t_req_grad = torch.autograd.Variable(t, requires_grad = True)
         with torch.enable_grad():
             t_grad = torch.autograd.grad(self.logsnr(t_req_grad).sum(),t_req_grad,create_graph=True)[0]
+        t_grad.detach_()
         return t_grad
 
     def loss_weights(self, t):
@@ -196,12 +197,12 @@ class ContinuousGaussianDiffusion():
             weights = torch.maximum(snr,torch.ones_like(snr))
         elif self.weights_type=="uniform":
             weights = torch.ones_like(snr)
-        elif self.weights_type.startswith("gamma"): # aka sigmoid loss from simpler diffusion/VDM++
-            if self.weights_type=="gamma":
-                weights = self.gamma(t)
+        elif self.weights_type.startswith("sigmoid"): # aka sigmoid loss from simpler diffusion/VDM++
+            if self.weights_type=="sigmoid":
+                bias = 0# aka simply the gamma function
             else:
                 bias = float(self.weights_type.split("_")[1])
-                weights = self.gamma(t+bias)
+            weights = torch.sigmoid(self.logsnr(t)-bias)
         if self.decouple_loss_weights:
             weights *= -self.diff_logsnr(t)
         return weights
