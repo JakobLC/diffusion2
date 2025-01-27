@@ -655,7 +655,7 @@
     },
     "lidcv8": {
         "versions": {
-            "short": {"max_iter": 25000},
+            "short": {"max_iter": 25000, "gen_setups": "lidc_amb[vali],lidc_amb[train]", "gen_interval": 1000},
             "long": {"max_iter": 100000, "gen_interval": 2000},
             "super_long": {"max_iter": 400000, "gen_interval": 5000, "lr_decay_steps": 100000},
             "aug64": {"image_size": 64, "crop_method": "sam_lidc64"},

@@ -24,14 +24,14 @@ To create the SAM2 env, run
 conda create -n sam2-env python=3.12
 conda activate sam2-env
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-conda install scikit-image scikit-learn=1.5.1 jsonlines -c conda-forge
+conda install scikit-image=0.23.2 scikit-learn=1.5.1 pandas=2.2.2 scipy=1.14.1 jsonlines -c conda-forge
 pip install git+https://github.com/JakobLC/jlc.git
 pip install git+https://github.com/facebookresearch/segment-anything.git
 pip install -U git+https://github.com/lilohuang/PyTurboJPEG.git
 pip install git+https://github.com/openai/CLIP.git
-pip install albumentations
-pip install nibabel
-conda install pandas=2.2.2 -c conda-forge
+pip install albumentations==1.4.15
+pip install nibabel==5.2.1
+pip install -r requirements_sam.txt
 ```
 (should hopefully get pytorch 2.4.1)
 

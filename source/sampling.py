@@ -68,7 +68,9 @@ class DiffusionSampler(object):
                 assert len(self.opts.datasets)==1, "Ambiguous mode is only implemented for a single dataset."
                 d = self.opts.datasets[0]
                 assert d.startswith("lidc"), "Ambiguous mode is only implemented for the lidc dataset."
-                info_path = f"/home/jloch/Desktop/diff/diffusion2/data/{d}/info.jsonl"
+                #info_path = f"/home/jloch/Desktop/diff/diffusion2/data/{d}/info.jsonl"
+                #with relative instead
+                info_path = os.path.join(Path(__file__).resolve().parent.parent,"data",d,"info.jsonl")
                 info = load_json_to_dict_list(info_path)
                 pri_didx = []
                 gts_didx = {}
