@@ -656,14 +656,13 @@
     "lidcv8": {
         "versions": {
             "short": {"max_iter": 25000},
-            "long": {"max_iter": 100000, "gen_setups": 
-            "lidc_amb[vali][all],lidc_amb[train]","gen_interval": 2000},
-            "super_long": {"max_iter": 400000, "gen_interval": 5000, "gen_setups": 
-            "lidc_amb[vali][all],lidc_amb[train]", "lr_decay_steps": 100000},
-            "aug64": {"image_size": 64, "input_scale": 0.3, "crop_method": "sam_lidc64"},
-            "decoup_sweep": {"decouple_loss_weights": true, "loss_weights": "gamma_-2;gamma_-1;gamma_0;gamma_1;gamma_2"},
+            "long": {"max_iter": 100000, "gen_interval": 2000},
+            "super_long": {"max_iter": 400000, "gen_interval": 5000, "lr_decay_steps": 100000},
+            "aug64": {"image_size": 64, "crop_method": "sam_lidc64"},
+            "decoup_sweep": {"decouple_loss_weights": true, "loss_weights": "sigmoid_-2;sigmoid_-1;sigmoid_0;sigmoid_1;sigmoid_2"},
             "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"},
-            "gen_prob_arch": {"use_gen_prob_unet": true}
+            "gen_prob_arch": {"use_gen_prob_unet": true},
+            "input_scale_sweep": {"input_scale": "1.0;0.6;0.3;0.2;0.1;0.06;0.03"}
         },
         "p_points": 0,
         "p_num_labels": 0,
@@ -672,13 +671,13 @@
         "datasets": "lidc15096", 
         "max_iter": 50000, 
         "train_batch_size": 8, 
-        "gen_interval": 1000, 
+        "gen_interval": 2000, 
         "image_size": 128,
         "lr_warmup_steps": 1000, 
         "lr_decay_steps": 10000,
         "num_channels": 32,
         "input_scale": 0.1,
-        "gen_setups": "lidc_amb[vali],lidc_amb[train]",
+        "gen_setups": "lidc_amb[vali][all],lidc_amb[train]",
         "best_ckpt_metric": "-GED",
         "p_self_cond": 0,
         "p_image": 1,

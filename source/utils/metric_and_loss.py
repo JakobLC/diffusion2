@@ -3,7 +3,18 @@ import torch
 import os
 from PIL import Image
 from pathlib import Path
-from sklearn.metrics import confusion_matrix, adjusted_rand_score
+try:
+    from sklearn.metrics import confusion_matrix, adjusted_rand_score
+except:
+    def adjusted_rand_score(*args,**kwargs):
+        return 0.0
+    def confusion_matrix(gt,pred):
+        m = max(gt.max()+1,pred.max()+1)
+        intersection = np.zeros((m,m),dtype=int)
+        for gt_i,pred_i in zip(gt.flatten(),pred.flatten()):
+            intersection[gt_i,pred_i] += 1
+        return intersection
+    
 from source.utils.dataloading import load_raw_image_label
 from scipy.optimize import linear_sum_assignment
 from skimage.morphology import binary_dilation,disk

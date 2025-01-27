@@ -27,8 +27,12 @@ from jlc import (RenderMatplotlibAxis, darker_color,
                  get_mask,render_axis_ticks,darker_color,get_matplotlib_color,
                  add_text_axis_to_image,to_xy_anchor,render_text_gridlike,
                  item_to_rect_lists)
-from sklearn.cluster import KMeans
+
 import warnings
+try:
+    from sklearn.cluster import KMeans
+except:
+    warnings.warn("Could not import KMeans from sklearn.cluster")
 
 def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    model_id_patterns="*",
