@@ -661,6 +661,7 @@
             "aug64": {"image_size": 64, "crop_method": "sam_lidc64"},
             "decoup_sweep": {"decouple_loss_weights": true, "loss_weights": "sigmoid_-2;sigmoid_-1;sigmoid_0;sigmoid_1;sigmoid_2"},
             "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"},
+            "lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform"},
             "gen_prob_arch": {"use_gen_prob_unet": true},
             "input_scale_sweep": {"input_scale": "1.0;0.6;0.3;0.2;0.1;0.06;0.03"},
             "rare_gen": {"gen_setups": "lidc_amb[vali],lidc_amb[train]", "gen_interval": 5000},
