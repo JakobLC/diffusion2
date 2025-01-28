@@ -145,7 +145,8 @@
             "test_qual": {"num_samples": 64, "save_raw_samples": true, "num_save_raw_samples": 64, "split": "test",
             "plotting_functions": "", "save_light_stats": true, "seed": 24, "only_save_raw_pred": true},
             "ddpm10": {"sampler_type": "ddpm", "num_timesteps": 10},
-            "ddpm100": {"sampler_type": "ddpm", "num_timesteps": 100}
+            "ddpm100": {"sampler_type": "ddpm", "num_timesteps": 100},
+            "2s": {"num_samples": 2, "num_timesteps": 2, "plotting_functions": ""}
         },
         "num_timesteps": 10, 
         "sampler_type": "ddim",

@@ -398,7 +398,9 @@ class DiffusionSampler(object):
         if self.args.mode!="gen":
             try:
                 overwrite_existing_args(self.opts)
-            except ValueError:
+            except:
+                if not Path(self.opts.default_save_folder).exists():
+                    Path(self.opts.default_save_folder).mkdir(parents=False, exist_ok=True)
                 save_args(self.opts)
         else:
             save_args(self.opts)
