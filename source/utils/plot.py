@@ -126,7 +126,7 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                 table = pd.concat([table,pd.DataFrame(match_data_s,columns=column_names)],axis=0)
                 save_paths.extend([v["save_path"] for _ in range(len(match_idx))])
             else:
-                warnings.warn(f"Could not find file {fn}")
+                pass#warnings.warn(f"Could not find file {fn}")
     if table.shape[0]==0:
         warnings.warn("Gen table is empty")
         if return_table:

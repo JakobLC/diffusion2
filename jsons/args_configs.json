@@ -665,7 +665,9 @@
             "gen_prob_arch": {"use_gen_prob_unet": true},
             "input_scale_sweep": {"input_scale": "1.0;0.6;0.3;0.2;0.1;0.06;0.03"},
             "rare_gen": {"gen_setups": "lidc_amb[vali],lidc_amb[train]", "gen_interval": 5000},
-            "rare_gen2": {"gen_setups": "lidc_amb[vali],lidc_amb[train]", "gen_interval": 10000}
+            "rare_gen2": {"gen_setups": "lidc_amb[vali],lidc_amb[train]", "gen_interval": 10000},
+            "cont": {"mode": "cont"},
+            "v": {"predict": "v"}
         },
         "p_points": 0,
         "p_num_labels": 0,

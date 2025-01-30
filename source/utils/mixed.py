@@ -362,7 +362,7 @@ def nuke_saves_folder(dry_run=False,
     """
     rm_str = "Removing (dry)" if dry_run else "Removing"
     saves_folder = Path("./saves")
-    folders = sorted(list(saves_folder.glob("*/*/")))
+    folders = sorted(list(saves_folder.glob("ver*/*/")))
     if keep_most_recent:
         folders = folders[:-1]
     folders_for_removal = []

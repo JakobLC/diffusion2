@@ -19,6 +19,7 @@ from source.utils.fp16 import (
     unflatten_master_params,
     zero_grad,
 )
+import argparse
 from source.utils.argparsing import (save_args, TieredParser,load_existing_args, 
                             overwrite_existing_args,get_ckpt_name)
 from source.sampling import DiffusionSampler
@@ -857,9 +858,14 @@ def trainer_from_sample_opts(sample_opts,verbose=True):
         print("No ckpt found")
         return
     if verbose: print(str(Path(ckpt_name).parent / "args.json"))
-    model_id = load_existing_args(str(Path(ckpt_name).parent / "args.json"),"args",verify_keys=False).model_id
-    if verbose: print("\nmodel_id:",model_id)
-    args = load_existing_args(model_id,"args",verify_keys=False)
+    if sample_opts.use_raw_args:
+        assert (Path(ckpt_name).parent / "args.json").exists(), "args.json must exist when use_raw_args=False"
+        args_loaded = json.loads((Path(ckpt_name).parent / "args.json").read_text())
+        args = argparse.Namespace(**args_loaded[0])
+    else:
+        model_id = load_existing_args(str(Path(ckpt_name).parent / "args.json"),"args",verify_keys=False).model_id
+        if verbose: print("\nmodel_id:",model_id)
+        args = load_existing_args(model_id,"args",verify_keys=False)
     if sample_opts.seed>=0:
         args.seed = sample_opts.seed
     args.mode = "gen"

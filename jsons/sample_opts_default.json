@@ -50,7 +50,8 @@
         "pure_eval_mode"              : [true,            "Whether to use pure evaluation mode (comparing with unprocessed gt). TYPE: bool. DEFAULT: true"],
         "ambiguous_mode"              : [false,           "Whether to use ambiguous mode (for datasets with ambiguous labels. Currently lidc). TYPE: bool. DEFAULT: false"],
         "add_amb_postprocess_metrics" : [false,           "Whether to add postprocess metrics for ambiguous mode. TYPE: bool. DEFAULT: false"],
-        "save_entropy"                : [false,           "Whether to save the entropy of the samples. TYPE: bool. DEFAULT: false"]
+        "save_entropy"                : [false,           "Whether to save the entropy of the samples. TYPE: bool. DEFAULT: false"],
+        "use_raw_args"                : [false,           "Whether to use the raw args instead of loading args from model_id. TYPE: bool. DEFAULT: false"]
     },
     "how much to sample": {
         "num_votes"                   : [3,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],

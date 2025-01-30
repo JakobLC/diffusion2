@@ -550,7 +550,7 @@ def load_existing_args(path_or_id,
     if str(path_or_id).endswith(".json"):
         args_loaded = json.loads(Path(path_or_id).read_text())
         if isinstance(args_loaded,list):
-            assert len(args_loaded)==1, f"Expected len(args_loaded)==1, but len(args_loaded)={len(args_loaded)}."
+            assert len(args_loaded)==1, f"Expected len(args_loaded)==1, but len(args_loaded)={len(args_loaded)} for path_or_id={path_or_id}."
             args_loaded = args_loaded[0]
     else:
         id_dict = tp.load_and_format_id_dict()
@@ -602,11 +602,32 @@ def load_existing_args(path_or_id,
                 raise ValueError(f"VERY UNEXPECTED BUG: key {k} not found in either args_theoretical.__dict__ or args_loaded.")
     return argparse.Namespace(**args_loaded)
 
+def add_folder_ids_recursive(folder,
+                             require_args=True,
+                            require_sample_opts=True,
+                            atmost_one_sample_opts_file=True,
+                            change_save_path=True,
+                            dry=False):
+    """
+    Loops over a folder recursively and every time args.json is encountered
+    it is assumed that the folder should be added with add_folder_ids(...)
+    If the args.json file model_id is already pointing to itself and existing
+    in the existing ids, it is not added again.
+    """
+    for path in Path(folder).rglob("args.json"):
+        add_folder_ids(str(path.parent),
+                       require_args=require_args,
+                       require_sample_opts=require_sample_opts,
+                       atmost_one_sample_opts_file=atmost_one_sample_opts_file,
+                       change_save_path=change_save_path,
+                       dry=dry)
+
 def add_folder_ids(folder,
                    require_args=True,
                    require_sample_opts=True,
                    atmost_one_sample_opts_file=True,
-                   change_save_path=True):
+                   change_save_path=True,
+                   dry=False):
     """
     Adds all ids from a folder which was copied into the saves folder.
     If ids already exist, they are modified to be unique and then added.
@@ -614,38 +635,47 @@ def add_folder_ids(folder,
     """
     if isinstance(folder,str):
         folder = [folder]
+    tpa = TieredParser()
+    id_dict = tpa.load_and_format_id_dict()
+    tpso = TieredParser("sample_opts")
     for f in folder:
         path = Path(f)
         if path.is_absolute():
             path = path.relative_to(Path.cwd())
         assert path.exists(), f"{path} does not exist"
-        args = None
         
         if (path/"args.json").exists():
             args = load_existing_args(path_or_id=str(path/"args.json"))
+            #do nothing if args.save_path is the same as path, i.e. it is already in existing ids
+            if args.model_id in id_dict.keys() and args.save_path==str(path):
+                print(f"args.model_id={args.model_id} already exists in id_dict.keys(). Skipping.")
+                continue
+        else:
+            if require_args:
+                raise ValueError(f"{path/'args.json'} does not exist")
+            args = None
+        
         sample_opts_list = None
         sample_opts_paths = list(path.glob("**/sample_opts.json"))
         if len(sample_opts_paths)>0:
             if atmost_one_sample_opts_file:
                 assert len(sample_opts_paths)==1, f"len(sample_opts_paths)={len(sample_opts_paths)} must be at most 1."
             sample_opts_list = load_json_to_dict_list(str(sample_opts_paths[0]))
+
         if require_sample_opts:
             assert sample_opts_list is not None, f"{path/'**/sample_opts.json'} does not exist"
-        if require_args:
-            assert args is not None, f"{path/'args.json'} does not exist"
         if args is not None:
-            tpa = TieredParser()
             if not tpa.is_unique_id(args.model_id):
                 args.model_id = args.model_id+"_*"
                 args.model_id = tpa.get_unique_id(args)
             if change_save_path:
-                actual_save_path = str(path)
-                args.save_path = actual_save_path
+                args.save_path = str(path)
         if sample_opts_list is not None:
             assert isinstance(sample_opts_list,list), f"sample_opts_list={sample_opts_list} is not a list."
-            tpso = TieredParser("sample_opts")
             for i in range(len(sample_opts_list)):
                 sample_opts = argparse.Namespace(**sample_opts_list[i])
+                if change_save_path:
+                    sample_opts.default_save_folder = str(sample_opts_paths[0].parent)
                 if not tpso.is_unique_id(sample_opts.gen_id):
                     sample_opts.gen_id = sample_opts.gen_id+"_*"
                     sample_opts.gen_id = tpso.get_unique_id(sample_opts)
@@ -653,10 +683,16 @@ def add_folder_ids(folder,
                         sample_opts.model_id = args.model_id
                 sample_opts_list[i] = sample_opts
         if args is not None:
-            save_args(args)
+            if not dry:
+                save_args(args,append_local=False)
+            else:
+                print(f"Would save args with id={args.model_id}")
         if sample_opts_list is not None:
-            for sample_opts in sample_opts_list:
-                save_args(sample_opts)
+            for i,sample_opts in enumerate(sample_opts_list):
+                if not dry:
+                    save_args(sample_opts,append_local=(i>0))
+                else:
+                    print(f"Would save sample_opts with id={sample_opts.gen_id}")
 
 def delete_existing_args(id,name_key="sample_opts"):
     tp = TieredParser(name_key)
@@ -694,7 +730,7 @@ def overwrite_existing_args(args,delete_instead_of_overwrite=False):
             break
     save_dict_list_to_json(dict_list,local_path,append=False)
 
-def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=False):
+def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=False, append_local=True):
     if do_nothing:
         return local_path, global_path
     if hasattr(args,"model_name"):
@@ -720,7 +756,7 @@ def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=Fal
     assert Path(global_path).parent.exists(), f"Path(global_path).parent={Path(global_path).parent} does not exist."
     if not dry:
         save_dict_list_to_json([args.__dict__],str(global_path),append=True)
-        save_dict_list_to_json([args.__dict__],str(local_path),append=True)
+        save_dict_list_to_json([args.__dict__],str(local_path),append=append_local)
     return local_path, global_path
 
 def kill_missing_ids(name_key="args",dry=False,keep_criterion=None):
