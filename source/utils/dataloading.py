@@ -188,7 +188,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       load_matched_items=True,
                       save_matched_items=False,
                       imagenet_norm=True,
-                      ambiguous_mode=False,):
+                      ambiguous_mode=False,
+                      aug_override=None):
         self.ambiguous_mode = ambiguous_mode
         self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
@@ -221,12 +222,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.save_matched_items = save_matched_items
         self.load_matched_items = load_matched_items
         self.gen_mode = False
-        legal_crops = ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big","sam_lidc64"]
+        legal_crops = ["multicrop_most_border","multicrop_most_classes","full_image","sam_small","sam_big","sam_lidc64","sam_lidc64_fixed64"]
         assert crop_method in legal_crops, f"crop_method must be one of {legal_crops}, got {crop_method}"
         if crop_method.startswith("sam"):
             self.sam_aug_small = get_sam_aug(image_size,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
             self.sam_aug_big = get_sam_aug(1024,padval=padding_idx, imagenet_norm_p=float(imagenet_norm))
             self.lidc64_aug = get_lidc64_aug()
+            self.lidc64_fixed64_aug = get_lidc64_fixed64_aug()
         else:
             raise NotImplementedError("crop_method not implemented for non-sam")
         self.crop_method = crop_method
@@ -314,7 +316,15 @@ class SegmentationDataset(torch.utils.data.Dataset):
             assert len(class_dict)==self.datasets_info[dataset_name]["num_classes"], ("num_classes in idx_to_class.json does not match num_classes in info.json. found "+
                                                                                       str(len(class_dict))+" and "+str(self.datasets_info[dataset_name]["num_classes"])+
                                                                                       " for dataset "+dataset_name)
-            self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],s=self.image_size,train=split==0,geo_aug_p=self.geo_aug_p)
+            if (aug_override is not None):
+                assert type(aug_override)==bool, "aug_override must be a boolean or None"
+                aug = aug_override
+            else:
+                aug = (split==0)
+            self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],
+                                                                      s=self.image_size,
+                                                                      train=aug,
+                                                                      geo_aug_p=self.geo_aug_p)
             self.didx_to_item_idx.extend([f"{dataset_name}/{i}" for i in use_idx])
             self.length += len(items)
             self.items.extend(items)
@@ -462,7 +472,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     if item["dataset_name"]==d and item["i"]==i:
                         match_idx = k
                         break   
-                assert match_idx is not None, "No match for dataset_name: "+d+", i: "+str(i)
+                assert match_idx is not None, "No match for dataset_name: "+d+", i: "+str(i)+"Len of dataset: "+str(len(self))
                 list_of_things2.append(match_idx)
 
         assert all([isinstance(item,int) for item in list_of_things2]), "all items in list_of_things must be integers"
@@ -778,6 +788,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 augmented = self.sam_aug_big(image=image,mask=label)
             elif self.crop_method=="sam_lidc64":
                 augmented = self.lidc64_aug(image=image,mask=label)
+            elif self.crop_method=="sam_lidc64_fixed64":
+                augmented = self.lidc64_fixed64_aug(image=image,mask=label)
             else:
                 assert self.crop_method=="sam_small"
                 augmented = self.sam_aug_small(image=image,mask=label)
@@ -887,7 +899,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
             label,m_i = self.load_all_ambiguous_labels(info)
         else:
             label = open_image_fast(label_path,num_channels=0) #num_channels=0 means 2D
-
         image,label = self.preprocess(image,label,info)
         if is_cond_call:
             if not self.crop_method.startswith("sam"):
@@ -981,6 +992,29 @@ def get_sam_aug(size,padval=255,imagenet_norm_p=1):
                                    position=A.PadIfNeeded.PositionType.TOP_LEFT)])
     return sam_aug
 
+class get_lidc64_fixed64_aug():
+    """ Does the same as get_lidc64_aug except the first 
+    64 crops use the same 64 crop params based on numpy
+    seed 0
+    """
+    def __init__(self,seed=0):
+        self.lidc64_aug = get_lidc64_aug()
+        self.normalize = A.Normalize(always_apply=True, p=1)
+        np.random.seed(seed)
+        r = np.random.randint(0,64,128)
+        self.r_x,self.r_y = r[:64],r[64:]
+        self.index = 0
+
+    def __call__(self,image,mask):
+        if self.index>=64:
+            return self.lidc64_aug(image=image,mask=mask)
+        else:
+            x,y = self.r_x[self.index],self.r_y[self.index]
+            self.index += 1
+            image = image[y:y+64,x:x+64]
+            mask = mask[y:y+64,x:x+64]
+            return self.normalize(image=image,mask=mask)
+        
 def get_lidc64_aug():
     lidc64_aug = A.Compose([A.RandomCrop(width=64, height=64, always_apply=True, p=1),
                      A.Normalize(always_apply=True, p=1),
@@ -1155,7 +1189,10 @@ def get_dataset_from_args(args_or_model_id=None,
                           return_type="dli",
                           load_cond_probs_override=None,
                           ambiguous_mode=False,
+                          aug_override=None,
                           ):
+    if prioritized_didx is not None:
+        assert mode=="pri_didx", "mode must be pri_didx if prioritized_didx is provided"
     if args_or_model_id is None:
         #use default args with data
         args_or_model_id = TieredParser().get_args(alt_parse_args=["--model_name","default"])
@@ -1201,6 +1238,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             shuffle_labels=args.agnostic,
                             imagenet_norm=args.imagenet_norm,
                             ambiguous_mode=ambiguous_mode,
+                            aug_override=aug_override,
                             )
     if return_type=="ds":
         return ds

@@ -3,6 +3,7 @@ import torch
 import os
 from PIL import Image
 from pathlib import Path
+import copy
 try:
     from sklearn.metrics import confusion_matrix, adjusted_rand_score
 except:
@@ -22,6 +23,11 @@ import warnings
 from functools import partial
 from source.utils.analog_bits import ab_likelihood
 from utils.mixed import shaprint
+import datetime
+import itertools
+from collections import defaultdict
+import pycocotools._mask as _mask
+from argparse import Namespace
 
 def get_all_metrics(output,ignore_zero=False,ambiguous=False,ab_kw={}):
     assert isinstance(output,dict), "output must be an output dict"
@@ -172,11 +178,12 @@ def get_segment_metrics(pred,gt,
                         mask=None,
                         reduce_to_mean=True,
                         acceptable_ratio_diff=0.1,
-                        ignore_zero=False):
+                        ignore_zero=False,
+                        compute_ap=True):
     if isinstance(gt,(dict,str)):
         #we are in pure evaluation mode, i.e compare with the same gt for any method in the native resolution
         #load raw gt and reshape pred
-        assert (len(pred.shape)==4 and pred.shape[1]==1) or len(pred.shape)==3, "pure evaluation mode expects non-batched 3D or 4D tensors"
+        assert (len(pred.shape)==4 and pred.shape[1]==1) or len(pred.shape)==3, "pure evaluation mode expects non-batched 3D or 4D tensors, found pred.shape: "+str(pred.shape)
         assert mask is None, "mask must be None in pure evaluation mode. Manually apply your mask to the gt."
         if not torch.is_tensor(pred):
             pred = torch.tensor(pred)
@@ -220,13 +227,19 @@ def get_segment_metrics(pred,gt,
                    "ari": adjusted_rand_score}
     metrics = list(metric_dict.keys())
     #has to be defined inline for ab to be implicitly passed
-
+    times = {m: 0 for m in metrics}
     #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
     out = {metric: [] for metric in metrics}
     for i in range(bs):
         pred_i,gt_i = metric_preprocess(pred[i],gt[i],mask=mask[i] if mask is not None else None)
         for metric in metrics:
             out[metric].append(metric_dict[metric](pred_i,gt_i))
+        if compute_ap:
+            ap_output = ap_entity(pred[i][0],gt[i][0])
+            for k,v in ap_output.items():
+                if not k in out:
+                    out[k] = []
+                out[k].append(v)
     if was_single:
         for metric in metrics:
             out[metric] = out[metric][0]
@@ -601,19 +614,22 @@ def get_ambiguous_metrics(pred,gt,shorthand=True,reduce_to_mean=True):
     """returns a dictionary of metrics for binary ambiguous segmentation"""
     assert isinstance(gt,(np.ndarray,list,dict)), "gt must be a numpy array, list of didx strings or dict (with field gts_didx), found type: "+str(type(gt))
     if not isinstance(gt,np.ndarray):
+        load_labels = True
         if isinstance(gt,dict):
-            load_labels = True
             if "amb_label" in gt:
                 gt = gt["amb_label"]
                 load_labels = False
             else:
                 assert "gts_didx" in gt, "gt must be a dict with the field 'gts_didx' or 'amb_label'"
                 gt = gt["gts_didx"]
+        else:
+            assert isinstance(gt,list), "gt must be a list of didx strings or a numpy array"
         if load_labels:
             assert len(gt)>0, "gt must be a non-empty list of didx strings or a numpy array"
             assert all([isinstance(gt_i,str) for gt_i in gt]), "If gt is a list, it must be a list of strings or dicts. Found types: "+str([type(gt_i) for gt_i in gt])
             max_hw = max(pred.shape[-2:])
             gt = np.concatenate([load_raw_image_label(gt_i,max_hw)[1] for gt_i in gt],axis=2)
+    assert isinstance(gt,np.ndarray), "gt must be a numpy array, found type: "+str(type(gt))
     assert isinstance(pred,np.ndarray), "pred must be a numpy array, found type: "+str(type(pred))
     assert len(gt.shape)==3, "gt must be a 3D numpy array in (H,W,C_gt) format"
     assert len(pred.shape)==3, "pred must be a 3D numpy array in (H,W,C_pred) format"
@@ -697,3 +713,261 @@ def ncc(a,v, zero_norm=True, eps=1e-8):
         a = (a) / (np.std(a) * len(a)+eps)
         v = (v) / (np.std(v)+eps)
     return np.correlate(a,v)
+
+params = {"imdIds": [],
+          "iouThrs": np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True),
+          "recThrs": np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True),
+          "maxDet": 100,
+          "areaRng": [0,1e10]}
+params = Namespace(**params)
+
+def ap_entity(preds, gts, idx_to_scores=None,return_save_dict=False):
+    """Wrapper function to compute AP for entity segmentation 
+    taking lists of torch tensor as input."""
+    if not isinstance(preds,list):
+        preds = [preds]
+    if not isinstance(gts,list):
+        gts = [gts]
+    gts = copy.deepcopy(gts)
+    preds = copy.deepcopy(preds)
+    assert len(preds) == len(gts), (len(preds), len(gts))
+    #convert to torch if numpy:
+    if not torch.is_tensor(preds[0]):
+        preds = [torch.tensor(p) for p in preds]
+    
+    if not torch.is_tensor(gts[0]):
+        gts = [torch.tensor(g) for g in gts]
+
+    if idx_to_scores is not None:
+        assert len(preds) == len(idx_to_scores), (len(preds), len(idx_to_scores))
+    #construct preds
+    predictions = []
+    for i in range(len(preds)):
+        if idx_to_scores is None:
+            scores = None
+        else:
+            scores = [idx_to_scores[i][u.int().item()] for u in preds[i].unique() if u>0]
+        seg = segmentation_to_coco_json(preds[i], scores, img_id=i)
+        predictions.append(seg)
+    #construct gts
+    for i in range(len(gts)):
+        gts[i] = segmentation_to_coco_json(gts[i], img_id=i)
+
+    return f_evaluate_predictions_on_coco(predictions, gts=gts, return_save_dict=return_save_dict)
+
+def segmentation_to_coco_json(segmentation, scores=None, img_id=None, zero_is_bg=False):
+    assert isinstance(segmentation, torch.Tensor), type(segmentation)
+    assert segmentation.dtype in [torch.uint8, torch.int32, torch.int64], segmentation.dtype
+    assert len(segmentation.shape) == 2, segmentation.shape
+
+    uq = segmentation.unique()
+    if zero_is_bg:
+        uq = uq[uq != 0]
+    results = []
+    if scores is None:
+        scores = [0.0 for _ in range(len(uq))]
+    if img_id is None:
+        img_id = 0
+    assert len(uq) == len(scores), (len(uq), len(scores))
+    for i in range(len(uq)):
+        seg = np.array((segmentation == uq[i]).cpu().numpy(), order="F", dtype="uint8")[...,None]
+        result = {
+            "image_id": img_id,
+            "score": scores[i],#0.0,
+            "segmentation": maskUtils_encode(seg)[0]
+        }
+        result["segmentation"]["counts"] = result["segmentation"]["counts"].decode("utf-8")
+        results.append(result)
+    return results
+
+def f_evaluate_predictions_on_coco(predictions, gts, save_info_filename="", return_save_dict=False):
+    """
+    Do entity average precision evaluation.
+    Input:
+    - predictions: List of lists. The outer list represents images and the
+        inner list contains the predictions for each image. Each prediction is dict
+        with keys:
+        - "image_id": int
+        - "category_id": int
+        - "score": float
+        - "segmentation": RLE encoded mask
+    - json_file: str. Path to the COCO json file.
+    Output:
+    - results: dict. Keys are "AP", "AP50", "AP75" and values are floats.
+    """
+    assert len(gts) == len(predictions), (len(gts), len(predictions))
+    gts = list(itertools.chain(*gts))
+    dts = [x for x in list(itertools.chain(*predictions))]
+    imgIds = np.unique([x["image_id"] for x in dts]).tolist()
+    assert all([isinstance(x, dict) for x in gts]), type(gts[0])
+    assert all(["segmentation" in x for x in gts]), gts[0].keys()
+    assert all(["image_id" in x for x in gts]), gts[0].keys()
+
+    for i in range(len(gts)):
+        gts[i]["id"] = i+1 #+1 because id=0 is reserved for background
+    for i in range(len(dts)):
+        dts[i]["id"] = i
+
+    _gts,_dts = defaultdict(list),defaultdict(list)
+
+    for gt in gts:
+        _gts[gt['image_id']].append(gt)
+    for dt in dts:
+        _dts[dt['image_id']].append(dt)
+
+    ious = {}
+    for imgId in imgIds:
+        ious[imgId] = _mask.iou([d['segmentation'] for d in _dts[imgId]][0:params.maxDet],
+                                [g['segmentation'] for g in _gts[imgId]],
+                                [0 for o in _gts[imgId]])
+
+    evalImgs = [evaluateImg(_dts[imgId],_gts[imgId],ious[imgId]) for imgId in imgIds]
+
+    T           = len(params.iouThrs)
+    R           = len(params.recThrs)
+
+    precision   = -np.ones((T,R)) # -1 for the precision of absent categories
+    recall      = -np.ones((T))
+    recall_full = -np.ones((T,R))
+    scores      = -np.ones((T,R))
+
+    setI = set(imgIds)
+
+    n_imgs = len(imgIds)
+    n_gt = len(gts)
+    n_dt = len(dts)
+
+    i_list = [n for n, i in enumerate(imgIds)  if i in setI]
+
+    E = [evalImgs[i] for i in i_list if evalImgs[i] is not None]
+    if len(E)==0: 
+        raise Exception("No gt or dt detected")
+    dtScores = np.concatenate([e['dtScores'][0:params.maxDet] for e in E])
+
+    inds = np.argsort(-dtScores, kind='mergesort')
+    
+    dtScoresSorted = dtScores[inds]
+    dtm  = np.concatenate([e['dtMatches'][:,0:params.maxDet] for e in E], axis=1)[:,inds]
+
+    tps = dtm>0
+    fps = dtm==0
+
+    tp_sum = np.cumsum(tps, axis=1).astype(dtype=float)
+    fp_sum = np.cumsum(fps, axis=1).astype(dtype=float)
+    for t, (tp, fp) in enumerate(zip(tp_sum, fp_sum)):
+
+        tp = np.array(tp)
+        fp = np.array(fp)
+
+        nd = len(tp)
+        rc = tp / n_gt
+        pr = tp / (fp+tp+np.spacing(1))
+        q  = np.zeros((R,))
+        ss = np.zeros((R,))
+        rf = np.zeros((R,))
+        recall[t] = rc[-1] if nd else 0
+
+        pr = pr.tolist()
+        q = q.tolist()
+
+        for i in range(nd-1, 0, -1):
+            if pr[i] > pr[i-1]:
+                pr[i-1] = pr[i]
+        inds = np.searchsorted(rc, params.recThrs, side='left')
+        try:
+            for ri, pi in enumerate(inds):
+                q[ri] = pr[pi]
+                ss[ri] = dtScoresSorted[pi]
+                rf[ri] = rc[pi]
+        except:
+            pass
+        precision[t] = np.array(q)
+        recall_full[t] = rf
+        scores[t] = np.array(ss)
+
+    eval = {
+        'imgIds': imgIds,
+        'params': params,
+        'counts': [T, R],
+        'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'precision': precision,
+        'recall_full': recall_full,
+        'recall': recall,
+        'scores': scores,
+        'dtScores': dtScores,
+    }
+    
+    if save_info_filename or return_save_dict:
+        save_dict = {"ious": ious, 
+                     "eval": eval, 
+                     "evalImgs": evalImgs,
+                     "dt": dts,
+                     "gt": gts}
+    if save_info_filename:
+        np.save(save_info_filename, save_dict)
+
+    def _summarize(iouThr=None):
+        s = eval['precision']
+        if iouThr is not None:
+            s = s[np.where(iouThr == params.iouThrs)[0]]
+        if len(s[s>-1])==0:
+            mean_s = -1
+        else:
+            mean_s = np.mean(s[s>-1])
+        return mean_s
+
+    stats = {"AP": _summarize(),
+             "AP50":_summarize(iouThr=.5),
+             "AP75": _summarize(iouThr=.75)
+        }
+    stats = {k: float(v if v >= 0 else "nan") for k,v in stats.items()}
+    if return_save_dict:
+        return stats,save_dict
+    else:
+        return stats
+
+def evaluateImg(dt, gt, ious):
+    T = len(params.iouThrs)
+    G = len(gt)
+    D = len(dt)
+    gtm  = np.zeros((T,G))
+    dtm  = np.zeros((T,D))
+    if not len(ious)==0:
+        for tind, t in enumerate(params.iouThrs):
+            for dind, d in enumerate(dt):
+                # information about best match so far (m=-1 -> unmatched)
+                iou = min([t,1-1e-10])
+                m   = -1
+                for gind, g in enumerate(gt):
+                    # if this gt already matched, and not a crowd, continue
+                    if gtm[tind,gind]>0:
+                        continue
+                    # if dt matched to reg gt, and on ignore gt, stop
+                    if m>-1:
+                        break
+                    # continue to next gt unless better match made
+                    if ious[dind,gind] < iou:
+                        continue
+                    # if match successful and best so far, store appropriately
+                    iou=ious[dind,gind]
+                    m=gind
+                # if match made store id of match for both dt and gt
+                if m ==-1:
+                    continue
+                dtm[tind,dind]  = gt[m]["id"]
+                gtm[tind,m]     = d["id"]
+
+    return {
+            'dtIds':        [d["id"] for d in dt],
+            'gtIds':        [g["id"] for g in gt],
+            'dtMatches':    dtm,
+            'gtMatches':    gtm,
+            'dtScores':     [d['score'] for d in dt],
+        }
+
+def maskUtils_encode(bimask):
+    if len(bimask.shape) == 3:
+        return _mask.encode(bimask)
+    elif len(bimask.shape) == 2:
+        h, w = bimask.shape
+        return _mask.encode(bimask.reshape((h, w, 1), order='F'))[0]

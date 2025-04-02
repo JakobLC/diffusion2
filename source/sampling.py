@@ -14,7 +14,7 @@ from source.utils.mixed import (get_time,save_dict_list_to_json,
 from source.utils.metric_and_loss import get_segment_metrics, get_ambiguous_metrics
 from source.utils.dataloading import get_dataset_from_args
 from source.utils.plot import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
-from source.utils.argparsing import TieredParser, save_args, overwrite_existing_args
+from source.utils.argparsing import TieredParser, save_args, overwrite_existing_args, str2bool
 from source.utils.analog_bits import ab_int2bit, ab_bit2int
 from pathlib import Path
 import copy
@@ -58,16 +58,29 @@ class DiffusionSampler(object):
                         
         if self.opts.ambiguous_mode:
             assert len(self.opts.datasets.split(","))==1, "Ambiguous mode is only implemented for a single specified dataset. Found: datasets="+str(self.opts.datasets)
-        if len(self.opts.datasets)>0:
-            if not isinstance(self.opts.datasets,list):
-                self.opts.datasets = self.opts.datasets.split(",")
-            self.args.datasets = self.opts.datasets
+        if self.args.mode!="gen":
+            assert hasattr(self.trainer,f"{self.opts.split}_dl"), f"trainer does not have a dataloader for split={self.opts.split}."
+            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
+        else:
             self.args.dl_num_workers = 0
+            if len(self.opts.datasets)>0:
+                if not isinstance(self.opts.datasets,list):
+                    self.opts.datasets = self.opts.datasets.split(",")
+                self.args.datasets = self.opts.datasets
+            
+            if isinstance(self.opts.aug_override,str):
+                if self.opts.aug_override.lower()=="none":
+                    aug_override = None
+                else:
+                    aug_override = str2bool(self.opts.aug_override) 
+            else:
+                aug_override = str2bool(self.opts.aug_override) 
 
             if self.opts.ambiguous_mode:
                 assert len(self.opts.datasets)==1, "Ambiguous mode is only implemented for a single dataset."
                 d = self.opts.datasets[0]
                 assert d.startswith("lidc"), "Ambiguous mode is only implemented for the lidc dataset."
+                assert aug_override is None, "aug_override is not implemented for ambiguous mode."
                 #info_path = f"/home/jloch/Desktop/diff/diffusion2/data/{d}/info.jsonl"
                 #with relative instead
                 info_path = os.path.join(Path(__file__).resolve().parent.parent,"data",d,"info.jsonl")
@@ -95,6 +108,9 @@ class DiffusionSampler(object):
                 if self.opts.num_samples<0:
                     self.opts.num_samples = max_num_samples
                 self.gts_didx = gts_didx
+                if self.opts.num_samples==64 and self.args.crop_method=="sam_lidc64" and (self.opts.split in ["vali","test"]):
+                    self.args.crop_method = "sam_lidc64_fixed64"
+                    print("USING sam_lidc64_fixed64")
                 self.dataloader = get_dataset_from_args(self.args,
                                                     self.opts.split,
                                                     ambiguous_mode=self.opts.ambiguous_mode,
@@ -104,20 +120,21 @@ class DiffusionSampler(object):
                 self.gts_didx = None
                 pri_didx = None
                 self.dataloader = get_dataset_from_args(self.args,
-                                                    self.opts.split,
-                                                    mode="pure_gen")
-                lpd = self.dataloader.dataloader.dataset.len_per_dataset
-                max_num_samples = sum([lpd[dataset] for dataset in self.opts.datasets])
-                if self.opts.num_samples<0:
-                    self.opts.num_samples = max_num_samples
-                elif self.opts.num_samples>max_num_samples:
-                    print(f"WARNING: num_samples={self.opts.num_samples} is larger than the maximum number of samples in the specified datasets: {max_num_samples}. Setting num_samples to the maximum.")
-                    self.opts.num_samples = max_num_samples
-        else:
-            if not hasattr(self.trainer,f"{self.opts.split}_dl"):
-                self.trainer.create_datasets(self.opts.split)
+                                                    split=self.opts.split,
+                                                    mode="pure_gen",
+                                                    aug_override=aug_override)
 
-            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
+
+
+        if not self.opts.ambiguous_mode:
+            lpd = self.dataloader.dataloader.dataset.len_per_dataset
+            datasets = self.args.datasets if isinstance(self.args.datasets,list) else [self.args.datasets]
+            max_num_samples = sum([lpd[dataset] for dataset in datasets])
+            if self.opts.num_samples<0:
+                self.opts.num_samples = max_num_samples
+            elif self.opts.num_samples>max_num_samples:
+                print(f"WARNING: num_samples={self.opts.num_samples} is larger than the maximum number of samples in the specified datasets: {max_num_samples}. Setting num_samples to the maximum.")
+                self.opts.num_samples = max_num_samples
 
         if model is None:
             if self.opts.ema_idx>=0:
@@ -184,11 +201,9 @@ class DiffusionSampler(object):
         if "grid" in self.opts.plotting_functions.split(","):
             assert self.opts.num_samples>=self.opts.num_grid_samples, f"num_samples must be at least as large as num_grid_samples. Found: num_samples={self.opts.num_samples}, num_grid_samples={self.opts.num_grid_samples}"
         assert self.opts.num_votes>0, "num_votes must be positive."
-        assert self.opts.num_samples>=0, "num_samples must be non-negative."
         if self.opts.return_samples>64:
             print(f"WARNING: return_samples={self.opts.return_samples} is very large. This may cause memory issues.")
-        assert self.opts.postprocess in ['none','area0.005','rel_area0.5'], f"postprocess={self.opts.postprocess} is not a valid option."
-
+        
     def sample(self,model=None,**kwargs):
         self.opts = Namespace(**{**vars(self.opts),**kwargs})
         
@@ -333,8 +348,9 @@ class DiffusionSampler(object):
         votes = torch.stack(votes,dim=0).cpu()
         votes_int = ab_bit2int(votes, **self.ab_kwargs)
         if self.opts.postprocess!="none":
-            if self.opts.postprocess=="area0.005":
-                votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": 0.005},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
+            if self.opts.postprocess.startswith("min_area"):
+                area = float(self.opts.postprocess.split("min_area")[-1])
+                votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_area", "min_area": area},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
             elif self.opts.postprocess=="rel_area0.5":
                 votes_int = postprocess_batch(votes_int,seg_kwargs={"mode": "min_rel_area", "min_area": 0.5},list_of_imshape=[info["imshape"][:2]]*votes.shape[0])
             else:

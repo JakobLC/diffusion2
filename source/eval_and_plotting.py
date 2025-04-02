@@ -4,6 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 import cv2
 import os,sys
+import itertools
 
 #add source if we are running this file directly
 if __name__=="__main__":
@@ -922,10 +923,13 @@ class SavedSamples:
         else:
             self.name = "unnamed"
 
-    def load_heavy_image_gt(self,didx_load=None):
+    def load_heavy_image_gt(self,didx_load=None,resize=True):
         if didx_load is None:
             didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
-        imsize = self.get_image_size()
+        if resize:
+            imsize = self.get_image_size()
+        else:
+            imsize = None
         for didx_i in didx_load:
             assert didx_i in self.didx, f"expected didx to be in self.didx, found {didx_i}"
             x = {"dataset_name": didx_i.split("/")[0], "i": int(didx_i.split("/")[1])}
@@ -954,12 +958,30 @@ class SavedSamples:
         hd = self.heavy_data[has_heavy.index(True)]
         assert self.segment_key in hd.keys(), f"expected segment_key={self.segment_key} to be present in heavy_data.keys()={hd.keys()}"
         s = hd[self.segment_key].shape
-        assert len(s)>=3, f"expected at least 3 dimensions in the image shape, found hd[{k}].shape={s}"
+        assert len(s)>=3, f"expected at least 3 dimensions in the image shape, found shape={s}"
 
         out = max(s[-2:])
-        assert out in [2**i for i in range(4,11)], f"expected image size to be a power of 2 between 16 and 1024, found {out}"
+        #assert out in [2**i for i in range(4,11)], f"expected image size to be a power of 2 between 16 and 1024, found {out}"
 
         return out
+
+    def crop_padding(self):
+        """Iterates through and crops all heavy data which is
+          matching the dimensions of segmentation.
+        """
+        for didx_i in range(len(self.didx)):
+            if self.heavy_data[didx_i] is not None:
+                hd = self.heavy_data[didx_i]
+                ld = self.light_data[didx_i]
+                segmentation = hd[self.segment_key]
+                h,w = segmentation.shape[-2:]
+                assert h==w, "Expected segmentation to be square, found h="+str(h)+" and w="+str(w)
+                h_new,w_new = sam_resize_index(*ld["info"]["imshape"][:2],w)
+                for k in hd.keys():
+                    if isinstance(hd[k],np.ndarray) or torch.is_tensor(hd[k]):
+                        h_k,w_k = hd[k].shape[-2:]
+                        if h_k==h and w_k==w:
+                            hd[k] = hd[k][...,:h_new,:w_new]
 
     def downscale_heavy_data(self,longest_side_resize=128,keys=["gt","pred_int","image"]):
         if not isinstance(keys,list):
@@ -1156,7 +1178,7 @@ class SavedSamples:
                         if self.is_ambiguous:
                             assert min(seg_shape[0],*seg_shape[2:])==seg_shape[0], f"expected first dimension of segmentations to be the smallest, found {seg_shape}"
                         else:
-                            assert seg_shape[0]==1, f"expected first dimension of segmentations to be 1, found {seg_shape[0]}"
+                            pass #assert seg_shape[0]==1, f"expected first dimension of segmentations to be 1, found {seg_shape}"
             else:
                 self.didx.append(d)
                 self.light_data.append(l)
@@ -1277,10 +1299,10 @@ class SavedSamples:
                                   name=new_name)
         return new_ss
 
-    def recompute_metrics(self):
-        self.postprocess(postprocess_kwargs=None,recompute_metrics=True)
+    def recompute_metrics(self,tqdm_recompute=False):
+        self.postprocess(postprocess_kwargs=None,recompute_metrics=True,tqdm_recompute=tqdm_recompute)
 
-    def postprocess(self,postprocess_kwargs={},recompute_metrics=True):
+    def postprocess(self,postprocess_kwargs={},recompute_metrics=True,tqdm_recompute=False):
         if self.postprocess_kwargs is not None:
             warnings.warn("The samples were already postprocessed, reprocessing with new postprocess_kwargs")
         didx = [d for d in self.didx if self.heavy_available[d]=="pos_loaded"]
@@ -1322,15 +1344,23 @@ class SavedSamples:
             if self.is_ambiguous:
                 segments_pp = [postprocess_batch(s_i,seg_kwargs=postprocess_kwargs) for s_i in segments]
             else:
-                raise NotImplementedError("Probably doesn't work, uncomment and try. Fix shapes and type")
+                #raise NotImplementedError("Probably doesn't work, uncomment and try. Fix shapes and type")
+                num_votes = segments[0].shape[0]
+                if num_votes>1:
+                    warnings.warn("only the first vote is currently implemented for postprocessing")
+                segments = [s_i[0,0] for s_i in segments]
                 segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
             metrics = []
-            for seg,gt in zip(segments_pp,gts):
+            tqdm_hat = tqdm.tqdm if tqdm_recompute else lambda x: x
+            for i in tqdm_hat(range(len(didx))):
+                didx_i = didx[i]
+                seg = segments_pp[i]
+                gt = gts[i]
                 if self.is_ambiguous:
                     metrics.append(get_ambiguous_metrics(seg.permute(1,2,0).cpu().numpy(),gt))
                 else:
-                    metrics.append(get_segment_metrics(seg,gt)) 
+                    metrics.append(get_segment_metrics(seg[None],didx_i)) 
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]
@@ -1412,7 +1442,7 @@ class DiffSamples(SavedSamples):
                     item = index_dict_with_bool(copy.deepcopy(batch),bool_iterable=np.arange(bs)==b)
                     if self.heavy_available[didx_i]=="pos_loaded":
                         j = didx.index(didx_i)
-                        assert self.is_ambiguous, "Found repeat votes, but self.is_ambiguous is False for didx_i="+didx_i
+                        #assert self.is_ambiguous, "Found repeat votes, but self.is_ambiguous is False for didx_i="+didx_i
                         assert ack in heavy_data[j].keys(), "expected pred_int to be in heavy_data[j].keys(), found "+str(heavy_data[j].keys())
                         heavy_data[j][ack] = torch.cat([heavy_data[j][ack],item[ack]],dim=0)
                     else:

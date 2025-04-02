@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.4.3",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.3."],
+    "model_version": ["1.4.5",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.5."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
@@ -13,11 +13,11 @@
     "diffusion": {
         "no_diffusion": [false,                     "TODO, not implemented. Should a normal non-diff UNet be used? TYPE: boolean. DEFAULT: false. "],
         "noise_schedule": ["cosine",                "Which noise schedule? TYPE: One of: ['linear','cosine','linear_simple']. DEFAULT: cosine. "],
-        "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "],
         "schedule_sampler": ["uniform_low_d",       "Which strategy for timestep sampling to use for the schedule? TYPE: One of: ['uniform','low_discrepency','uniform_low_d']. DEFAULT: uniform."],
         "input_scale": [0.1,                        "Input scaling factor, where 1.0 is no scaling and lower values towards 0 induce noisier schedules. TYPE: float. DEFAULT: 0.1. "],
         "logsnr_min": [-20.0,                       "Minimum value for logsnr. TYPE: float. DEFAULT: -20.0. "],
-        "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 20.0. "]
+        "logsnr_max": [20.0,                        "Maximum value for logsnr. TYPE: float. DEFAULT: 20.0. "],
+        "var_type": ["large",                       "Which type of variance to use? TYPE: One of ['large','small','log_linear_[float]']. DEFAULT: 'large'. "]
     },
     "model": {
         "agnostic": [true,                          "Should the model be class agnostic? TYPE: boolean. DEFAULT: true. "],
@@ -181,7 +181,8 @@
         "max_num_classes": [64,                     "Maximum number of class labels. TYPE: positive integer. DEFAULT: 64. "],
         "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: ''. "],
         "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
-        "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "]
+        "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
+        "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "]
     },
     "renamed": {
         "image_prob": "p_image",

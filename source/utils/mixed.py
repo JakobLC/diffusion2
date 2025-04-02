@@ -11,7 +11,8 @@ import datetime
 import re
 import scipy.ndimage as nd
 import copy
-from jlc import shaprint
+from jlc import (shaprint, longest_common_substring, 
+                 save_dict_list_to_json, load_json_to_dict_list)
 import warnings
 
 def didx_from_info(info):
@@ -88,7 +89,7 @@ def is_infinite_and_not_none(x):
         return False
     else:
         return torch.isinf(x).any()
-
+"""
 def save_dict_list_to_json(data_list, file_path, append=False):
     assert isinstance(file_path,str), "file_path must be a string"
     if not isinstance(data_list,list):
@@ -140,7 +141,7 @@ def longest_common_substring(str1, str2):
                     end_position = i
             else:
                 dp[i][j] = 0
-    return str1[end_position - max_length: end_position]
+    return str1[end_position - max_length: end_position]"""
 
 def fancy_print_kvs(kvs, atmost_digits=5, s="#"):
         """prints kvs in a nice format like
@@ -625,7 +626,7 @@ def postprocess_seg(seg,
     assert isinstance(seg,np.ndarray), "expected seg to be an np.ndarray"
     assert seg.dtype==np.uint8
     if mode!="min_rel_area":
-        assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1)
+        assert len(seg.shape)==2 or (len(seg.shape)==3 and seg.shape[-1]==1), f"expected seg to be of shape (H,W) or (H,W,1), found {seg.shape}"
     else:
         assert len(seg.shape)==3 and seg.shape[-1]>1, "expected seg to be of shape (H,W,C) with C>1, found "+str(seg.shape)
         if seg.shape[2]>seg.shape[0] or seg.shape[2]>seg.shape[1]:

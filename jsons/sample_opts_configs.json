@@ -168,5 +168,37 @@
         "num_samples": 128,
         "num_votes": 1,
         "plotting_functions": ""
+    },
+    "ent": {
+        "versions": {
+            "512": {"num_samples": 512}, 
+            "64": {"num_samples": 64},
+            "ts_sweep": {"sampler_type": "ddpm;ddim", "num_timesteps":"2;5;10;20;50;100;200"},
+            "gw_sweep": {"guidance_weight": "-1.0;-0.1;0.0;0.1;0.2;0.3;0.5;0.8;1.0;1.5;2.0;3.0;10.0"}
+        },
+        "datasets": "entityseg",
+        "num_timesteps": 25,
+        "sampler_type": "ddpm",
+        "split": "vali",
+        "num_votes": 3,
+        "kwargs_mode": "only_image",
+        "num_samples": -1
+    },
+    "entopt": {
+        "versions": {
+            "vali": {},
+            "train": {"split": "train"},
+            "all": {"num_samples": -1, "split_method": "native"},
+            "self_cond": {"kwargs_mode": "image,self_cond"},
+            "save": {"save_raw_samples": true, "save_light_stats": true, "only_save_raw_pred": true, "num_save_raw_samples": 1e10},
+            "test": {"split": "test"},
+            "pp": {"postprocess": "min_area0.04"}
+        },
+        "num_timesteps": 100, 
+        "sampler_type": "ddpm", 
+        "guidance_weight": 1.5,
+        "num_votes": 3,
+        "kwargs_mode": "only_image",
+        "num_samples": 64
     }
 }

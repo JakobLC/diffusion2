@@ -593,14 +593,23 @@
     "entity": {
         "versions": {
             "deep": {"num_channels": 128, "channel_multiplier": "1,1,2,2,2,3,4", "attention_resolutions": "-4,-3,-2,-1", "max_iter": 200000},
-            "sid": {"identity_init": true, "new_upsample_method": true, "one_skip_per_reso": false, "num_res_blocks": "1,2,2,4,8","image_size": 128},
+            "sid": {"identity_init": true, "new_upsample_method": true, "one_skip_per_reso": false, 
+                    "num_res_blocks": "1,2,2,4,8","image_size": 128},
             "huge": {"image_size": 256, "patch_size": 2, "input_scale": 0.1},
             "sid2": {"identity_init": true, "new_upsample_method": true, "one_skip_per_reso": false, 
                     "num_res_blocks": "2,2,2,4,8", "channel_multiplier": "1,2,2,4,8", 
                     "mlp_attn": true, "max_iter": 300000},
             "decoup": {"decouple_loss_weights": true, "loss_weights": "gamma"},
+            "sigmoid_sweep": {"decouple_loss_weights": true, "loss_weights": "sigmoid_-6;sigmoid_-4;sigmoid_-2;sigmoid_0;sigmoid_2"},
             "cont": {"mode": "load", "ckpt_name": "*entity[sid2]_20", "load_state_dict_loose": true, 
-                    "lr_warmup_steps": 10000, "max_iter": 50000, "lr_decay_steps": 10000}
+                    "lr_warmup_steps": 10000, "max_iter": 50000, "lr_decay_steps": 10000},
+            "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"},
+            "input_scale_sweep": {"input_scale": "1.0;0.6;0.3;0.2;0.1;0.06;0.03"},
+            "v2": {"input_scale": 0.1, "loss_weights": "sigmoid_-4","gen_setups": "entopt[vali],entopt[train]"},
+            "v3": {"input_scale": 0.1, "loss_weights": "sigmoid_-4","gen_setups": "entopt[vali],entopt[train]", "decouple_loss_weights": true},
+            "v3_big": {"input_scale": 0.06, "loss_weights": "sigmoid_-4","gen_setups": "entopt[vali],entopt[train]",
+                       "decouple_loss_weights": true, "image_size": 256, "gen_interval": 5000},
+            "sam": {"image_encoder": "sam_vit_b", "train_batch_size": 4, "num_channels": 32}
         },
         "image_size": 128, 
         "datasets": "entityseg",

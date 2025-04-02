@@ -203,6 +203,8 @@ class ContinuousGaussianDiffusion():
             else:
                 bias = float(self.weights_type.split("_")[1])
             weights = torch.sigmoid(self.logsnr(t)-bias)
+        else:
+            raise NotImplementedError(self.weights_type)
         if self.decouple_loss_weights:
             weights *= -self.diff_logsnr(t)
         return weights
@@ -454,19 +456,13 @@ class ContinuousGaussianDiffusion():
     
     def p_distribution(self, x_t, pred_x, logsnr_t, logsnr_s):
         """computes p(x_s | x_t)."""
-        if self.var_type==VarType.small:
-            x_logvar = "small"
-        else: 
-            assert self.var_type==VarType.large
-            x_logvar = "large"
-            
         out = self.q_distribution(
             x_t=x_t, logsnr_t=logsnr_t, logsnr_s=logsnr_s,
-            x=pred_x, x_logvar=x_logvar)
+            x=pred_x)
         out['pred_bit'] = pred_x
         return out
     
-    def q_distribution(self, x, x_t, logsnr_s, logsnr_t, x_logvar):
+    def q_distribution(self, x, x_t, logsnr_s, logsnr_t, x_logvar=None):
         """computes q(x_s | x_t, x) (requires logsnr_s > logsnr_t (i.e. s < t))."""
         alpha_st = torch.sqrt((1. + torch.exp(-logsnr_t)) / (1. + torch.exp(-logsnr_s)))
         alpha_s = torch.sqrt(torch.sigmoid(logsnr_s))
@@ -475,17 +471,18 @@ class ContinuousGaussianDiffusion():
         log_one_minus_r = torch.log1p(-torch.exp(logsnr_s - logsnr_t))  # log(1-SNR(t)/SNR(s))
 
         mean = mult_(r * alpha_st, x_t) + mult_(one_minus_r * alpha_s, x)
-        
-        if x_logvar == 'small':
+        if x_logvar is None:
+            x_logvar = self.var_type
+        if x_logvar==VarType.small:
             # same as setting x_logvar to -infinity
             var = one_minus_r * torch.sigmoid(-logsnr_s)
             logvar = log_one_minus_r + torch.nn.LogSigmoid()(-logsnr_s)
-        elif x_logvar == 'large':
+        elif x_logvar==VarType.large:
             # same as setting x_logvar to nn.LogSigmoid()(-logsnr_t)
             var = one_minus_r * torch.sigmoid(-logsnr_t)
             logvar = log_one_minus_r + torch.nn.LogSigmoid()(-logsnr_t)
         else:        
-            raise NotImplementedError(x_logvar)
+            raise NotImplementedError(self.var_type)
         return {'mean': mean, 'std': torch.sqrt(var), 'var': var, 'logvar': logvar}
 
 def transform_guidance_weight(gw, x):
@@ -519,7 +516,7 @@ def create_diffusion_from_args(args):
                                     weights_type=args.loss_weights,
                                     time_cond_type=args.time_cond_type,
                                     sampler_type=args.schedule_sampler,
-                                    var_type="small" if args.sigma_small else "large",
+                                    var_type=args.var_type,
                                     loss_type=args.loss_type,
                                     logsnr_min=args.logsnr_min,
                                     logsnr_max=args.logsnr_max,

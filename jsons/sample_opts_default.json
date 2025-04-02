@@ -33,7 +33,8 @@
         "postprocess"                 : ["none",          "Which postprocessing to use. One of ['none','area0.005']. TYPE: str. DEFAULT: 'none'"],
         "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],
         "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"],
-        "replace_padding"             : [true,            "Whether to replace padding with zeros. TYPE: bool. DEFAULT: false"]
+        "replace_padding"             : [true,            "Whether to replace padding with zeros. TYPE: bool. DEFAULT: false"],
+        "aug_override"                : ["none",          "Whether to override the split setting and use/not use augmentations. TYPE: bool. DEFAULT: 'none'"]
     },
     "meta options": {
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],

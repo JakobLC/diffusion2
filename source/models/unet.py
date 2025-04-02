@@ -492,7 +492,7 @@ class UNetModel(nn.Module):
 
         if self.use_image_features:
             self.fp16_attrs.append("preprocess_img_enc")
-
+            self.image_encoder_shape = image_encoder_shape
             s_in = image_encoder_shape
             d = self.image_size//(2**image_encoder_depth)
             s_out = (channel_mult[image_encoder_depth]*model_channels,d,d)
@@ -904,8 +904,13 @@ class UNetModel(nn.Module):
                 assert 0<=v.min() and v.max()<=self.class_dict[k], f"class index out of range. for class {k} expected range [0,{self.class_dict[k]}], got {v.min()} to {v.max()}"
                 classes[:,list(self.class_dict.keys()).index(k)] = v
             elif k=="image_features":
-                assert self.use_image_features, "image_features provided but model has does not use image features"
-                image_features = v
+                assert self.use_image_features, "image_features provided but model does not use image features"
+                #replace None in list with zero tensor then concatenate
+                assert len(v) == bs, f"expected length {bs}, got {len(v)} for input {k}"
+                for i in range(bs):
+                    if v[i] is None:
+                        v[i] = torch.zeros(self.image_encoder_shape,dtype=sample.dtype,device=sample.device)
+                image_features = torch.stack(v,dim=0)
             elif torch.is_tensor(v) or isinstance(v,list):
                 #here should only be image inputs
                 assert self.unet_input_dict[k]["input_type"] == "image", f"input {k} is not an image input"

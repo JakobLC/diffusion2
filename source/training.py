@@ -310,12 +310,7 @@ class DiffusionModelTrainer:
     def get_kwargs(self, batch, gen=False, del_none=True, force_image=False):
         #x is gt_int
         x,info = batch
-        if self.args.image_encoder!="none":
-            if self.args.image_size!=x.shape[-1]:
-                raise ValueError("image_size must be equal to the image size of the image encoder. Found "+str(self.args.image_size)+" vs "+str(x.shape[-1]))
-                x = F.interpolate(x.float(),(self.args.image_size,self.args.image_size),mode="nearest-exact").to(self.device).long()
-        else:
-            x = x.to(self.device)
+        x = x.to(self.device)
         if hasattr(self,"model"):
             if type(self.model).__name__=="GenProbUNet":
                 used_inputs = ["image"]
@@ -380,6 +375,8 @@ class DiffusionModelTrainer:
         #end of bs loop
         if self.args.image_encoder!="none":
             model_kwargs["image_features"] = self.get_image_features(model_kwargs,bs)
+        if self.args.crop_method=="sam_big":
+            model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
         model_kwargs = cond_kwargs_int2bit(model_kwargs,ab_kw=self.ab_kwargs)
         model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
@@ -390,14 +387,18 @@ class DiffusionModelTrainer:
         image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
         if len(image_idx)>0:
             image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
-            if not image.shape[-1]==image.shape[-2]==1024:
+            if self.args.crop_method=="sam_small":
                 image = resize(image,(1024,1024),antialias=True)
             with torch.no_grad():
-                image_features = self.image_encoder(to_dev(image))
-            model_kwargs["image_features"] = [None if i not in image_idx else image_features[j] 
-                                              for j,i in enumerate(range(bs))]
-            if self.args.crop_method=="sam_big":
-                model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
+                image_features_tensor = self.image_encoder(to_dev(image))
+            image_features = []
+            k = 0
+            for i in range(bs):
+                if model_kwargs["image"][i] is None:
+                    image_features.append(None) 
+                else:
+                    image_features.append(image_features_tensor[k])
+                    k += 1
         return image_features
 
     def run_train_step(self, batch):
@@ -515,7 +516,7 @@ class DiffusionModelTrainer:
                 
     def optimize_fp16(self):
         if any(is_infinite_and_not_none(p.grad) for p in self.model_params):
-            self.log_loss_scale -= 1
+            self.log_loss_scale = round(self.log_loss_scale-1,round(-np.log10(self.args.fp16_scale_growth)))
             self.last_grad_norm = -1.0
             self.last_clip_ratio = -1.0 
             self.log(f"Found NaN, decreased log_loss_scale to {self.log_loss_scale}")
@@ -534,7 +535,7 @@ class DiffusionModelTrainer:
         for rate, params in zip(self.ema_rates, self.ema_params):
             update_ema(params, self.master_params, rate=rate)
         master_params_to_model_params(self.model_params, self.master_params)
-        self.log_loss_scale += self.args.fp16_scale_growth
+        self.log_loss_scale = round(self.log_loss_scale + self.args.fp16_scale_growth,round(-np.log10(self.args.fp16_scale_growth)))
 
     def optimize_normal(self):
         if "grad_norm" in nice_split(self.args.log_train_metrics):

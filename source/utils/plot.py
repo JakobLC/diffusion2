@@ -862,9 +862,10 @@ def visualize_batch(batch,with_text_didx=False,class_text_size=12,with_class_nam
         class_names = [info["idx_to_class_name"] for info in batch[-1]]
     else:
         class_names = [None]*bs
-    jlc.montage([
+    out = jlc.montage([
         mask_overlay_smooth(im,lab,fontsize=class_text_size,alpha_mask=alpha_mask,class_names=class_names.pop(0),show_border=show_border) 
         for im,lab in zip(images,labels)],**kwargs)
+    return out
 
 def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
             "border_color": "black",
