@@ -1,5 +1,3 @@
-
-
 import sys, os
 sys.path.append(os.path.abspath('./source/'))
 from source.training import DiffusionModelTrainer, trainer_from_sample_opts

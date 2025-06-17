@@ -34,7 +34,8 @@
         "pure_testing"                : [false,           "Whether to use pure testing mode. TYPE: bool. DEFAULT: false"],
         "semantic_prob"               : [-1.0,            "Probability of sampling semantic labels (instead of instance). -1.0 for training inheriting from training. TYPE: float. DEFAULT: -1.0"],
         "replace_padding"             : [true,            "Whether to replace padding with zeros. TYPE: bool. DEFAULT: false"],
-        "aug_override"                : ["none",          "Whether to override the split setting and use/not use augmentations. TYPE: bool. DEFAULT: 'none'"]
+        "aug_override"                : ["none",          "Whether to override the split setting and use/not use augmentations. TYPE: bool. DEFAULT: 'none'"],
+        "pri_didx"                    : ["",              "Comma seperated list of didx to only sample from. TYPE: str. DEFAULT: ''"]
     },
     "meta options": {
         "do_agg"                      : [true,            "Whether to use matplotlib 'agg' as backend for plotting (to avoid memory leak). TYPE: bool. DEFAULT: true"],
@@ -52,7 +53,9 @@
         "ambiguous_mode"              : [false,           "Whether to use ambiguous mode (for datasets with ambiguous labels. Currently lidc). TYPE: bool. DEFAULT: false"],
         "add_amb_postprocess_metrics" : [false,           "Whether to add postprocess metrics for ambiguous mode. TYPE: bool. DEFAULT: false"],
         "save_entropy"                : [false,           "Whether to save the entropy of the samples. TYPE: bool. DEFAULT: false"],
-        "use_raw_args"                : [false,           "Whether to use the raw args instead of loading args from model_id. TYPE: bool. DEFAULT: false"]
+        "use_raw_args"                : [false,           "Whether to use the raw args instead of loading args from model_id. TYPE: bool. DEFAULT: false"],
+        "compute_full_ap"             : [true,            "Whether to compute full ap. TYPE: bool. DEFAULT: true"],
+        "num_workers"                 : [-1,              "Number of workers to use for loading data. -1 for same as train. TYPE: int. DEFAULT: -1"]
     },
     "how much to sample": {
         "num_votes"                   : [3,               "Number of votes (segmentation masks) to use per image when sampling. TYPE: int. DEFAULT: 5"],

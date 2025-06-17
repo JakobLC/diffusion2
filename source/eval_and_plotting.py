@@ -19,7 +19,8 @@ from source.utils.dataloading import (load_raw_image_label,
                       load_raw_image_label_from_didx,
                       longest_side_resize_func)
 import copy
-from source.utils.metric_and_loss import get_segment_metrics, get_ambiguous_metrics
+from source.utils.metric_and_loss import (get_segment_metrics, get_ambiguous_metrics, 
+                                          ap_entity_full,ap_entity)
 from source.utils.mixed import (imagenet_preprocess, ambiguous_info_from_fn,
                          load_json_to_dict_list,sam_resize_index, 
                          postprocess_list_of_segs,wildcard_match,postprocess_batch)
@@ -322,7 +323,11 @@ class SavedSamplesManager:
         ss_names = []
         for k in ss_idx:
             ss = self.saved_samples[k]
-            ss_names.append(ss.name)
+            if len(ss.name)>14:
+                #add newlines every 14th char
+                ss_names.append("\n".join([ss.name[i:i+14] for i in range(0,len(ss.name),14)]))
+            else:
+                ss_names.append(ss.name)
 
             metrics_k = ss.get_light_data(didx_plot,keys=metrics_keys)
             metrics_k = concat_dict_list(metrics_k,ignore_weird_values=True)["metrics"]
@@ -488,6 +493,8 @@ class SavedSamplesManager:
             intersection_didx = self.intersection_didx(heavy_only=False,ss_idx=ss_idx)
             if len(intersection_didx)==0:
                 raise ValueError("No overlapping didx found. Consider setting intersection_only=False")
+            if isinstance(intersection_only,list):
+                intersection_didx = [d for d in intersection_didx if d in intersection_only]
         else:
             intersection_didx = None
         uq,uq_c = np.unique(sum([self.saved_samples[i].get_metric_names() for i in ss_idx],[]),return_counts=True)
@@ -923,6 +930,57 @@ class SavedSamples:
         else:
             self.name = "unnamed"
 
+    def apply_to_key(self,key,fn):
+        """Applies a function to all heavy data with the given key.
+        """
+        for i in range(len(self.heavy_data)):
+            if self.heavy_data[i] is not None:
+                assert key in self.heavy_data[i].keys(), f"expected key {key} to be present in heavy_data[{i}].keys()={self.heavy_data[i].keys()}"
+                self.heavy_data[i][key] = fn(self.heavy_data[i][key])
+        return self
+
+    def normalize_shapes(self, auto_imshape=True, convert_to="torch", 
+                         verbose=True, defined_vals={},
+            shape_dict = {
+                "image": ("h","w",3),
+                "gt": ("h", "w"),
+                "pred_int": ("v", "c", "h", "w"),
+            }
+        ):
+        """Iteratates through all heavy data and normalizes the shapes. 
+        h, w, c, v is the image height, width, #channels and #votes respectively.
+        Uses image sizes from light data.
+        """
+        n_reshaped = 0
+        n_reshaped_actual = 0
+        for i in range(len(self.heavy_data)):
+            if self.heavy_data[i] is None:
+                continue
+            try:
+                h,w = self.light_data[i]["info"]["imshape"][:2]
+            except KeyError as e:
+                if auto_imshape:
+                    raise NotImplementedError("auto_imshape is not implemented yet")
+                else:
+                    raise e
+            assert h>1 and w>1, "expected image height and width to be greater than 1"
+            for k,shape_template in shape_dict.items():
+                shape_before = self.heavy_data[i][k]
+                self.heavy_data[i][k] = reshape_by_template(self.heavy_data[i][k],
+                                                shape_template,
+                                                defined_vals={"h": h, "w": w, **defined_vals})
+                n_reshaped += 1
+                if convert_to=="torch" and isinstance(self.heavy_data[i][k],np.ndarray):
+                    self.heavy_data[i][k] = torch.from_numpy(self.heavy_data[i][k])
+                elif convert_to=="np" and torch.is_tensor(self.heavy_data[i][k]):
+                    self.heavy_data[i][k] = self.heavy_data[i][k].numpy()
+
+                if shape_before.shape != self.heavy_data[i][k].shape:
+                    n_reshaped_actual += 1
+        if verbose:
+            print("Reshaped "+str(n_reshaped)+" heavy data items")
+            print("Shape was actually changed in "+str(n_reshaped_actual)+" heavy data items")
+
     def load_heavy_image_gt(self,didx_load=None,resize=True):
         if didx_load is None:
             didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
@@ -1299,6 +1357,28 @@ class SavedSamples:
                                   name=new_name)
         return new_ss
 
+    def compute_full_ap(self,didx=None):
+        """Computes the full AP for all samples"""
+        if didx is None:
+            didx = self.didx
+        didx,idx = self.normalize_indexer(didx)
+        if len(didx)==0:
+            raise ValueError("didx is empty")
+        
+        full_infos = []
+        for i in idx:
+            gt = self.heavy_data[i]["gt"]
+            pred = self.heavy_data[i][self.segment_key]
+            scores = self.light_data[i].get("scores",None)
+            uq_pred = np.unique(pred)
+            uq_pred = uq_pred[uq_pred>0]
+            idx_to_scores = {uq_pred[i]: scores[i] for i in range(len(uq_pred))}
+
+            ap_i,save_dict = ap_entity([pred],[gt],[idx_to_scores],return_save_dict=1)
+            full_infos.append(save_dict["full_info"])
+        ap = ap_entity_full(full_infos)
+        return ap
+
     def recompute_metrics(self,tqdm_recompute=False):
         self.postprocess(postprocess_kwargs=None,recompute_metrics=True,tqdm_recompute=tqdm_recompute)
 
@@ -1344,11 +1424,12 @@ class SavedSamples:
             if self.is_ambiguous:
                 segments_pp = [postprocess_batch(s_i,seg_kwargs=postprocess_kwargs) for s_i in segments]
             else:
-                #raise NotImplementedError("Probably doesn't work, uncomment and try. Fix shapes and type")
+                """#raise NotImplementedError("Probably doesn't work, uncomment and try. Fix shapes and type")
                 num_votes = segments[0].shape[0]
                 if num_votes>1:
-                    warnings.warn("only the first vote is currently implemented for postprocessing")
-                segments = [s_i[0,0] for s_i in segments]
+                    warnings.warn("only the first vote is currently implemented for postprocessing")"""
+                assert all([len(s_i.shape)==2 for s_i in segments]), "expected all segments to have 2 dimensions (h,w)"
+                segments = [s_i for s_i in segments]
                 segments_pp = postprocess_list_of_segs(segments,seg_kwargs=postprocess_kwargs)
         if recompute_metrics:
             metrics = []
@@ -1416,7 +1497,9 @@ class DiffSamples(SavedSamples):
             self.raw_samples_files = sorted(list(Path(self.sample_opts["raw_samples_folder"]).glob(glob_str)))
             if len(self.raw_samples_files)==0:
                 warnings.warn(f"no files found in {self.sample_opts['raw_samples_folder']} with glob_str={glob_str}")
-            self.mem_per_batch = os.path.getsize(self.raw_samples_files[0])
+                self.mem_per_batch = 0
+            else:
+                self.mem_per_batch = os.path.getsize(self.raw_samples_files[0])
             self.mem_all = self.mem_per_batch*len(self.raw_samples_files)
         else:
             self.raw_samples_files = []
@@ -1685,6 +1768,73 @@ def maybe_flatten(x):
         return sum(x,[])
     else:
         return x
+
+
+def reshape_by_template(hd,shape_template,defined_vals):
+    assert isinstance(hd,np.ndarray) or torch.is_tensor(hd), f"hd must be a tensor or numpy array, got {type(hd)}"
+    dims = [i for i,d in enumerate(hd.shape) if d!=1]
+    #make sure we dont have too many non-1 dims
+    nnz_template = 0
+    for s in shape_template:
+        if isinstance(s,int):
+            if s>1:
+                nnz_template += 1
+        elif s in defined_vals:
+            if defined_vals[s]>1:
+                nnz_template += 1
+        else:
+            nnz_template += 1
+    assert len(dims) <= nnz_template, f"Too many non-trivial dims in shape={hd.shape} ({len(dims)}) for template {shape_template} ({nnz_template})"
+    
+    default_checking_order = ["h","w","v","c"]
+    #add any extra letters to the end of the checking order
+    for s in shape_template:
+        if isinstance(s,str):
+            if s not in default_checking_order:
+                default_checking_order.append(s)
+    default_triv_dim_not_allowed = ["h","w"] 
+    
+    #look through order and assign defined values first,
+    #then assign remaining based on order and largest dims
+    match_dims = {}
+
+    for s in default_checking_order:
+        if s in shape_template:
+            #add first unused match if defined, else add largest unused match
+            match_idx = -1
+            if s in defined_vals:
+                val = defined_vals[s]
+                for i in dims:
+                    if i not in match_dims.values():
+                        if hd.shape[i]==val:
+                            match_idx = i
+                            break
+                if match_idx==-1 and val>1:
+                    raise ValueError(f"Could not find match for dim {s}={val} in shape={hd.shape}")
+            else:
+                largest_match = -1
+                for i in dims:
+                    if i not in match_dims.values():
+                        if hd.shape[i]>largest_match:
+                            largest_match = hd.shape[i]
+                            match_idx = i
+            match_dims[s] = match_idx
+    for s in default_triv_dim_not_allowed:
+        if s in shape_template:
+            assert hd.shape[match_dims[s]]>1, f"Dim {s}={hd.shape[match_dims[s]]} is trivial in shape={hd.shape}"
+    permute_order = [dims.index(match_dims[s]) for s in shape_template if match_dims[s]>=0]
+    if isinstance(hd,np.ndarray):
+        arr = np.transpose(hd.squeeze(),permute_order)
+    else:
+        arr = torch.permute(hd.squeeze(),permute_order)
+    #unsqueeze any dims that were not in the template
+    for i,s in enumerate(shape_template):
+        if match_dims[s]<0:
+            if isinstance(hd,np.ndarray):
+                arr = np.expand_dims(arr,i)
+            else:
+                arr = torch.unsqueeze(arr,i)
+    return arr
 
 def main():    
     parser = argparse.ArgumentParser()

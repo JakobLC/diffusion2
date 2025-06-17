@@ -95,7 +95,8 @@
         "split_method": ["native_train",            "Which split method to use? TYPE: One of ['random','native_train','native']. DEFAULT: 'random'. "],
         "max_class_names": [32,                     "Maximum number of class names. TYPE: positive integer. DEFAULT: 32. "],
         "padding_idx": [255,                        "Padding index used for the ground truth. TYPE: positive integer. DEFAULT: 255. "],
-        "imagenet_norm": [true,                     "Should the imagenet normalization be used? TYPE: boolean. DEFAULT: true. "]
+        "imagenet_norm": [true,                     "Should the imagenet normalization be used? TYPE: boolean. DEFAULT: true. "],
+        "aug_prob_multiplier": [1.0,                "Augmentation probability multiplier. TYPE: float. DEFAULT: 1.0. "]
     },
     "meta": {
         "gen_interval": [1000,                      "Evaluate every n steps. TYPE: positive integer. DEFAULT: 1000. "],

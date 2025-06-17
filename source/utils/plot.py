@@ -841,7 +841,8 @@ def plot_class_sims(info_list,dataset_name,num_show_neighbours=4,num_roots=4,lon
     jlc.zoom()
     return image_overlays
 
-def visualize_batch(batch,with_text_didx=False,class_text_size=12,with_class_names=True,imagenet_inv=True,crop=True,alpha_mask=0.9,show_border=1,**kwargs):
+def visualize_batch(batch,with_text_didx=False,class_text_size=12,with_class_names=True,
+                    imagenet_inv=True,crop=True,alpha_mask=0.9,show_border=1,**kwargs):
     bs = len(batch[-1])
     
     images = [b["image"].permute(1,2,0).numpy() for b in batch[-1]]
@@ -867,7 +868,8 @@ def visualize_batch(batch,with_text_didx=False,class_text_size=12,with_class_nam
         for im,lab in zip(images,labels)],**kwargs)
     return out
 
-def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kwargs = {            
+def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,create_figure=False,
+                    overlay_kwargs = {            
             "border_color": "black",
             "alpha_mask": 0.5,
             "pixel_mult": 1,
@@ -890,7 +892,7 @@ def visualize_dataset_with_labels(dataset_name="totseg",num_images=12,overlay_kw
         class_names = {i: idx_to_class[str(idx)] for i,idx in enumerate(info["classes"])}
         image_overlay = mask_overlay_smooth(image,label,class_names=class_names,**overlay_kwargs)
         image_overlays.append(image_overlay)
-    jlc.montage(image_overlays)
+    jlc.montage(image_overlays,create_figure=create_figure)
     jlc.zoom()
 
 def visualize_latent_vec(dim,cmap="inferno",

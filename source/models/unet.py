@@ -21,6 +21,8 @@ import pandas as pd
 import warnings
 from argparse import Namespace
 
+from sam2.build_sam import build_sam2
+
 tp = TieredParser()
 arg_items = tp.get_args(alt_parse_args=["--model_name","default"]).__dict__.items()
 cond_image_prob_keys = [k for k,v in arg_items if k.startswith("p_")]
@@ -444,6 +446,7 @@ class UNetModel(nn.Module):
         self.patch_size = patch_size
         self.new_upsample_method = new_upsample_method
         self.one_skip_per_reso = one_skip_per_reso
+        self.image_encoder_depth = image_encoder_depth
         self.debug_run = debug_run
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
@@ -484,32 +487,10 @@ class UNetModel(nn.Module):
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
         self.no_diffusion = no_diffusion
-        self.image_encoder_depth = image_encoder_depth
         self.use_image_features = image_encoder_depth >= 0
         self.fp16_attrs = ["input_blocks","output_blocks"]
         if num_middle_res_blocks>=1:
             self.fp16_attrs.append("middle_block")
-
-        if self.use_image_features:
-            self.fp16_attrs.append("preprocess_img_enc")
-            self.image_encoder_shape = image_encoder_shape
-            s_in = image_encoder_shape
-            d = self.image_size//(2**image_encoder_depth)
-            s_out = (channel_mult[image_encoder_depth]*model_channels,d,d)
-            self.preprocess_img_enc = [conv_nd(2,in_channels=s_in[0],out_channels=s_out[0],kernel_size=3,padding=1)]
-            
-            if s_in[1] == s_out[1]:
-                pass
-            elif s_in[1] > s_out[1]:
-                if np.isclose(s_in[1]/s_out[1],int(s_in[1]/s_out[1])):
-                    self.preprocess_img_enc.append(avg_pool_nd(2,s_in[1]//s_out[1]))
-                else:
-                    #ugly downsampling due to non-integer ratio
-                    self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
-            else:
-                #Bilinear upsampling is as good as it gets
-                self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
-            self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
         self.in_channels = 0
         for k,v in self.unet_input_dict.items():
@@ -664,6 +645,40 @@ class UNetModel(nn.Module):
         )
         self.out_channels = out_channels
         self.make_block_info()
+        #print(self.block_info)
+        #assert 0
+        if self.use_image_features:
+            depths = self.block_info["depth"].values
+            subclasses = self.block_info["subclasses"].values
+
+            depths_with_new_scale = [0]
+            for d,s in zip(depths,subclasses):
+                if ("Downsample" in s) or ("Upsample" in s):
+                    depths_with_new_scale.append(d)
+            assert image_encoder_depth < len(depths_with_new_scale), f"image_encoder_depth {image_encoder_depth} is too large. max is {len(depths_with_new_scale)-1}"
+            self.image_encoder_depth2 = depths_with_new_scale[image_encoder_depth]
+
+
+            ch_out = self.block_info["ch_out"].values[self.image_encoder_depth2]
+            image_size_out = self.block_info["image_size_out"].values[self.image_encoder_depth2]
+
+            self.fp16_attrs.append("preprocess_img_enc")
+            self.image_encoder_shape = image_encoder_shape
+            s_in = image_encoder_shape
+            s_out = (ch_out,image_size_out,image_size_out)
+            self.preprocess_img_enc = [zero_module(conv_nd(2,in_channels=s_in[0],out_channels=s_out[0],kernel_size=3,padding=1))]
+            if s_in[1] == s_out[1]:
+                pass
+            elif s_in[1] > s_out[1]:
+                if np.isclose(s_in[1]/s_out[1],int(s_in[1]/s_out[1])):
+                    self.preprocess_img_enc.append(avg_pool_nd(2,s_in[1]//s_out[1]))
+                else:
+                    #ugly downsampling due to non-integer ratio
+                    self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
+            else:
+                #Bilinear upsampling is as good as it gets
+                self.preprocess_img_enc.append(nn.Upsample(size=(s_out[1],s_out[2]),mode="bilinear"))
+            self.preprocess_img_enc = nn.Sequential(*self.preprocess_img_enc)
 
     def initialize_as_identity(self,verbose=False):
         """Initializes parameters in all modules such that the model behaves as an identity function. 
@@ -760,6 +775,7 @@ class UNetModel(nn.Module):
             self.block_info = pd.DataFrame(self.block_info)
         #print as df
         #print(self.block_info)
+        #assert 0
 
     def convert_to_fp16(self):
         """
@@ -825,7 +841,7 @@ class UNetModel(nn.Module):
                 hs.append(h)
             else:
                 hs.append(0)
-            if (depth == self.image_encoder_depth) and self.use_image_features and (image_features is not None):
+            if self.use_image_features and (image_features is not None) and (depth == self.image_encoder_depth2):
                 h = h + self.preprocess_img_enc(image_features.type(h.dtype))
             depth += 1
         h = self.middle_block(h, emb)
@@ -1034,6 +1050,66 @@ def get_sam_image_encoder(model_type="vit_b",device="cuda"):
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     sam.to(device=device)
     sam_image_encoder = sam.image_encoder
+    sam_image_encoder.eval()
+    for p in sam_image_encoder.parameters():
+        p.requires_grad = False
+    return sam_image_encoder
+
+sam12_info = {  "names":      ["sam1_b"  , "sam1_l"   ,"sam1_h"    ,"sam2_t"  , "sam2_s"  , "sam2_b+"  , "sam2_l" ],
+                "ckpt_names": ["01ec64"  , "0b3195"   ,"4b8939"    ,"tiny"    , "small"   , "base_plus", "large"  ],
+                "model_cfgs": [ None     , None       , None       ,"t"       , "s"       , "b+"       , "l"      ],
+                "num_params": [89_670_912, 308_278_272, 637_026_048,38_945_986, 46_043_842, 80_833_666 , 224_430_130]}
+
+def get_sam12(name_or_idx,
+              apply_postprocessing=False,
+              device="cuda"):
+    if isinstance(name_or_idx, str):
+        assert name_or_idx in sam12_info['names'], f"Invalid name {name_or_idx}. Valid names are {sam12_info['names']}"
+        idx = sam12_info['names'].index(name_or_idx)
+    else:
+        assert isinstance(name_or_idx, int), "name_or_idx must be an integer or a string"
+        assert 0 <= name_or_idx < len(sam12_info['ckpt_names']), f"name_or_idx out of range, idx={name_or_idx}"
+        idx = name_or_idx
+    is_sam1 = sam12_info['names'][idx].startswith("sam1")
+
+    if is_sam1:
+        name = sam12_info['names'][idx]
+        ckpt_name = name.replace("sam1","sam_vit")+f"_{sam12_info['ckpt_names'][idx]}"
+        model_type = sam12_info['names'][idx].replace("sam1","vit")
+
+        sam1_checkpoint = "../segment-anything/segment_anything/checkpoint/"+ckpt_name+".pth"
+        sam = sam_model_registry[model_type](checkpoint=sam1_checkpoint)
+        sam.to(device=device)
+    else:
+        sam2_checkpoint = f"../segment-anything-2/checkpoints/sam2_hiera_{sam12_info['ckpt_names'][idx]}.pt"
+        model_cfg = f"sam2_hiera_{sam12_info['model_cfgs'][idx]}.yaml"
+        sam = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=apply_postprocessing)
+    return sam
+
+def get_sam_image_encoder2(model_type=0,device="cuda",only_image_encoder=True):
+    sam = get_sam12(model_type)
+    sam.to(device=device)
+    if only_image_encoder:
+        sam_image_encoder = sam.image_encoder
+        is_sam2 = False
+        if isinstance(model_type,str):
+            if model_type.startswith("sam2"):
+                is_sam2 = True
+        elif isinstance(model_type,int):
+            if model_type>=3:
+                is_sam2 = True
+        if is_sam2:
+            #wrap forward() with indexing the output with "vision_features"
+            class Sam2NoDict(torch.nn.Module):
+                def __init__(self,model):
+                    super().__init__()
+                    self.model = model
+                def forward(self,x):
+                    out = self.model(x)
+                    return out["vision_features"]
+            sam_image_encoder = Sam2NoDict(sam_image_encoder)
+    else:
+        sam_image_encoder = sam
     sam_image_encoder.eval()
     for p in sam_image_encoder.parameters():
         p.requires_grad = False

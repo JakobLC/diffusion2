@@ -10,7 +10,6 @@ import shutil
 from PIL import Image
 import tqdm
 from data.data_utils import (unpack_files, save_dict_list_to_json, load_json_to_dict_list, rle_to_mask)
-from source.models.unet import get_sam_image_encoder
 import glob
 import json
 import jlc.nc as nc 
@@ -1203,9 +1202,10 @@ def add_existence_of_sam_features_to_info_jsonl(dataset_names=None):
             i = info_list[j]["i"]
             folder_i = np.floor(i/1000).astype(int)
             sam_features = []
-            for sam_idx in range(3):
+            for sam_idx in range(7):
                 filename = Path(infopath).parent / f"f{folder_i}" / f"{i}_sam{sam_idx}.pt"
-                sam_features.append(filename.exists())
+                if filename.exists():
+                    sam_features.append(sam_idx)
             info_list[j]["sam"] = sam_features
         save_dict_list_to_json(info_list,infopath,append=False)
 
@@ -1742,7 +1742,7 @@ def main():
             print(f"Finished {dataset}. Saved images for {prop*100:.2f}% of the dataset")
     elif args.process==8:
         print("PROCESS 8: add_existence_of_sam_features_to_info_jsonl")
-        add_existence_of_sam_features_to_info_jsonl()
+        add_existence_of_sam_features_to_info_jsonl(dataset_names=args.dataset)
     elif args.process==9:
         print("PROCESS 9: delete_all_sam_features dry")
         delete_all_sam_features(dry=True)
@@ -1813,6 +1813,9 @@ def main():
         with open("/home/jloch/Desktop/diff/diffusion2/data/lidc/lidcshare/test_patient_ids.txt","w") as f:
             for pid in test_patient_ids:
                 f.write(f"{pid}\n")
+    elif args.process==20:
+        print("PROCESS 20: save sam features")
+        save_sam_features(args.dataset, sam_idx_or_name=0)
     else:
         raise ValueError(f"Unknown process: {args.process}")
     

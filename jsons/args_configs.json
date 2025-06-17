@@ -609,7 +609,13 @@
             "v3": {"input_scale": 0.1, "loss_weights": "sigmoid_-4","gen_setups": "entopt[vali],entopt[train]", "decouple_loss_weights": true},
             "v3_big": {"input_scale": 0.06, "loss_weights": "sigmoid_-4","gen_setups": "entopt[vali],entopt[train]",
                        "decouple_loss_weights": true, "image_size": 256, "gen_interval": 5000},
-            "sam": {"image_encoder": "sam_vit_b", "train_batch_size": 4, "num_channels": 32}
+            "sam": {"image_encoder": "sam1_b", "train_batch_size": 4, "num_channels": 32},
+            "sam_h": {"image_encoder": "sam1_h", "train_batch_size": 4, "num_channels": 32},
+            "sam_h2": {"image_encoder": "sam1_h", "image_encoder_depth": 1, "num_channels": 96, "max_iter": 300000},
+            "sam_h3": {"image_encoder": "sam1_h", "image_encoder_depth": 1, "num_channels": 64, "max_iter": 200000,
+                        "gen_setups": "entopt[vali][sam][w0],entopt[train][sam][w0]"},
+            "sam_depth_sweep": {"image_encoder": "sam1_h", "train_batch_size": 8, "num_channels": 64, 
+                        "image_encoder_depth": "0;1;2", "max_iter": 200000,"gen_setups": "vali,train,entopt[vali][16]"}
         },
         "image_size": 128, 
         "datasets": "entityseg",
@@ -702,5 +708,17 @@
         "num_middle_res_blocks": 4,
         "predict": "x",
         "loss_weights": "SNR_trunc"
+    },
+    "+nocond": {
+        "p_num_labels": 0.0,
+        "p_bbox": 0.0,
+        "p_points": 0.0,
+        "p_self_cond": 0.0,
+        "p_semantic": 0.0,
+        "p_adjacent": 0.0,
+        "p_same_vol": 0.0,
+        "p_same_classes": 0.0,
+        "p_same_dataset": 0.0,
+        "p_class_names": 0.0
     }
 }

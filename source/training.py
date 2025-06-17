@@ -27,7 +27,7 @@ from source.utils.plot import plot_forward_pass,make_loss_plot
 from source.utils.dataloading import (points_image_from_label,
                       bbox_image_from_label,get_dataset_from_args)
 from source.models.nn import update_ema
-from source.models.unet import (create_unet_from_args, get_sam_image_encoder, 
+from source.models.unet import (create_unet_from_args, get_sam_image_encoder2, 
                     ModelInputKwargs, dynamic_image_keys, cond_kwargs_int2bit)
 from source.cont_gaussian_diffusion import create_diffusion_from_args
 from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
@@ -47,7 +47,8 @@ from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl",
                     "dummymodel","unet_print","token_info_overview","unet_input_dict",
-                    "restart_step5","no_kwargs","unet_channels","block_info","num_params"]
+                    "restart_step5","no_kwargs","unet_channels","block_info","num_params",
+                    "skip_train_steps"]
 
 class DiffusionModelTrainer:
     def __init__(self,args):
@@ -122,7 +123,7 @@ class DiffusionModelTrainer:
             self.log("WARNING: CUDA not available. Using CPU.")
             raise NotImplementedError("CPU not implemented")
             self.device = torch.device("cpu")
-        
+        n_trainable = f"{n_trainable:,}".replace(",", " ")
         self.log(f"Number of trainable parameters (UNet): {n_trainable}")
     
         if self.args.debug_run=="num_params":
@@ -145,8 +146,24 @@ class DiffusionModelTrainer:
         self.num_nan_losses = 0
 
         if self.args.image_encoder!="none":
-            self.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
+            if hasattr(self,"train_dl") and hasattr(self,"vali_dl"):
+                use_image_encoder = True
+                
+                if (self.train_dl.dataloader.dataset.all_samples_have_sfi and 
+                    self.vali_dl.dataloader.dataset.all_samples_have_sfi):
+                    if self.args.aug_prob_multiplier==0:
+                        self.log("all_samples_have_sfi")
+                        use_image_encoder = False
+                    else:
+                        self.log("all_samples_have_sfi, BUT using augmentation")
 
+                if use_image_encoder:
+                    self.image_encoder = get_sam_image_encoder2(self.args.image_encoder,device=self.device)
+                    self.log(f"Image encoder params: {jlc.num_of_params(self.image_encoder,print_numbers=False)[1]:,}".replace(",", " "))
+                else:
+                    self.image_encoder = None
+            else:
+                pass
         #init models, optimizers etc
 
         if self.args.mode != "data":
@@ -374,31 +391,35 @@ class DiffusionModelTrainer:
                     model_kwargs["semantic"].append(None)
         #end of bs loop
         if self.args.image_encoder!="none":
-            model_kwargs["image_features"] = self.get_image_features(model_kwargs,bs)
+            model_kwargs["image_features"] = self.get_image_features(model_kwargs,info,bs)
         if self.args.crop_method=="sam_big":
             model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
         model_kwargs = cond_kwargs_int2bit(model_kwargs,ab_kw=self.ab_kwargs)
         model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
     
-    def get_image_features(self,model_kwargs,bs):
+    def get_image_features(self,model_kwargs,info,bs):
         assert self.args.crop_method in ["sam_big","sam_small"], "image_encoder requires sam_big or sam_small crop_method"
         bs = len(model_kwargs["image"])
-        image_idx = [i for i in range(bs) if model_kwargs["image"][i] is not None]
-        if len(image_idx)>0:
+        if self.image_encoder is None:
+            image_features = [info[i]["image_features"] if model_kwargs["image"][i] is not None else None for i in range(bs)]
+        else:
             image = unet_kwarg_to_tensor([item for item in model_kwargs["image"] if item is not None])
-            if self.args.crop_method=="sam_small":
-                image = resize(image,(1024,1024),antialias=True)
-            with torch.no_grad():
-                image_features_tensor = self.image_encoder(to_dev(image))
-            image_features = []
-            k = 0
-            for i in range(bs):
-                if model_kwargs["image"][i] is None:
-                    image_features.append(None) 
-                else:
-                    image_features.append(image_features_tensor[k])
-                    k += 1
+            if image is None:
+                image_features = None
+            else:
+                if self.args.crop_method=="sam_small":
+                    image = resize(image,(1024,1024),antialias=True)
+                with torch.no_grad():
+                    image_features_tensor = self.image_encoder(to_dev(image))
+                image_features = []
+                k = 0
+                for i in range(bs):
+                    if model_kwargs["image"][i] is None:
+                        image_features.append(None) 
+                    else:
+                        image_features.append(image_features_tensor[k])
+                        k += 1
         return image_features
 
     def run_train_step(self, batch):

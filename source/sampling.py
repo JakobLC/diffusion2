@@ -4,8 +4,9 @@ import matplotlib
 from argparse import Namespace
 from collections import defaultdict
 import os
+import warnings
 import tqdm
-from source.models.unet import all_input_keys
+from source.models.unet import all_input_keys, get_sam_image_encoder
 from source.utils.mixed import (get_time,save_dict_list_to_json,
                    check_keys_are_same,mask_from_imshape,postprocess_batch,
                    sam_resize_index,apply_mask,unet_kwarg_to_tensor,construct_points,
@@ -49,6 +50,8 @@ class DiffusionSampler(object):
         self.source_batch = None
         self.queue = None
         self.eval_batch_size = self.opts.eval_batch_size if self.opts.eval_batch_size>0 else self.args.train_batch_size
+        if self.opts.compute_full_ap:
+            self.full_infos_for_ap = []
         if len(self.opts.split_method)>0:
             assert self.opts.split_method in ["random","native_train","native"], f"split_method={self.opts.split_method} is not a valid option."
             if self.args.mode!="gen" and not self.opts.ambiguous_mode:#, "split_method can only be specified in sampling mode."
@@ -58,11 +61,12 @@ class DiffusionSampler(object):
                         
         if self.opts.ambiguous_mode:
             assert len(self.opts.datasets.split(","))==1, "Ambiguous mode is only implemented for a single specified dataset. Found: datasets="+str(self.opts.datasets)
-        if self.args.mode!="gen":
-            assert hasattr(self.trainer,f"{self.opts.split}_dl"), f"trainer does not have a dataloader for split={self.opts.split}."
-            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
-        else:
-            self.args.dl_num_workers = 0
+        if self.args.mode=="gen" or self.opts.num_workers>=0:
+            self.args_restore = copy.deepcopy(self.args)
+            if self.opts.num_workers>=0:
+                self.args.dl_num_workers = self.opts.num_workers
+            else:
+                self.args.dl_num_workers = 0
             if len(self.opts.datasets)>0:
                 if not isinstance(self.opts.datasets,list):
                     self.opts.datasets = self.opts.datasets.split(",")
@@ -105,6 +109,7 @@ class DiffusionSampler(object):
                 #set_random_seed(self.opts.seed)
                 max_num_samples = len(pri_didx)
                 assert self.opts.num_samples < max_num_samples, f"Founds {max_num_samples} ambiguous samples in the dataset. num_samples must be less than this. -1 for the maximum possible"
+                assert len(self.opts.pri_didx)==0, f"pri_didx is not implemented for ambiguous mode. Found: {self.opts.pri_didx}"
                 if self.opts.num_samples<0:
                     self.opts.num_samples = max_num_samples
                 self.gts_didx = gts_didx
@@ -116,15 +121,41 @@ class DiffusionSampler(object):
                                                     ambiguous_mode=self.opts.ambiguous_mode,
                                                     mode="pri_didx",
                                                     prioritized_didx=pri_didx)
+                
             else:
                 self.gts_didx = None
-                pri_didx = None
-                self.dataloader = get_dataset_from_args(self.args,
-                                                    split=self.opts.split,
-                                                    mode="pure_gen",
-                                                    aug_override=aug_override)
-
-
+                if len(self.opts.pri_didx)>0:
+                    assert isinstance(self.opts.pri_didx,str), f"pri_didx must be a comma-separated string. Found: {self.opts.pri_didx}"
+                    if "," not in self.opts.pri_didx:
+                        #load from the didx file 
+                        named_didx = load_json_to_dict_list("/home/jloch/Desktop/diff/diffusion2/jsons/pri_didx.json")
+                        assert self.opts.pri_didx in named_didx.keys(), f"pri_didx={self.opts.pri_didx} not found in the didx file. When no comma is in the string, it is assumed its a key in the didx file."
+                        pri_didx = named_didx[self.opts.pri_didx]
+                    else:
+                        pri_didx = nice_split(self.opts.pri_didx)
+                    self.opts.num_samples = len(pri_didx)
+                    self.dataloader = get_dataset_from_args(self.args,
+                                                        split=self.opts.split,
+                                                        prioritized_didx=pri_didx,
+                                                        mode="pri_didx",
+                                                        aug_override=aug_override)
+                else:
+                    pri_didx = None
+                    self.dataloader = get_dataset_from_args(self.args,
+                                                        split=self.opts.split,
+                                                        mode="pure_gen",
+                                                        aug_override=aug_override)
+        else:
+            assert hasattr(self.trainer,f"{self.opts.split}_dl"), f"trainer does not have a dataloader for split={self.opts.split}."
+            self.dataloader = getattr(self.trainer,f"{self.opts.split}_dl")
+        if self.args.image_encoder!="none":
+            if hasattr(self.trainer,"image_encoder"):
+                pass
+            else:
+                if self.dataloader.dataloader.dataset.all_samples_have_sfi:
+                    self.trainer.image_encoder = None
+                else:
+                    self.trainer.image_encoder = get_sam_image_encoder(self.args.image_encoder,device=self.device)
 
         if not self.opts.ambiguous_mode:
             lpd = self.dataloader.dataloader.dataset.len_per_dataset
@@ -143,6 +174,7 @@ class DiffusionSampler(object):
                 model = self.trainer.model
         was_training = model.training
         model.eval()
+        #print first 10 params of model
 
         if self.opts.do_agg:
             old_backend = matplotlib.get_backend()
@@ -217,7 +249,7 @@ class DiffusionSampler(object):
         entropy = []
         num_batches = np.ceil(self.opts.num_samples*self.opts.num_votes/self.eval_batch_size).astype(int)
         if num_batches==0:
-            print("WARNING: num_batches==0.")
+            warnings.warn("num_batches==0.")
             return None
         if self.opts.progress_bar:
             progress_bar = tqdm.tqdm(range(num_batches), desc="Batch progress.")
@@ -265,6 +297,8 @@ class DiffusionSampler(object):
 
         if old_backend is not None:
             matplotlib.use(old_backend)
+        if hasattr(self,"args_restore"):
+            self.args = copy.deepcopy(self.args_restore)
         if was_training:
             model.train()
         
@@ -390,6 +424,9 @@ class DiffusionSampler(object):
                                 "x_init": x_init,
                                 "info": copy.deepcopy(info),
                                 "model_kwargs": model_kwargs})
+        if self.opts.compute_full_ap:
+            pass
+            #self.full_infos_for_ap.append(ap_entity()[1]["full_info"])
         if self.opts.save_light_stats:
             has_raw_sample = self.opts.save_raw_samples and (bqi["sample"]<self.opts.num_save_raw_samples)
             light_stats = {"info": {k: v for k,v in info.items() if k in ["split_idx","i","dataset_name","num_classes","imshape","gts_didx"]},

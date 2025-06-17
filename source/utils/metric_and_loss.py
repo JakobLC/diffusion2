@@ -838,7 +838,7 @@ def f_evaluate_predictions_on_coco(predictions, gts, save_info_filename="", retu
     n_dt = len(dts)
 
     i_list = [n for n, i in enumerate(imgIds)  if i in setI]
-
+    
     E = [evalImgs[i] for i in i_list if evalImgs[i] is not None]
     if len(E)==0: 
         raise Exception("No gt or dt detected")
@@ -902,7 +902,12 @@ def f_evaluate_predictions_on_coco(predictions, gts, save_info_filename="", retu
                      "eval": eval, 
                      "evalImgs": evalImgs,
                      "dt": dts,
-                     "gt": gts}
+                     "gt": gts,
+                     "full_info": {
+                        "dtm": dtm,
+                        "scores": dtScoresSorted,
+                        "n_gt": n_gt},
+                    }
     if save_info_filename:
         np.save(save_info_filename, save_dict)
 
@@ -922,7 +927,7 @@ def f_evaluate_predictions_on_coco(predictions, gts, save_info_filename="", retu
         }
     stats = {k: float(v if v >= 0 else "nan") for k,v in stats.items()}
     if return_save_dict:
-        return stats,save_dict
+        return stats, save_dict
     else:
         return stats
 
@@ -935,6 +940,8 @@ def evaluateImg(dt, gt, ious):
     if not len(ious)==0:
         for tind, t in enumerate(params.iouThrs):
             for dind, d in enumerate(dt):
+                if dind>=params.maxDet:
+                    continue
                 # information about best match so far (m=-1 -> unmatched)
                 iou = min([t,1-1e-10])
                 m   = -1
@@ -971,3 +978,63 @@ def maskUtils_encode(bimask):
     elif len(bimask.shape) == 2:
         h, w = bimask.shape
         return _mask.encode(bimask.reshape((h, w, 1), order='F'))[0]
+
+def ap_entity_full(full_infos):
+    assert isinstance(full_infos,list)
+    assert all([isinstance(f,dict) for f in full_infos])
+    must_have_keys = ["dtm","scores","n_gt"]
+    assert all([[k in f.keys() for k in must_have_keys] for f in full_infos]), full_infos[0].keys()
+
+    T = len(params.iouThrs)
+    R = len(params.recThrs)
+
+    precision = -np.ones((T,R))
+    all_scores = np.concatenate([item["scores"] for item in full_infos])
+    dtm = np.concatenate([item["dtm"] for item in full_infos],axis=1)
+    assert dtm.shape[1]==all_scores.shape[0], (dtm.shape[1], all_scores.shape[0])
+    dtm  = dtm[:,np.argsort(-all_scores, kind='mergesort')]
+
+    tps = dtm>0
+    fps = dtm==0
+    n_gt = sum([item["n_gt"] for item in full_infos])
+    tp_sum = np.cumsum(tps, axis=1).astype(dtype=float)
+    fp_sum = np.cumsum(fps, axis=1).astype(dtype=float)
+    for t, (tp, fp) in enumerate(zip(tp_sum, fp_sum)):
+        tp = np.array(tp)
+        fp = np.array(fp)
+
+        nd = len(tp)
+        rc = tp / n_gt
+        pr = tp / (fp+tp+np.spacing(1))
+        q  = np.zeros((R,))
+
+        pr = pr.tolist()
+        q = q.tolist()
+
+        for i in range(nd-1, 0, -1):
+            if pr[i] > pr[i-1]:
+                pr[i-1] = pr[i]
+        inds = np.searchsorted(rc, params.recThrs, side='left')
+        try:
+            for ri, pi in enumerate(inds):
+                    q[ri] = pr[pi]
+        except:
+            pass
+        precision[t] = np.array(q)
+
+    def _summarize(iouThr=None):
+        s = precision
+        if iouThr is not None:
+            s = s[np.where(iouThr == params.iouThrs)[0]]
+        if len(s[s>-1])==0:
+            mean_s = -1
+        else:
+            mean_s = np.mean(s[s>-1])
+        return mean_s
+
+    stats = {"AP": _summarize(),
+             "AP50":_summarize(iouThr=.5),
+             "AP75": _summarize(iouThr=.75)
+        }
+    stats = {k: float(v if v >= 0 else "nan") for k,v in stats.items()}
+    return stats

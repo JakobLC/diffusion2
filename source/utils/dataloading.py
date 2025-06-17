@@ -16,15 +16,17 @@ import warnings
 import sys
 if not str(Path(__file__).parent.parent) in sys.path:
     sys.path.append(str(Path(__file__).parent.parent))
-from source.models.unet import get_sam_image_encoder, cond_image_prob_keys, dynamic_image_keys
+from source.models.unet import cond_image_prob_keys, dynamic_image_keys
 import tqdm
 #from source.models.cond_vit import ModelInputKwargs, cond_image_keys, cond_image_prob_keys, dynamic_image_keys
 from source.utils.mixed import (load_json_to_dict_list, save_dict_list_to_json,
                                 sam_resize_index,is_nan_float,get_named_datasets, 
                                 nice_split,str_to_seed,ambiguous_info_from_fn)
+from source.models.unet import get_sam_image_encoder2, sam12_info
 from source.utils.argparsing import get_current_default_version,load_existing_args,TieredParser
 import shutil
 import pandas as pd
+from multiprocessing import Value
 
 turbo_jpeg = TurboJPEG()
 
@@ -189,20 +191,24 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       save_matched_items=False,
                       imagenet_norm=True,
                       ambiguous_mode=False,
-                      aug_override=None):
+                      aug_override=None,
+                      global_p=1.0,):
         self.ambiguous_mode = ambiguous_mode
         self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
         self.load_cond_auto = load_cond_probs is not None
         self.load_cond_probs = load_cond_probs
+        self.global_p = global_p
         if self.load_cond_probs is not None:
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
             assert all([k in cond_image_prob_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())+" expected "+str(cond_image_prob_keys)
         self.ignore_sam_idx = ignore_sam_idx
         if isinstance(sam_features_idx,str):
-            sam_strs = ['none','sam_vit_b','sam_vit_l','sam_vit_h']
+            sam_strs = ['none'] + sam12_info["names"]
             assert sam_features_idx in sam_strs, "sam_features_idx must be one of "+str(sam_strs)+", got "+sam_features_idx
-            sam_features_idx = sam_features_idx.index(sam_features_idx)-1
+            sam_features_idx = sam_strs.index(sam_features_idx)-1
+        else:
+            assert isinstance(sam_features_idx,int), "sam_features_idx must be an int or str, got "+str(type(sam_features_idx))
         self.sfi = sam_features_idx
         self.geo_aug_p = geo_aug_p
         self.shuffle_datasets = shuffle_datasets
@@ -253,9 +259,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.length = 0
         self.idx_to_class = {}
         self.augment_per_dataset = {}
+        self.augment_per_dataset_no_train = {}
         self.didx_to_item_idx = []
         self.datasets_info = {d["dataset_name"]: d for d in self.datasets_info if d["dataset_name"] in self.dataset_list}
-
+        if self.sfi>=0:
+            self.all_samples_have_sfi = True
         assert split_method in ["random","native","native_train"]
         self.split_method = split_method
         for dataset_name in self.dataset_list:
@@ -273,17 +281,20 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 np.random.seed(previous_seed)
             else:
                 randperm = np.arange(N)
-            if split_method=="native_train":
-                use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
-            elif split_method=="native":
-                use_idx = np.array([i for i in range(N) if info_json[i].get("split_idx",0)==split])
-            elif split_method=="random":
-                start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
-                stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
-                use_idx = randperm[start:stop]
+            if self.split==3:
+                use_idx = randperm
+            else:
+                if split_method=="native_train":
+                    use_idx = self.get_use_idx_native_train(randperm,info_json,dataset_name)
+                elif split_method=="native":
+                    use_idx = np.array([i for i in range(N) if info_json[i].get("split_idx",0)==split])
+                elif split_method=="random":
+                    start = max(0,np.floor(self.split_start_and_stop[split][0]*N).astype(int))
+                    stop = min(N,np.floor(self.split_start_and_stop[split][1]*N).astype(int))
+                    use_idx = randperm[start:stop]
             
             if len(use_idx)==0:
-                warnings.warn("no data in dataset "+dataset_name+" satisfying the criteria")
+                warnings.warn("no data in dataset "+dataset_name+" and split "+ str(split)+" satisfying the criteria")
                 continue
             
             items = []
@@ -306,6 +317,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                     for k in delete_info_keys:
                         del item[k]
                     item["dataset_name"] = dataset_name
+                    if self.sfi>=0:
+                        if self.sfi not in item.get("sam",[]):
+                            self.all_samples_have_sfi = False
                     items.append(item)
                 if self.save_matched_items and len(items)>0:
                     self.save_matched_items_new(items,match_dict,dataset_name)
@@ -324,6 +338,13 @@ class SegmentationDataset(torch.utils.data.Dataset):
             self.augment_per_dataset[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],
                                                                       s=self.image_size,
                                                                       train=aug,
+                                                                      global_p=self.global_p,
+                                                                      geo_aug_p=self.geo_aug_p)
+
+            self.augment_per_dataset_no_train[dataset_name] = get_augmentation(self.datasets_info[dataset_name]["aug"],
+                                                                      s=self.image_size,
+                                                                      train=False,
+                                                                      global_p=aug,
                                                                       geo_aug_p=self.geo_aug_p)
             self.didx_to_item_idx.extend([f"{dataset_name}/{i}" for i in use_idx])
             self.length += len(items)
@@ -914,9 +935,10 @@ class SegmentationDataset(torch.utils.data.Dataset):
         image,label,info = self.images_to_torch(image,label,info)
         info["image"] = image
         if self.sfi>=0:
-            if info["sam"][self.sfi]:
+            if self.sfi in info.get("sam",[]):
                 i = info["i"]
-                info["image_features"] = torch.load(os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{self.sfi}.pt"))
+                sam_p = os.path.join(self.data_root,dataset_name,f"f{i//1000}",f"{i}_sam{self.sfi}.pt")
+                info["image_features"] = torch.load(sam_p,weights_only=True)
             else:
                 info["image_features"] = None
         return label,info
@@ -1092,7 +1114,6 @@ def total_boundary_pixels(image,dims=[-1,-2]):
     return tot
 
 def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p=0.3):
-
     list_of_augs = []
     if geo_aug_p>0:
         geo_augs =  [A.ShiftScaleRotate(rotate_limit=20,p=global_p*geo_aug_p,border_mode=0)]
@@ -1130,6 +1151,7 @@ def get_augmentation(augment_name="none",s=128,train=True,global_p=1.0,geo_aug_p
             list_of_augs.extend(geo_augs)
     else:
         raise ValueError("invalid augment_name. Expected one of ['none','pictures','medical_color','medical_gray'] got "+str(augment_name))
+
     return A.Compose(list_of_augs)
 
 def get_all_valid_datasets():
@@ -1139,7 +1161,8 @@ def get_all_valid_datasets():
 
 def save_sam_features(datasets="ade20k",
                  sam_idx_or_name=0,
-                 split="vali",
+                 split="all",
+                 image_size=1024,
                  split_method="native",
                  batch_size=4,
                  ratio_of_dataset=1.0,
@@ -1150,7 +1173,7 @@ def save_sam_features(datasets="ade20k",
                  dtype=torch.float16,
                  skip_existing=True):
     dataset = SegmentationDataset(split=split,
-                            image_size=64,
+                            image_size=image_size,
                             datasets=datasets,
                             shuffle_zero=0,
                             geo_aug_p=0,
@@ -1166,7 +1189,7 @@ def save_sam_features(datasets="ade20k",
                                             collate_fn=custom_collate_with_info)
     n_batches = np.ceil(len(dataloader)*ratio_of_dataset).astype(int)
     data_iter = iter(dataloader)
-    sam = get_sam_image_encoder(sam_idx_or_name)
+    sam = get_sam_image_encoder2(sam_idx_or_name)
     wrap = tqdm.tqdm if progress_bar else lambda x: x
     for ii in wrap(range(n_batches)):
         infos = next(data_iter)[-1]
@@ -1239,6 +1262,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             imagenet_norm=args.imagenet_norm,
                             ambiguous_mode=ambiguous_mode,
                             aug_override=aug_override,
+                            global_p=args.aug_prob_multiplier,
                             )
     if return_type=="ds":
         return ds
@@ -1259,14 +1283,14 @@ def get_dataset_from_args(args_or_model_id=None,
                                     batch_size=bs,
                                     sampler=sampler,
                                     shuffle=(sampler is None),
-                                    drop_last=mode!="pure_gen",
+                                    drop_last=mode=="training",
                                     collate_fn=custom_collate_with_info,
                                     num_workers=args.dl_num_workers)
     if return_type=="dl":
         return dl
     elif return_type=="dli":
         return jlc.DataloaderIterator(dl)
-    
+
 def dummy_label(n=128,num_classes=10,as_torch=True):
     """
     Constructs a segmentation mask by choosing a set of center points

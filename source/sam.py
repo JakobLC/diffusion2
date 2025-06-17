@@ -26,10 +26,11 @@ sys.path.append("/home/jloch/Desktop/diff/segment-anything-2/")
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.modeling.sam2_base import SAM2Base
-sam12_info = {  "names":      ["sam1_b", "sam1_l" ,"sam1_h"  ,"sam2_t", "sam2_s", "sam2_b+"  , "sam2_l" ],
-                "ckpt_names": ["01ec64", "0b3195" ,"4b8939"  ,"tiny"  , "small" , "base_plus", "large"  ],
-                "model_cfgs": [ None   , None     , None     ,"t"     , "s"     , "b+"       , "l"      ],
-                "num_params": [89670912, 308278272, 637026048,38945986, 46043842, 80833666   , 224430130]}
+
+sam12_info = {  "names":      ["sam1_b"  , "sam1_l"   ,"sam1_h"    ,"sam2_t"  , "sam2_s"  , "sam2_b+"  , "sam2_l" ],
+                "ckpt_names": ["01ec64"  , "0b3195"   ,"4b8939"    ,"tiny"    , "small"   , "base_plus", "large"  ],
+                "model_cfgs": [ None     , None       , None       ,"t"       , "s"       , "b+"       , "l"      ],
+                "num_params": [89_670_912, 308_278_272, 637_026_048,38_945_986, 46_043_842, 80_833_666 , 224_430_130]}
 
 def get_sam12(name_or_idx,
               apply_postprocessing=False,
@@ -47,6 +48,7 @@ def get_sam12(name_or_idx,
         name = sam12_info['names'][idx]
         ckpt_name = name.replace("sam1","sam_vit")+f"_{sam12_info['ckpt_names'][idx]}"
         model_type = sam12_info['names'][idx].replace("sam1","vit")
+        print(f"Evaluating with SAM1 model: {name} ({ckpt_name})")
 
         sam1_checkpoint = "../segment-anything/segment_anything/checkpoint/"+ckpt_name+".pth"
         sam = sam_model_registry[model_type](checkpoint=sam1_checkpoint)
@@ -55,6 +57,7 @@ def get_sam12(name_or_idx,
         sam2_checkpoint = f"../segment-anything-2/checkpoints/sam2_hiera_{sam12_info['ckpt_names'][idx]}.pt"
         model_cfg = f"sam2_hiera_{sam12_info['model_cfgs'][idx]}.yaml"
         sam = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=apply_postprocessing)
+        print(f"Evaluating with SAM2 model: {sam12_info['names'][idx]} ({sam2_checkpoint})")
     return sam
 
 def to_cpu_if_torch(x):
@@ -183,11 +186,15 @@ def get_segmentation(anns,h,w):
     segment = np.zeros((h,w), dtype=np.uint8)
     if len(anns) == 0:
         warnings.warn("No annotations found")
-    for k, ann in enumerate(anns):
+    #sort by size:
+    size_order = np.argsort([a['area'] for a in anns])[::-1]
+    if len(anns) > 255:
+        warnings.warn("More than 255 segments found, only the largest 255 are included.")
+    for k, i in enumerate(size_order):
+        ann = anns[i]
         assert [h,w] == list(ann['segmentation'].shape), f"segmentation shape {ann['segmentation'].shape} does not match image shape ({h,w})"
         segment[ann['segmentation']] = k+1
         if k == 255:
-            warnings.warn("More than 255 segments found, only the first 255 are included.")
             break
     return segment
 
