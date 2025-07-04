@@ -37,7 +37,7 @@
         "diff_channels": [6,                        "Maximum number of diff channels, giving 2^diff_channels max labels in image. TYPE: positive integer. DEFAULT: 6. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
         "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
-        "final_activation": ["tanh_if_x",                "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none','tanh_if_x']. TYPE: string. DEFAULT: 'none'. "],
+        "final_activation": ["tanh_if_x",           "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none','tanh_if_x']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
         "unet_spatialness": ["0,1,2,3" ,            "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
         "cond_sam_idx": [0,                         "Which SAM index to use as backbone for the ViT. TYPE: integer, one of [-2,-1,0,1,2]. DEFAULT: 0. "],
@@ -89,6 +89,7 @@
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'. "],
         "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0. "],
         "shuffle_zero": [true,                      "Should the zeroth channel (background) be shuffled? TYPE: boolean. DEFAULT: true. "],
+        "lap_mode": ["none",                        "Which type of location aware palette should be used? TYPE: One of ['none','random','min_sim', 'max_sim']. DEFAULT: 'none'. "],
         "crop_method": ["sam_small",                "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big','sam_lidc64']. DEFAULT: 'sam_small'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],
@@ -118,7 +119,8 @@
         "debug_run": ["",                           "Should a debug run be performed? TYPE: str. DEFAULT: ''"],
         "load_state_dict_loose": [false,            "Should we allow loose matching of ckpt weights (if normal state_dict() can't be matched)? TYPE: boolean. DEFAULT: false. "],
         "max_training_restarts": [3,                "Maximum number of restarts of training. TYPE: positive integer or 0 (no restarts). DEFAULT: 0. "],
-        "dataloader_save_processing": [false,       "Should the dataloader save the processing of datasets to save time for later dataset loadings? TYPE: boolean. DEFAULT: false. "]
+        "dataloader_save_processing": [false,       "Should the dataloader save the processing of datasets to save time for later dataset loadings? TYPE: boolean. DEFAULT: false. "],
+        "skip_train_segment_metrics": [false,       "Should the training segment metrics be skipped for speed? TYPE: boolean. DEFAULT: false. "]
     },
     "version_backwards_compatability": {
         "p_num_classes" : {"<1.0.0": 0.9, "1.0.0<=x<1.3.0": 0.5},

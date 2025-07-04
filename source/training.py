@@ -38,10 +38,6 @@ from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
 from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss import get_all_metrics, get_likelihood
 from torchvision.transforms.functional import resize
-"""from source.models.cond_vit import (fancy_vit_from_args, get_opt4_from_cond_vit_setup, 
-                                    dynamic_image_keys,cond_kwargs_int2bit,
-                                    num_tokens_from_token_info, is_valid_cond_vit_setup,
-                                    ModelInputKwargs,all_input_keys,unet_vit_inputs_from_args)"""
 from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -452,10 +448,13 @@ class DiffusionModelTrainer:
         else:
             self.optimize_normal()
         #logging
-        metrics = get_all_metrics(output,
-                                  ignore_zero=not self.args.agnostic,
-                                  ambiguous=False, 
-                                  ab_kw=self.ab_kwargs)
+        if self.args.skip_train_segment_metrics:
+            metrics = {}
+        else:
+            metrics = get_all_metrics(output,
+                                    ignore_zero=not self.args.agnostic,
+                                    ambiguous=False, 
+                                    ab_kw=self.ab_kwargs)
         self.log_train_step(output,metrics)
         
         return output,metrics

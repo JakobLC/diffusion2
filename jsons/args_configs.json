@@ -720,5 +720,28 @@
         "p_same_classes": 0.0,
         "p_same_dataset": 0.0,
         "p_class_names": 0.0
+    },
+    "entityv3": {
+        "versions": {
+            "big": {"image_size": 256, "input_scale": 0.06, "decouple_loss_weights": true},
+            "sam": {"image_encoder": "sam1_h", "image_encoder_depth": 1,
+                    "gen_setups": "entopt[vali][sam][w0],entopt[train][sam][w0]"},
+            "short": {"max_iter": 100000},
+            "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform", "predict": "x;eps;v"}
+        },
+        "datasets": "entityseg",
+        "image_size": 128,
+        "input_scale": 0.1, 
+        "loss_weights": "sigmoid_-4",
+        "gen_setups": "entopt[vali][25ts],entopt[train][25ts]", 
+        "decouple_loss_weights": true,
+        "max_iter": 300000,
+        "gen_interval": 5000,
+        "log_vali_interval": 1000,               
+        "update_loss_plot_interval": 1000, 
+        "update_forward_pass_plot_interval": 1000,
+        "p_num_labels": 0.0, 
+        "p_points": 0.0, 
+        "p_self_cond": 0.0
     }
 }

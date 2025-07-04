@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import torch
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, center_of_mass
 from PIL import Image
 from pathlib import Path
 import os
@@ -86,59 +86,6 @@ def points_image_from_label(label,num_points=None,padding_idx=255,bbox_instead=F
         points_image[:,D1,D2] = 1
     return points_image.to(label.device)
 
-class CatBallDataset(torch.utils.data.Dataset):
-    def __init__(self,
-                 size : int = 64,
-                 dtype : str ="uint8",
-                 dataset_len : int = 1000,
-                 background_is_zero : bool = True,
-                 num_balls : list = list(range(1,10)),
-                 max_num_classes : int = 8,
-                 seed_translation : int = 0):
-        assert dtype in ["float","double","uint8"]
-        self.dtype = dtype
-        self.dataset_len = dataset_len
-        self.size = size
-        self.background_is_zero = background_is_zero
-        if isinstance(num_balls,int):
-            num_balls = [num_balls]
-        self.num_balls = num_balls
-        self.max_num_classes = max_num_classes
-        self.x,self.y = np.meshgrid(range(self.size),range(self.size))
-        self.seed_translation = seed_translation
-        
-    def get_image(self,item,noise_coef=0.1,std=0.05):
-        noise = np.random.randn(*item.shape)
-        foreground = (item>0).astype(float)
-        image = (1-noise_coef)*foreground+noise_coef*noise
-        image = gaussian_filter(image,sigma=std*self.size)
-        return image*2-1
-    
-    def __len__(self):
-        return self.dataset_len
-
-    def __getitem__(self, idx):
-        np.random.seed(idx+self.seed_translation)
-        R = []
-        CX = []
-        CY = []
-        item = np.zeros((self.size,self.size),dtype=self.dtype)
-        nb = np.random.choice(self.num_balls)
-        for i in range(nb):
-            cx = self.size*np.random.rand()
-            cy = self.size*np.random.rand()
-            max_r = min([cx,cy,self.size-cx,self.size-cy])
-            r = max_r*np.random.rand()
-            dist = r-((self.x-cx)**2+(self.y-cy)**2)**0.5
-            item[dist>=0] = np.random.randint(1,self.max_num_classes)
-            R.append(r)
-            CX.append(cx)
-            CY.append(cy)
-        info = {"r": R,"cx": CX,"cy": CY, "nb": nb}
-        info["image"] = torch.from_numpy(self.get_image(item)).unsqueeze(0)
-        item = torch.from_numpy(item).unsqueeze(0)
-        return item,info
-
 def custom_collate_with_info(original_batch):
     n = len(original_batch[0])
     normal_batch = []
@@ -162,6 +109,122 @@ def mode_resize(label,size):
         max_intensity = np.maximum(max_intensity,new_label_i)
     return new_label
 
+def binary_dist(b1,b2):
+    """counts the number of bits that are different between two binary strings (iterables)"""
+    return sum([1 for i in range(len(b1)) if b1[i]!=b2[i]])
+
+def max_sim_ordering(n_bits):
+    order = max_diff_sequence(n_bits)
+    h = int(np.round(len(order)**0.5))
+    #reverse every second row
+    for i in range(h):
+        if i % 2 == 1:
+            order[i*h:(i+1)*h] = order[i*h:(i+1)*h][::-1]
+    return order
+
+def max_diff_sequence(n_bits):
+    bits = [np.binary_repr(i,width=n_bits) for i in range(2**n_bits)]
+    all_bits = list(range(2**n_bits))
+    sequence = [all_bits.pop(0)]
+    while all_bits:
+        last = bits[sequence[-1]]
+        next_idx = max(all_bits, key=lambda x: binary_dist(last, bits[x]))
+        sequence.append(next_idx)
+        all_bits.remove(next_idx)
+    return sequence
+
+def gray_code(n):
+    if n == 0:
+        return ['']
+    prev = gray_code(n - 1)
+    return ['0' + code for code in prev] + ['1' + code for code in reversed(prev)]
+
+def min_sim_ordering(n_bits):
+    order = [int(code, 2) for code in gray_code(n_bits)]
+    h = int(np.round(len(order)**0.5))
+    #reverse every second row
+    for i in range(h):
+        if i % 2 == 1:
+            order[i*h:(i+1)*h] = order[i*h:(i+1)*h][::-1]
+    return order
+
+class LocationAwarePalette:
+    def __init__(self,
+                max_num_classes,
+                image_size,
+                padding_idx=255,
+                mode="min_sim"):
+        assert mode in ["random","min_sim","max_sim"], "mode must be one of ['random','min_sim','max_sim'], got "+mode
+        assert (np.log2(max_num_classes)/2).is_integer(), "max_num_classes must be an even power of 2 (:=2^(2k)), got "+str(max_num_classes)
+        
+        self.max_num_classes = max_num_classes
+        self.num_bits = int(np.log2(max_num_classes))
+        self.sidelength = int(np.sqrt(max_num_classes))
+        self.image_size = image_size
+        self.padding_idx = padding_idx
+        if mode=="random":
+            self.order = np.random.permutation(max_num_classes)
+        elif mode=="min_sim":
+            self.order = min_sim_ordering(self.num_bits)
+        elif mode=="max_sim":
+            self.order = max_sim_ordering(self.num_bits)
+        self.order = np.array(self.order).reshape((self.sidelength,self.sidelength))
+
+    def apply_lap(self, labels):
+        mapping = self.mapping_from_labels(labels)
+        mapping[self.padding_idx] = self.padding_idx  # ensure padding index is preserved
+        #apply with vectorized operation
+        labels_flat = labels.flatten()
+        mapped_labels = np.vectorize(mapping.get)(labels_flat)
+        return mapped_labels.reshape(labels.shape)
+
+    def mapping_from_labels(self,labels):
+        assert len(labels.shape)==2, "labels must be of shape (H,W), got "+str(labels.shape)
+        assert labels.shape[0]==labels.shape[1], "labels must be square, got "+str(labels.shape)
+        assert labels.shape[0]==self.image_size, "labels must be of shape (image_size,image_size), got "+str(labels.shape)+" for image_size="+str(self.image_size)
+        uq_labels = list(np.unique(labels))
+        uq_labels = [i for i in uq_labels if i>=0 and i!=self.padding_idx]
+        centers = center_of_mass(np.ones_like(labels), labels, uq_labels)
+        centers = np.array(centers)
+        #map -0.5 to 0 and image_size+0.5 to 1
+        centers = (centers + 0.5) / self.image_size
+        return self.mapping_from_centers(centers,uq_labels)
+    
+    def mapping_from_centers(self,centers,indices):
+        assert len(centers.shape)==2, "centers must be of shape (N,2), got "+str(centers.shape)
+        assert centers.shape[1]==2, "centers must be of shape (N,2), got "+str(centers.shape)
+        assert centers.min()>= 0, "Centers must be in the range [0,1] for relative coordinates, got "+str(centers.min())
+        assert centers.max()<= 1, "Centers must be in the range [0,1] for relative coordinates, got "+str(centers.max())
+        assert len(centers)<=self.max_num_classes, "centers must not exceed max_num_classes, got "+str(len(centers))+" for max_num_classes="+str(self.max_num_classes)
+        centers = centers * self.sidelength - 0.5
+        centers_rounded = np.round(centers).astype(int)
+        sampled = self.order[centers_rounded[:,0],centers_rounded[:,1]]
+        #handle overlaps:
+        if len(sampled)>len(np.unique(sampled)):
+            #loop through all centers that are not unique. Ignore the first one.
+            #assign all subsequent centers to the nearest unused class in L2 distance
+            mask = np.zeros_like(self.order, dtype=bool)
+            sampled = []
+            Y, X = np.indices(self.order.shape)
+            for i in range(len(centers_rounded)):
+                idx_r = centers_rounded[i,0],centers_rounded[i,1]
+                idx = centers[i,0],centers[i,1]
+                if mask[idx_r]:
+                    #find the nearest unused class and use it instead of the current one
+                    distances = np.sqrt((X - idx[1])**2 + (Y - idx[0])**2)
+                    unused_classes = np.where(~mask.flatten())[0]
+                    nearest_unused_class = unused_classes[np.argmin(distances.flatten()[unused_classes])]
+                    sampled.append(self.order.flatten()[nearest_unused_class])
+                    nearest_unused_class_2d = np.unravel_index(nearest_unused_class, self.order.shape)
+                    mask[nearest_unused_class_2d] = True
+                else:
+                    sampled.append(self.order[idx_r])
+                    mask[idx_r] = True    
+
+        mapping = {k: v for k,v in zip(indices,sampled)}
+        mapping[self.padding_idx] = self.padding_idx  # ensure padding index is preserved
+        return mapping
+    
 class SegmentationDataset(torch.utils.data.Dataset):
     def __init__(self,split="train",
                       image_size=128,
@@ -192,13 +255,25 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       imagenet_norm=True,
                       ambiguous_mode=False,
                       aug_override=None,
-                      global_p=1.0,):
+                      global_p=1.0,
+                      lap_mode="none"):
+        self.lap_mode = lap_mode
         self.ambiguous_mode = ambiguous_mode
         self.delete_info_keys = delete_info_keys
         self.conditioning = conditioning
         self.load_cond_auto = load_cond_probs is not None
         self.load_cond_probs = load_cond_probs
         self.global_p = global_p
+        if self.lap_mode!="none":
+            assert self.lap_mode in ["random","min_sim","max_sim"], f"lap_mode={self.lap_mode} not recognized"
+            assert not shuffle_labels, "shuffle_labels must be False when using LocationAwarePalette"
+            n_bits_half = np.log2(max_num_classes)
+            assert np.round(n_bits_half) == n_bits_half, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
+            assert n_bits_half//2 == n_bits_half/2, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
+            self.LAP = LocationAwarePalette(max_num_classes=max_num_classes,
+                                            image_size=image_size,
+                                            padding_idx=padding_idx,
+                                            mode=self.lap_mode)
         if self.load_cond_probs is not None:
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
             assert all([k in cond_image_prob_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())+" expected "+str(cond_image_prob_keys)
@@ -634,7 +709,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             class_table = class_table.to_dict()
         return class_table
 
-    def process_class_table(self,class_table,semantic,delete_empty_from_class_table=True,info=None):
+    def process_class_table(self,class_table,semantic,delete_empty_from_class_table=True):
         assert self.map_excess_classes_to in ["largest","random_different","random_same","zero","same","nearest_expensive"], f"expected map_excess_classes_to to be one of ['largest','random_different','random_same','zero','same','nearest_expensive'], got {self.map_excess_classes_to}"
         mnc = self.max_num_classes
         sort_keys = ["is_main_image_zero","rel_area_big_enough","key_int","count"]
@@ -696,6 +771,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 pass
             elif self.map_excess_classes_to=="nearest_expensive": #not implemented yet, supposed to find maximum bordering class and assign to that
                 raise NotImplementedError("nearest_expensive not implemented yet")
+
         if self.shuffle_labels:
             if self.shuffle_zero:
                 perm = np.random.permutation(mnc)
@@ -705,6 +781,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         else:
             perm_f = lambda x: x
         class_table["idx_new"] = perm_f(class_table["idx_new"].to_numpy())
+
         old_to_new = {k: v for k,v in zip(class_table["idx_old"],class_table["idx_new"])}
         old_to_new[-1] = self.padding_idx
         
@@ -762,12 +839,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
                 info["cond"][k][0][info["cond"][k][0]==self.padding_idx] = -1
                 info["cond"][k][0][info["cond"][k][0]>0] += delta
                 class_table = pd.concat([class_table,class_table_v],axis=0,ignore_index=True)
-        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic,info=info)
+        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic)
         label = label.astype(int)
         label[label==self.padding_idx] = -1
         if not self.ambiguous_mode:
             label = np.vectorize(old_to_new.get)(label)
-
+            if self.lap_mode!="none":
+                lap_map = self.LAP.mapping_from_labels(label)
+                label = np.vectorize(lap_map.get)(label)
         info["idx_to_class_name"] = idx_to_class_name
         info["idx_to_dataset_idx"] = idx_to_dataset_idx
         info["old_to_new"] = old_to_new
@@ -1182,7 +1261,7 @@ def save_sam_features(datasets="ade20k",
                             shuffle_datasets=False,
                             ignore_sam_idx=0)
     dataloader = torch.utils.data.DataLoader(dataset,
-                                             shuffle=False,
+                                            shuffle=False,
                                             batch_size=batch_size,
                                             num_workers=4,
                                             drop_last=False,
@@ -1258,11 +1337,12 @@ def get_dataset_from_args(args_or_model_id=None,
                             conditioning=conditioning,
                             load_cond_probs=load_cond_probs,
                             save_matched_items=args.dataloader_save_processing,
-                            shuffle_labels=args.agnostic,
+                            shuffle_labels=args.agnostic and args.lap_mode=="none",
                             imagenet_norm=args.imagenet_norm,
                             ambiguous_mode=ambiguous_mode,
                             aug_override=aug_override,
                             global_p=args.aug_prob_multiplier,
+                            lap_mode=args.lap_mode,
                             )
     if return_type=="ds":
         return ds

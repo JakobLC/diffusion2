@@ -178,7 +178,11 @@ def ab_bit2prob(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         onehot_shape[bit_dim] = num_classes
         onehot = np.zeros(onehot_shape)
         for i in range(num_classes):
-            pure_bits = ab_int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]))
+            pure_bits = ab_int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]),
+                                      num_bits=num_bits,
+                                      onehot=False,
+                                      padding_idx=padding_idx,
+                                      bit_dim=bit_dim)
             onehot[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=bit_dim)
     if was_torch:
         onehot = torch.from_numpy(onehot).to(device)

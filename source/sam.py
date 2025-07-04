@@ -18,11 +18,11 @@ from source.utils.argparsing import TieredParser
 from source.utils.mixed import postprocess_list_of_segs
 from source.training import DiffusionModelTrainer
 from source.utils.dataloading import get_dataset_from_args
-import warnings 
+import warnings
 import tqdm
 
 #add sam2 to path
-sys.path.append("/home/jloch/Desktop/diff/segment-anything-2/")
+#sys.path.append("/home/jloch/Desktop/diff/segment-anything-2/") old setup, using direct repository import. now using pip install
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.modeling.sam2_base import SAM2Base
