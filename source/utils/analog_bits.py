@@ -205,13 +205,7 @@ def ab_likelihood(x,x_gt,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
     else:
         assert x.shape[bit_dim]==num_bits, "x.shape: "+str(x.shape)+", num_bits: "+str(num_bits)+", bit_dim: "+str(bit_dim)
     if onehot:
-        warnings.warn("This code is untested")
-        #index the prediction with the ground truth indices. Assert the len in the bit dimension is 1 and num_classes
-        assert x_gt.shape[bit_dim]==1, "x_gt.shape: "+str(x_gt.shape)+", bit_dim: "+str(bit_dim)
-        assert x_gt.shape[bit_dim]==num_classes, "x_gt.shape: "+str(x_gt.shape)+", num_classes: "+str(num_classes)+", bit_dim: "+str(bit_dim)
-        indexer = [slice(None) for _ in range(len(x.shape))]
-        indexer[bit_dim] = x_gt
-        likelihood = x[tuple(indexer)]
+        likelihood = (x*x_gt).sum(axis=bit_dim,keepdims=True)
     else:
         if not np.abs(x_gt).max()<=1.0:#, f"Expected x_gt to be in bit form in the range [-1,1], got {x_gt.min()} to {x_gt.max()}"
             print("TENSOR INFO:\n",tensor_info(x_gt))
@@ -239,7 +233,7 @@ def ab_bit2int(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
     if x.dtype in [np.float32,np.float64,np.float16]:
         x = (x>0).astype(np.uint8)
     if onehot:
-        x = np.argmax(x,axis=bit_dim,keepdims=True)
+        x = np.argmax(x,axis=bit_dim,keepdims=True).astype(np.uint8)
     else:
         x = np.packbits(x,axis=bit_dim,bitorder="little")
     if was_torch:

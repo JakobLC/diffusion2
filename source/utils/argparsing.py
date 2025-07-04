@@ -56,7 +56,7 @@ def list_wrap_type(t):
     def list_wrap(x):
         if isinstance(x,str):
             if x.find(";")>=0:
-                return [t(y) for y in x.split(";")]
+                return [t(y) for y in x.split(";") if len(y)>0]
             else:
                 return t(x)
         else:
@@ -232,48 +232,7 @@ def str_with_semicolon_version(v):
             v_out += s1+"["+s2+"]"+s3+";"
     v_out = v_out[:-1]
     return v_out.split(";")
-"""
-def str_with_semicolon_version(v):
-    assert "\x01" not in v, "v contains special character \x01, not allowed"
-    if ";" not in v:
-        return v
-    assert v.count("[")==v.count("]"), f"v={v} has mismatched brackets."
-    if v.count("[")==0:
-        return v
-    #replace semicolons outside brackets with a special character: \x01
-    v = list(v)
-    for i in range(len(v)):
-        if v[i]==";" and v[:i].count("[")==v[:i].count("]"):
-            v[i] = "\x01"
-    v = "".join(v)
-    if "\x01" in v:
-        return [str_with_semicolon_version(v_i) for v_i in v.split("\x01")]
-    #find first bracket with semicolon
-    bracket_start = -1
-    for i in range(v.count("[")):
-        bracket_start = v.find("[",bracket_start+1)
-        bracket_end = v.find("]",bracket_start)
-        if contains_semicolon := ";" in v[bracket_start+1:bracket_end]:
-            break
-            
-    if contains_semicolon:
-        split_contents = v[bracket_start+1:bracket_end].split(";")
-        return [str_with_semicolon_version(v[:bracket_start+1]+contents+v[bracket_end:]) for contents in split_contents]
-    else:
-        return v
-    
-def flatten_nested_list(nested_list):
-    flat_list = []
-    for item in nested_list:
-        if isinstance(item, list):
-            flat_list.extend(flatten_nested_list(item))
-        else:
-            flat_list.append(item)
-    return flat_list
 
-def str_with_semicolon_version_list(v):
-    return ";".join(flatten_nested_list(str_with_semicolon_version(v)))
-"""
 class TieredParser():
     def __init__(self,name="args",
                  tiers_dict={"modified_args": 0,
@@ -441,14 +400,14 @@ class TieredParser():
             num_modified_args = 1
             for k,v in args.__dict__.items():
                 if isinstance(v,list):
-                    if len(v)>1:
-                        num_modified_args *= len(v)
-                        if num_modified_args>100:
-                            raise ValueError(f"Too many modified args. num_modified_args={num_modified_args}")
-                        if len(modified_args_list)==0:
-                            modified_args_list.extend([{k: v2} for v2 in v])
-                        else:
-                            modified_args_list = [{**d, k: v2} for d in modified_args_list for v2 in v]
+                    #if len(v)>1:
+                    num_modified_args *= len(v)
+                    if num_modified_args>100:
+                        raise ValueError(f"Too many modified args. num_modified_args={num_modified_args}")
+                    if len(modified_args_list)==0:
+                        modified_args_list.extend([{k: v2} for v2 in v])
+                    else:
+                        modified_args_list = [{**d, k: v2} for d in modified_args_list for v2 in v]
             if len(modified_args_list)>0:
                 return modified_args_list
         setattr(args,self.id_key,self.get_unique_id(args))

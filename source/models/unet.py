@@ -634,8 +634,9 @@ class UNetModel(nn.Module):
             self.input_skip = [True for _ in self.input_skip]
 
         final_act_dict = {"none": nn.Identity(),
-                       "softmax": nn.Softmax(dim=1),
-                          "tanh": nn.Tanh()}
+                        "softmax": nn.Softmax(dim=1),
+                        "tanh": nn.Tanh(),
+                        "sigmoid": nn.Sigmoid()}
         self.out = nn.Sequential(
             embed_out,
             normalization(ch),
@@ -975,10 +976,12 @@ def create_unet_from_args(args):
             raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
-
-    out_channels=args["diff_channels"]
-    if args["predict"]=="both":
-        out_channels *= 2
+    if args["onehot"]:
+        out_channels = int(2**args["diff_channels"])
+    else:
+        out_channels=args["diff_channels"]
+        if args["predict"]=="both":
+            out_channels *= 2
 
     
     if isinstance(args["num_res_blocks"],int):
@@ -993,9 +996,9 @@ def create_unet_from_args(args):
         #raise NotImplementedError("DummyModel not implemented")
         unet = DummyModel(out_channels)
     
-    if args["final_activation"]=="tanh_if_x":
+    if args["final_activation"].endswith("_if_x"):
         if args["predict"]=="x":
-            final_act = "tanh"
+            final_act = args["final_activation"].replace("_if_x","")
         else:
             final_act = "none"
     else:
@@ -1215,7 +1218,10 @@ class ModelInputKwargs:
         
         im_d = {"img_size": self.args["image_size"], 
                 "type": "image"}
-        c_diff = self.hyper_params["diff_channels"]
+        if self.args["onehot"]:
+            c_diff = int(2**self.hyper_params["diff_channels"])
+        else:
+            c_diff = self.hyper_params["diff_channels"]
         c_im = self.hyper_params["image_channels"]
         c_im_d = c_diff+c_im
         c_im_enc = self.hyper_params["image_encoder"]
