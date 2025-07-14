@@ -32,10 +32,10 @@ turbo_jpeg = TurboJPEG()
 
 required_class_table_info_keys = ["i","imshape","classes","class_counts","dataset_name"]
 
-def bbox_image_from_label(label,num_bbox=None,padding_idx=255,fill_val=-1):
+def bbox_image_from_label(label,num_bbox=None,padding_idx=-1,fill_val=-1):
     return points_image_from_label(label,num_points=num_bbox,padding_idx=padding_idx,bbox_instead=True,fill_val=fill_val)
 
-def points_image_from_label(label,num_points=None,padding_idx=255,bbox_instead=False,fill_val=0):
+def points_image_from_label(label,num_points=None,padding_idx=-1,bbox_instead=False,fill_val=0):
     assert torch.is_tensor(label)
     assert len(label.shape)==3
     assert label.shape[0]==1
@@ -113,7 +113,7 @@ def binary_dist(b1,b2):
     """counts the number of bits that are different between two binary strings (iterables)"""
     return sum([1 for i in range(len(b1)) if b1[i]!=b2[i]])
 
-def max_sim_ordering(n_bits):
+def different_ordering(n_bits):
     order = max_diff_sequence(n_bits)
     h = int(np.round(len(order)**0.5))
     #reverse every second row
@@ -139,7 +139,7 @@ def gray_code(n):
     prev = gray_code(n - 1)
     return ['0' + code for code in prev] + ['1' + code for code in reversed(prev)]
 
-def min_sim_ordering(n_bits):
+def similar_ordering(n_bits):
     order = [int(code, 2) for code in gray_code(n_bits)]
     h = int(np.round(len(order)**0.5))
     #reverse every second row
@@ -152,9 +152,10 @@ class LocationAwarePalette:
     def __init__(self,
                 max_num_classes,
                 image_size,
-                padding_idx=255,
-                mode="min_sim"):
-        assert mode in ["random","min_sim","max_sim"], "mode must be one of ['random','min_sim','max_sim'], got "+mode
+                padding_idx=-1,
+                mode="similar",
+                largest_first=False):
+        assert mode in ["random","similar","different"], "mode must be one of ['random','min_sim','max_sim'], got "+mode
         assert (np.log2(max_num_classes)/2).is_integer(), "max_num_classes must be an even power of 2 (:=2^(2k)), got "+str(max_num_classes)
         
         self.max_num_classes = max_num_classes
@@ -162,12 +163,13 @@ class LocationAwarePalette:
         self.sidelength = int(np.sqrt(max_num_classes))
         self.image_size = image_size
         self.padding_idx = padding_idx
+        self.largest_first = largest_first
         if mode=="random":
             self.order = np.random.permutation(max_num_classes)
-        elif mode=="min_sim":
-            self.order = min_sim_ordering(self.num_bits)
-        elif mode=="max_sim":
-            self.order = max_sim_ordering(self.num_bits)
+        elif mode=="similar":
+            self.order = similar_ordering(self.num_bits)
+        elif mode=="different":
+            self.order = different_ordering(self.num_bits)
         self.order = np.array(self.order).reshape((self.sidelength,self.sidelength))
 
     def apply_lap(self, labels):
@@ -178,19 +180,30 @@ class LocationAwarePalette:
         mapped_labels = np.vectorize(mapping.get)(labels_flat)
         return mapped_labels.reshape(labels.shape)
 
-    def mapping_from_labels(self,labels):
+    def get_centers(self,labels,relative=True):
         assert len(labels.shape)==2, "labels must be of shape (H,W), got "+str(labels.shape)
         assert labels.shape[0]==labels.shape[1], "labels must be square, got "+str(labels.shape)
         assert labels.shape[0]==self.image_size, "labels must be of shape (image_size,image_size), got "+str(labels.shape)+" for image_size="+str(self.image_size)
-        uq_labels = list(np.unique(labels))
-        uq_labels = [i for i in uq_labels if i>=0 and i!=self.padding_idx]
+        uq_labels,uq_counts = np.unique(labels, return_counts=True)
+        uq_counts = uq_counts[self.padding_idx!=uq_labels]  # remove padding index
+        uq_labels = uq_labels[self.padding_idx!=uq_labels]  # remove padding index
         centers = center_of_mass(np.ones_like(labels), labels, uq_labels)
         centers = np.array(centers)
         #map -0.5 to 0 and image_size+0.5 to 1
-        centers = (centers + 0.5) / self.image_size
-        return self.mapping_from_centers(centers,uq_labels)
+        if relative:
+            centers = self.to_rel_coords(centers)
+        return centers,uq_labels,uq_counts
+
+    def to_rel_coords(self,centers):
+        return (centers + 0.5) / self.image_size
+
+    def to_abs_coords(self,centers):
+        return (centers * self.image_size) - 0.5
+
+    def mapping_from_labels(self,labels):
+        return self.mapping_from_centers(*self.get_centers(labels))
     
-    def mapping_from_centers(self,centers,indices):
+    def mapping_from_centers(self,centers,indices,counts):
         assert len(centers.shape)==2, "centers must be of shape (N,2), got "+str(centers.shape)
         assert centers.shape[1]==2, "centers must be of shape (N,2), got "+str(centers.shape)
         assert centers.min()>= 0, "Centers must be in the range [0,1] for relative coordinates, got "+str(centers.min())
@@ -198,33 +211,33 @@ class LocationAwarePalette:
         assert len(centers)<=self.max_num_classes, "centers must not exceed max_num_classes, got "+str(len(centers))+" for max_num_classes="+str(self.max_num_classes)
         centers = centers * self.sidelength - 0.5
         centers_rounded = np.round(centers).astype(int)
+        n = len(centers)
         sampled = self.order[centers_rounded[:,0],centers_rounded[:,1]]
         #handle overlaps:
-        if len(sampled)>len(np.unique(sampled)):
+        if self.largest_first or n>len(np.unique(sampled)):
             #loop through all centers that are not unique. Ignore the first one.
             #assign all subsequent centers to the nearest unused class in L2 distance
             mask = np.zeros_like(self.order, dtype=bool)
-            sampled = []
+            sampled = [None for _ in range(n)]
             Y, X = np.indices(self.order.shape)
-            for i in range(len(centers_rounded)):
-                idx_r = centers_rounded[i,0],centers_rounded[i,1]
-                idx = centers[i,0],centers[i,1]
-                if mask[idx_r]:
+            nrange = np.argsort(counts)[::-1] if self.largest_first else np.arange(n)
+            for i in nrange:
+                if mask[tuple(centers_rounded[i])]:
                     #find the nearest unused class and use it instead of the current one
-                    distances = np.sqrt((X - idx[1])**2 + (Y - idx[0])**2)
+                    distances = np.sqrt((X - centers[i,1])**2 + (Y - centers[i,0])**2)
                     unused_classes = np.where(~mask.flatten())[0]
                     nearest_unused_class = unused_classes[np.argmin(distances.flatten()[unused_classes])]
-                    sampled.append(self.order.flatten()[nearest_unused_class])
+                    sampled[i] =  self.order.flatten()[nearest_unused_class]
                     nearest_unused_class_2d = np.unravel_index(nearest_unused_class, self.order.shape)
                     mask[nearest_unused_class_2d] = True
                 else:
-                    sampled.append(self.order[idx_r])
-                    mask[idx_r] = True    
+                    sampled[i] = self.order[tuple(centers_rounded[i])]
+                    mask[tuple(centers_rounded[i])] = True    
 
         mapping = {k: v for k,v in zip(indices,sampled)}
         mapping[self.padding_idx] = self.padding_idx  # ensure padding index is preserved
         return mapping
-    
+
 class SegmentationDataset(torch.utils.data.Dataset):
     def __init__(self,split="train",
                       image_size=128,
@@ -243,7 +256,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       data_root=None,
                       use_pretty_data=True,
                       geo_aug_p=0.3,
-                      padding_idx=255,
+                      padding_idx=-1,
                       split_method="random",
                       sam_features_idx=-1,
                       ignore_sam_idx=-1,
@@ -256,7 +269,11 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       ambiguous_mode=False,
                       aug_override=None,
                       global_p=1.0,
-                      lap_mode="none"):
+                      lap_mode="none",
+                      skip_class_table=False):
+        self.skip_class_table = skip_class_table
+        if skip_class_table:
+            assert not conditioning, "conditioning is not supported when skip_class_table is True"
         self.lap_mode = lap_mode
         self.ambiguous_mode = ambiguous_mode
         self.delete_info_keys = delete_info_keys
@@ -265,7 +282,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.load_cond_probs = load_cond_probs
         self.global_p = global_p
         if self.lap_mode!="none":
-            assert self.lap_mode in ["random","min_sim","max_sim"], f"lap_mode={self.lap_mode} not recognized"
+            recognized_modes = ["random","similar","different"]
+            recognized_modes += [f"{m}_largest" for m in recognized_modes]
+            assert self.lap_mode in recognized_modes, f"lap_mode={self.lap_mode} not recognized. Must be one of {recognized_modes}"
             assert not shuffle_labels, "shuffle_labels must be False when using LocationAwarePalette"
             n_bits_half = np.log2(max_num_classes)
             assert np.round(n_bits_half) == n_bits_half, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
@@ -273,7 +292,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
             self.LAP = LocationAwarePalette(max_num_classes=max_num_classes,
                                             image_size=image_size,
                                             padding_idx=padding_idx,
-                                            mode=self.lap_mode)
+                                            mode=self.lap_mode.replace("_largest",""),
+                                            largest_first="largest" in self.lap_mode)
         if self.load_cond_probs is not None:
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
             assert all([k in cond_image_prob_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())+" expected "+str(cond_image_prob_keys)
@@ -295,8 +315,6 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.min_rel_class_area = min_rel_class_area
         self.min_crop = min_crop
         self.max_num_classes = max_num_classes
-        if max_num_classes>255:
-            raise NotImplementedError("max_num_classes>255 not implemented since the implementation being based on uint8. Note the value 255 is reserved for padding") #TODO: enable max_num_classes>255
         self.datasets = datasets
         self.semantic_prob = semantic_prob
         self.padding_idx = padding_idx
@@ -829,31 +847,50 @@ class SegmentationDataset(torch.utils.data.Dataset):
         has_cond = len(info.get("cond",{}))>0
         semantic = self.semantic_prob>=np.random.rand() and self.semantic_prob>0
         info["semantic"] = semantic
-        class_table = self.class_table_from_info(info)
-        if has_cond:
-            for k in list(info["cond"].keys()):
-                delta = len(class_table)
-                class_table_v = self.class_table_from_info(info["cond"][k][-1],origin=k)
-                class_table_v["idx_old"] += delta
-                info["cond"][k][0] = info["cond"][k][0].astype(int)
-                info["cond"][k][0][info["cond"][k][0]==self.padding_idx] = -1
-                info["cond"][k][0][info["cond"][k][0]>0] += delta
-                class_table = pd.concat([class_table,class_table_v],axis=0,ignore_index=True)
-        class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic)
-        label = label.astype(int)
-        label[label==self.padding_idx] = -1
-        if not self.ambiguous_mode:
+
+        if not self.skip_class_table:
+            class_table = self.class_table_from_info(info)
+            if has_cond:
+                for k in list(info["cond"].keys()):
+                    delta = len(class_table)
+                    class_table_v = self.class_table_from_info(info["cond"][k][-1],origin=k)
+                    class_table_v["idx_old"] += delta
+                    info["cond"][k][0] = info["cond"][k][0].astype(int)
+                    info["cond"][k][0][info["cond"][k][0]==self.padding_idx] = -1
+                    info["cond"][k][0][info["cond"][k][0]>0] += delta
+                    class_table = pd.concat([class_table,class_table_v],axis=0,ignore_index=True)
+            class_table,new_class_table,old_to_new,idx_to_dataset_idx,idx_to_class_name,num_classes = self.process_class_table(class_table,semantic)
+            label = label.astype(int)
+            label[label==self.padding_idx] = -1
+            info["idx_to_class_name"] = idx_to_class_name
+            info["idx_to_dataset_idx"] = idx_to_dataset_idx
+            
+            info["num_labels"] = num_classes
+            if has_cond:
+                for k in info["cond"].keys():
+                    info["cond"][k][0] = np.vectorize(old_to_new.get)(info["cond"][k][0])
+        else:
+            mnc = self.max_num_classes
+            idx_old = np.unique(label[label!=self.padding_idx].flatten()).tolist()
+            idx_old.sort()
+            if self.shuffle_labels:
+                if not self.shuffle_zero:
+                    idx_new = np.random.choice(mnc,size=len(idx_old),replace=False).tolist()
+                else:
+                    idx_new = [0]+list(np.random.choice(mnc-1,size=len(idx_old)-1,replace=False)+1)
+            else:
+                idx_new = idx_old
+
+            old_to_new = {k: v for k,v in zip(idx_old,idx_new)}
+            old_to_new[-1] = self.padding_idx
+
+        if self.lap_mode!="none":
+            lap_map = self.LAP.mapping_from_labels(label)
+            label = np.vectorize(lap_map.get)(label)
+            info["old_to_new"] = lap_map
+        elif not self.ambiguous_mode:
             label = np.vectorize(old_to_new.get)(label)
-            if self.lap_mode!="none":
-                lap_map = self.LAP.mapping_from_labels(label)
-                label = np.vectorize(lap_map.get)(label)
-        info["idx_to_class_name"] = idx_to_class_name
-        info["idx_to_dataset_idx"] = idx_to_dataset_idx
-        info["old_to_new"] = old_to_new
-        info["num_labels"] = num_classes
-        if has_cond:
-            for k in info["cond"].keys():
-                info["cond"][k][0] = np.vectorize(old_to_new.get)(info["cond"][k][0])
+            info["old_to_new"] = old_to_new
         return label,info
 
     def load_cond_image_label(self,info,probs):
@@ -884,6 +921,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
         #if image is smaller than image_size, pad it
         if self.crop_method.startswith("sam"):
             image,label = self.augment(image,label,info)
+            label = label.astype(int)
             if self.crop_method=="sam_big":
                 augmented = self.sam_aug_big(image=image,mask=label)
             elif self.crop_method=="sam_lidc64":
@@ -893,6 +931,7 @@ class SegmentationDataset(torch.utils.data.Dataset):
             else:
                 assert self.crop_method=="sam_small"
                 augmented = self.sam_aug_small(image=image,mask=label)
+            im = augmented["image"]
             image,label = augmented["image"],augmented["mask"]
         else:
             if any([image.shape[i]<self.image_size for i in range(2)]):
@@ -1079,7 +1118,7 @@ def load_raw_image_label_from_didx(didx,longest_side_resize=0,data_root=None):
     gts = [t[1] for t in tuples]
     return ims,gts
 
-def get_sam_aug(size,padval=255,imagenet_norm_p=1):
+def get_sam_aug(size,padval=-1,imagenet_norm_p=1):
     #SAM uses the default imagenet mean and std, also default in A.Normalize
     sam_aug = A.Compose([A.LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA, always_apply=True, p=1),
                      A.Normalize(always_apply=imagenet_norm_p>=1.0, p=imagenet_norm_p),
@@ -1330,7 +1369,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             max_num_classes=2**args.diff_channels,
                             shuffle_zero=args.shuffle_zero,
                             crop_method=args.crop_method,
-                            padding_idx=255 if args.ignore_padded else 0,
+                            padding_idx=-1 if args.ignore_padded else 0,
                             split_method=args.split_method,
                             sam_features_idx=args.image_encoder,
                             semantic_prob=args.semantic_dl_prob,
@@ -1343,6 +1382,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             aug_override=aug_override,
                             global_p=args.aug_prob_multiplier,
                             lap_mode=args.lap_mode,
+                            skip_class_table=args.diff_channels>8,
                             )
     if return_type=="ds":
         return ds

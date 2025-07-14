@@ -14,7 +14,7 @@ from source.utils.mixed import (bracket_glob_fix, save_dict_list_to_json,
                                 load_json_to_dict_list, wildcard_match,
                                 sam_resize_index,unet_kwarg_to_tensor,model_arg_is_trivial,
                                 didx_from_info)
-from source.utils.analog_bits import ab_bit2prob
+from source.utils.analog_bits import ab_bit2prob, ab_bit2color
 from source.utils.metric_and_loss import get_likelihood
 from source.utils.dataloading import get_dataset_from_args, load_raw_image_label
 from source.models.unet import dynamic_image_keys
@@ -542,7 +542,7 @@ def plot_grid(filename,
               max_images=32,
               remove_old=False,
               measure='ari',
-              text_inside=False,
+              text_inside=True,
               sample_names=None,
               imagenet_stats=True,
               show_keys=dynamic_image_keys+["image","gt_bit","pred_bit","points"],
@@ -580,10 +580,10 @@ def plot_grid(filename,
                 for j in range(num_votes):
                     images.extend([map_dict[k](output[k][i][j]) for i in range(bs)])
                     text1 = [k if text_inside else ""]+[""]*(bs-1)
-                    #text2 = ([f"\n{output[measure][i][j]*100:0.1f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
-                    text2 = ["" for i in range(bs)]
+                    text2 = ([f"\n{output[measure][i][j]*100:.0f}" for i in range(bs)]) if measure in output.keys() else (["" for i in range(bs)])
+                    #text2 = ["" for i in range(bs)]
                     if j==0:
-                        text1[0] = f"{measure}="+text1[0]
+                        text2[0] = f"\n{measure}={text2[0][1:]}"
                     text.extend([t1+t2 for t1,t2 in zip(text1,text2)])
             else:
                 text.extend([k if text_inside else ""]+[""]*(bs-1))
@@ -630,11 +630,26 @@ def get_zero_im(x):
 def bit_to_np(x,ab_kw):
     return ab_bit2prob(x.unsqueeze(0),**ab_kw)[0].permute(1,2,0).cpu().numpy()
 
+def aboi_memory_efficient(x,ab_kw):
+    """
+    Memory efficient version of aboi (analog bits on image), 
+    which uses less memory by not storing the intermediate results.
+    """
+    if isinstance(x,torch.Tensor):
+        x = x.cpu().detach().numpy()
+    assert isinstance(x,np.ndarray), "aboi_memory_efficient expects a numpy array"
+    assert len(x.shape)==3, "aboi_memory_efficient expects a 3D numpy array"
+    color_im = ab_bit2color(x[None],**ab_kw)[0].transpose((1,2,0))
+    return color_im
+
 def get_map_dict(imagenet_stats,ab_kw):
     imgn_s = imagenet_stats
     nb = ab_kw.get("num_bits",6)
+
     if nb==1 or nb==3:
         aboi = lambda x: normal_image(x,imagenet_stats=False)
+    elif nb>8:
+        aboi = lambda x: aboi_memory_efficient(x,ab_kw)
     else:
         aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab_kw),alpha_mask=1.0)
     aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3],ab_kw),alpha_mask=0.6)

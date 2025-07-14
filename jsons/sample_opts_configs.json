@@ -199,7 +199,9 @@
             "sam": {"sampler_type": "ddpm", "num_timesteps": 20, "guidance_weight": 1.5},
             "1v": {"num_votes": 1},
             "repeat_didx": {"pri_didx": "entity_repeat", "split": "all"},
-            "25ts": {"num_timesteps": 25}
+            "25ts": {"num_timesteps": 25},
+            "512": {"num_samples": 512},
+            "fast": {"num_timesteps": 2, "num_samples": 8}
         },
         "num_timesteps": 100, 
         "sampler_type": "ddpm", 

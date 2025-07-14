@@ -1,8 +1,8 @@
 import numpy as np
 import torch
-import warnings
 from source.utils.mixed import tensor_info
-
+import warnings
+from jlc import nc
 """class AnalogBits(object):
     def __init__(self,num_bits=8,
                  shuffle_zero=False,
@@ -157,7 +157,9 @@ from source.utils.mixed import tensor_info
             onehot = torch.from_numpy(onehot).to(device)
         return onehot"""
 
-def ab_bit2prob(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
+def ab_bit2prob(x,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
+    if num_bits>8:
+        warnings.warn("ab_bit2prob will create a (H,W,2**num_bits) tensor which may be very large when num_bits>8. Consider using ab_bit2prob_idx instead.")
     num_classes = 2**num_bits
     if isinstance(x,torch.Tensor):
         device = x.device
@@ -188,7 +190,80 @@ def ab_bit2prob(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         onehot = torch.from_numpy(onehot).to(device)
     return onehot
 
-def ab_likelihood(x,x_gt,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
+def ab_bit2prob_idx(x,idx,keepdims=False,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
+    num_classes = 2**num_bits
+    if isinstance(x,torch.Tensor):
+        device = x.device
+        x = x.cpu().detach().numpy()
+        was_torch = True
+    else:
+        was_torch = False
+    assert isinstance(x,np.ndarray)
+    assert len(x.shape)>=bit_dim+1
+    if onehot:
+        assert x.shape[bit_dim]==num_classes, "x.shape: "+str(x.shape)+", num_classes: "+str(num_classes)+", bit_dim: "+str(bit_dim)
+    else:
+        assert x.shape[bit_dim]==num_bits, "x.shape: "+str(x.shape)+", num_bits: "+str(num_bits)+", bit_dim: "+str(bit_dim)
+    if onehot:
+        slicer = [slice(None) for _ in range(len(x.shape))]
+        slicer[bit_dim] = slice(idx,idx+1) if keepdims else idx
+        prob_idx = x[slicer]
+    else:
+        pure_bits = ab_int2bit(np.array([idx]).reshape(*[1 for _ in range(len(x.shape))]),
+                                    num_bits=num_bits,
+                                    onehot=False,
+                                    padding_idx=padding_idx,
+                                    bit_dim=bit_dim)
+        prob_idx = np.prod(1-0.5*np.abs(pure_bits-x),axis=bit_dim,keepdims=keepdims)
+    if was_torch:
+        prob_idx = torch.from_numpy(prob_idx).to(device)
+    return prob_idx
+
+def ab_bit2color(x,pallete=None,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
+    """Converts a bit representation to a color representation using a palette, 
+    in a memory-efficient way, by never storing the full probability array in case it is large.
+    """
+    if pallete is None:
+        pallete = np.concatenate([np.array([[0,0,0]]),nc.largest_colors],axis=0)
+    num_classes = 2**num_bits
+    if isinstance(x,torch.Tensor):
+        device = x.device
+        x = x.cpu().detach().numpy()
+        was_torch = True
+    else:
+        was_torch = False
+    assert isinstance(x,np.ndarray)
+    assert len(x.shape)>=bit_dim+1
+    if onehot:
+        assert x.shape[bit_dim]==num_classes, "x.shape: "+str(x.shape)+", num_classes: "+str(num_classes)+", bit_dim: "+str(bit_dim)
+    else:
+        assert x.shape[bit_dim]==num_bits, "x.shape: "+str(x.shape)+", num_bits: "+str(num_bits)+", bit_dim: "+str(bit_dim)
+    
+    color_array_shape = list(x.shape)
+    color_array_shape[bit_dim] = 3
+    color_array = np.zeros(color_array_shape,dtype=np.float32)
+    color_shape = [1 for _ in range(len(x.shape))]
+    color_shape[bit_dim] = 3
+    if onehot:
+        for i in range(num_classes):
+            color_reshaped = pallete[i % len(pallete)].reshape(color_shape)/255
+            color_array += x[i:i+1]*color_reshaped
+    else:
+        for i in range(num_classes):
+            pure_bits = ab_int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]),
+                                      num_bits=num_bits,
+                                      onehot=False,
+                                      padding_idx=padding_idx,
+                                      bit_dim=bit_dim)
+            color_reshaped = pallete[i % len(pallete)].reshape(color_shape)/255
+            prob_idx = np.prod(1-0.5*np.abs(pure_bits-x),axis=bit_dim,keepdims=True)
+            color_array += color_reshaped * prob_idx
+    
+    if was_torch:
+        color_array = torch.from_numpy(color_array).to(device)
+    return color_array
+
+def ab_likelihood(x,x_gt,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
     """ Converts a bit representation to a likelihood of the bit being correct."""
     num_classes = 2**num_bits
     if isinstance(x,torch.Tensor):
@@ -215,7 +290,7 @@ def ab_likelihood(x,x_gt,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         likelihood = torch.from_numpy(likelihood).to(device)
     return likelihood
 
-def ab_bit2int(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
+def ab_bit2int(x,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
     num_classes = 2**num_bits
     if isinstance(x,torch.Tensor):
         device = x.device
@@ -236,18 +311,24 @@ def ab_bit2int(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
         x = np.argmax(x,axis=bit_dim,keepdims=True).astype(np.uint8)
     else:
         x = np.packbits(x,axis=bit_dim,bitorder="little")
+        if x.shape[bit_dim]>1:
+            mult_shape = [1 for _ in range(len(x.shape))]
+            mult_shape[bit_dim] = x.shape[bit_dim]
+            multiplier = np.array([256**i for i in range(x.shape[bit_dim])]).reshape(mult_shape)
+            x = np.sum(x*multiplier,axis=bit_dim,keepdims=True).astype(int)
     if was_torch:
         x = torch.from_numpy(x).to(device)
     return x
 
-def ab_int2bit(x,num_bits=6,onehot=False,padding_idx=255,bit_dim=1):
+def ab_int2bit(x,num_bits=6,onehot=False,padding_idx=-1,bit_dim=1):
     num_classes = 2**num_bits
     if isinstance(x,torch.Tensor):
         device = x.device
-        x = x.cpu().detach().numpy()
+        x = x.clone().cpu().detach().numpy()
         was_torch = True
     else:
         was_torch = False
+        x = x.copy()
     assert isinstance(x,np.ndarray)
     assert len(x.shape)>=bit_dim+1
     assert x.shape[bit_dim]==1
