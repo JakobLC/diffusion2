@@ -13,7 +13,6 @@ from source.utils.argparsing import TieredParser
 from source.utils.fp16 import convert_module_to_f16, convert_module_to_f32
 from source.utils.mixed import (model_arg_is_trivial, nice_split, assert_one_to_one_list_of_str,
                                 unet_kwarg_to_tensor,get_named_datasets)
-from source.utils.analog_bits import ab_int2bit
 from source.models.nn import (SiLU,conv_nd,linear,avg_pool_nd,zero_module,normalization,
                               timestep_embedding,checkpoint,identity_module,total_model_norm)
 from source.models.gen_prob_unet import GenProbUNet
@@ -855,29 +854,7 @@ class UNetModel(nn.Module):
             h = module(cat_in, emb)
             depth += 1
         h = h.type(sample.dtype)
-
-        if self.debug_run=="unet_print":
-            import jlc
-            from source.utils.plot import visualize_tensor
-            import matplotlib 
-            #switch to qt5
-            matplotlib.use('Qt5Agg')
-            print("sample:",sample.shape)
-            print("timesteps:",timesteps.shape)
-            for k,v in kwargs.items():
-                print(f"{k}: ")
-                jlc.shaprint(v)
-            print("h1:",h.shape)
-            jlc.montage(visualize_tensor(h))
-        elif self.debug_run=="token_info_overview":
-            print("token_info_overview:")
-            print([m.abs().sum().item() for m in kwargs["image"]])
-            print(token_info_overview(self.last_token_info,as_df=1))
-            exit()
         h = self.out(h)
-        if self.debug_run=="unet_print":
-            print("h2:",h.shape)
-            exit()
         return h
     
     def prepare_inputs(self, sample, timesteps, **kwargs):
@@ -976,8 +953,10 @@ def create_unet_from_args(args):
             raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple([int(x) for x in args["channel_multiplier"].split(",")])
-    if args["onehot"]:
+    if args["encoding_type"]=="onehot":
         out_channels = int(2**args["diff_channels"])
+    elif args["encoding_type"]=="RGB":
+        out_channels = 3
     else:
         out_channels=args["diff_channels"]
         if args["predict"]=="both":
@@ -1218,8 +1197,10 @@ class ModelInputKwargs:
         
         im_d = {"img_size": self.args["image_size"], 
                 "type": "image"}
-        if self.args["onehot"]:
+        if self.args["encoding_type"] == "onehot":
             c_diff = int(2**self.hyper_params["diff_channels"])
+        elif self.args["encoding_type"] == "RGB":
+            c_diff = 3
         else:
             c_diff = self.hyper_params["diff_channels"]
         c_im = self.hyper_params["image_channels"]
@@ -1364,7 +1345,7 @@ def convert_to_slice_if_possible(idx):
         return idx
 
 
-def cond_kwargs_int2bit(kwargs,dynamic_image_keys=dynamic_image_keys,ab_kw={}):
+def cond_kwargs_int2bit(kwargs,ab,dynamic_image_keys=dynamic_image_keys):
     """loops over dynamic image keys and converts the label part to bits"""
     for key in dynamic_image_keys:
         if key in kwargs.keys():
@@ -1377,7 +1358,7 @@ def cond_kwargs_int2bit(kwargs,dynamic_image_keys=dynamic_image_keys,ab_kw={}):
                     assert isinstance(kwargs[key][i],(tuple,list)), f"expected a tuple for key={key}. got type(kwargs[key][i])={type(kwargs[key][i])}"
                     assert len(kwargs[key][i])==3, f"expected a tuple of len 3 for key={key}. got len(kwargs[key][i])={len(kwargs[key][i])}"
                     lab,im,info = kwargs[key][i]
-                    kwargs[key][i] = torch.cat([ab_int2bit(lab[None],**ab_kw)[0],im])
+                    kwargs[key][i] = torch.cat([ab.int2bit(lab[None])[0],im])
             
     return kwargs
 

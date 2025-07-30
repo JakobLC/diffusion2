@@ -217,7 +217,7 @@ class ContinuousGaussianDiffusion():
             t = (torch.arange(bs)/bs+t0)
             t = t[torch.randperm(bs)]
         elif self.sampler_type==SamplerType.uniform_low_d:
-            t = ((torch.arange(bs)[torch.randperm(bs)]+torch.rand(bs))/bs)
+            t = (torch.randperm(bs)+torch.rand(bs))/bs
         else:
             raise NotImplementedError(self.sampler_type)
         return t
@@ -286,7 +286,6 @@ class ContinuousGaussianDiffusion():
                 "t": t, 
                 
                 "self_cond": model_kwargs['self_cond']}
-        
         return output
     
     def get_x_from_eps(self,eps,x_t,alpha_t,sigma_t):

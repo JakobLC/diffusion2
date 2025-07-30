@@ -16,7 +16,7 @@ from source.utils.metric_and_loss import get_segment_metrics, get_ambiguous_metr
 from source.utils.dataloading import get_dataset_from_args
 from source.utils.plot import plot_grid,plot_inter,concat_inter_plots,index_dict_with_bool
 from source.utils.argparsing import TieredParser, save_args, overwrite_existing_args, str2bool
-from source.utils.analog_bits import ab_int2bit, ab_bit2int
+from source.utils.analog_bits import AnalogBits
 from pathlib import Path
 import copy
 #from cont_gaussian_diffusion import DummyDiffusion TODO
@@ -33,7 +33,7 @@ class DiffusionSampler(object):
         self.opts = opts
         self.trainer = trainer
         self.args = copy.deepcopy(self.trainer.args)
-        self.ab_kwargs = self.trainer.ab_kwargs
+        self.ab = AnalogBits(self.args)
         self.opts.seed = self.args.seed
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -258,7 +258,7 @@ class DiffusionSampler(object):
         with torch.no_grad():
             for batch_ite in progress_bar:
                 gt_int, model_kwargs, info, batch_queue = self.form_next_batch()
-                gt_bit = ab_int2bit(gt_int,**self.ab_kwargs)
+                gt_bit = self.ab.int2bit(gt_int)
                                     
                 x_init = torch.randn_like(gt_bit)
                 sample_output = self.trainer.cgd.sample_loop(model=model, 
@@ -357,7 +357,7 @@ class DiffusionSampler(object):
                        save_i_idx=save_i_idx,
                        plot_text=self.opts.concat_inter_filename=="",
                        imagenet_stats=self.args.crop_method.startswith("sam"),
-                       ab_kw=self.ab_kwargs)
+                       ab=self.ab)
         if self.opts.save_raw_samples:
             save_bool = [bq_i["sample"]<self.opts.num_save_raw_samples for bq_i in bq]
             if any(save_bool):
@@ -373,14 +373,14 @@ class DiffusionSampler(object):
                     sample_output = index_dict_with_bool(sample_output,save_bool)
                 if self.opts.only_save_raw_pred:
                     sample_output = {"info": [{"dataset_name": info_i["dataset_name"], "i": info_i["i"]} for info_i in info],
-                                     "pred_int": ab_bit2int(sample_output["pred_bit"],**self.ab_kwargs)}
+                                     "pred_int": self.ab.bit2int(sample_output["pred_bit"],info=info),}
                 torch.save(sample_output,os.path.join(self.opts.raw_samples_folder,f"raw_sample_batch{batch_ite:03d}.pt"))
             
     def run_on_full_votes(self,votes,gt_int,gt_bit,info,model_kwargs,x_init,bqi,entropy):
         gt_int = gt_int.cpu()
         gt_bit = gt_bit.cpu()
         votes = torch.stack(votes,dim=0).cpu()
-        votes_int = ab_bit2int(votes, **self.ab_kwargs)
+        votes_int = self.ab.bit2int(votes,[info]*votes.shape[0])
         if self.opts.postprocess!="none":
             if self.opts.postprocess.startswith("min_area"):
                 area = float(self.opts.postprocess.split("min_area")[-1])
@@ -462,7 +462,7 @@ class DiffusionSampler(object):
             filename = self.opts.grid_filename
             max_images = min(self.opts.num_grid_samples,len(self.samples))
             plot_grid(filename,output,max_images=max_images,remove_old=self.opts.remove_old,sample_names=output["info"],
-                      imagenet_stats=self.args.crop_method.startswith("sam"),ab_kw=self.ab_kwargs)
+                      imagenet_stats=self.args.crop_method.startswith("sam"),ab=self.ab)
         if "concat" in self.opts.plotting_functions.split(","):
             assert self.opts.concat_inter_filename.endswith(".png"), f"filename: {filename}"
             concat_inter_plots(foldername = self.opts.inter_folder,
@@ -515,7 +515,7 @@ class DiffusionSampler(object):
                 if self.opts.cond_num_labels>0:
                     model_kwargs["num_labels"][i].fill_(self.opts.cond_num_labels)
         if "points" in model_kwargs.keys():
-            model_kwargs["points"] = construct_points(model_kwargs["points"],ab_int2bit(gt_int),as_tensor=False)
+            model_kwargs["points"] = construct_points(model_kwargs["points"],self.ab.int2bit(gt_int),as_tensor=False)
         return gt_int,model_kwargs,info
             
     def form_next_batch(self):

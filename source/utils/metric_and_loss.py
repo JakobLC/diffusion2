@@ -21,7 +21,6 @@ from scipy.optimize import linear_sum_assignment
 from skimage.morphology import binary_dilation,disk
 import warnings
 from functools import partial
-from source.utils.analog_bits import ab_likelihood
 from utils.mixed import shaprint
 import datetime
 import itertools
@@ -29,7 +28,7 @@ from collections import defaultdict
 import pycocotools._mask as _mask
 from argparse import Namespace
 
-def get_all_metrics(output,ignore_zero=False,ambiguous=False,ab_kw={}):
+def get_all_metrics(output,ab,ignore_zero=False,ambiguous=False,):
     assert isinstance(output,dict), "output must be an output dict"
     assert "pred_int" in output.keys(), "output must have a pred_bit key"
     assert "gt_int" in output.keys(), "output must have a gt_bit key"
@@ -41,10 +40,10 @@ def get_all_metrics(output,ignore_zero=False,ambiguous=False,ab_kw={}):
     else:
         metrics.update(get_segment_metrics(output["pred_int"],output["gt_int"],mask=mask,ignore_zero=ignore_zero))
     if "pred_bit" in output.keys() and "gt_bit" in output.keys():
-        metrics["likelihood"] = get_likelihood(output["pred_bit"],output["gt_bit"],mask=mask,ab_kw=ab_kw)[1]
+        metrics["likelihood"] = get_likelihood(output["pred_bit"],output["gt_bit"],mask=mask,ab=ab)[1]
     return metrics
 
-def get_likelihood(pred,gt,mask,outside_mask_fill_value=0.0,clamp=True,ab_kw={}):
+def get_likelihood(pred,gt,mask,ab,outside_mask_fill_value=0.0,clamp=True):
     assert isinstance(pred,torch.Tensor), "pred must be a torch tensor"
     assert isinstance(gt,torch.Tensor), "gt must be a torch tensor"
     assert len(pred.shape)==len(gt.shape), "pred and gt must be 3D or 4D torch tensors. got pred.shape: "+str(pred.shape)+", gt.shape: "+str(gt.shape)
@@ -60,7 +59,7 @@ def get_likelihood(pred,gt,mask,outside_mask_fill_value=0.0,clamp=True,ab_kw={})
         mask = mask.to(pred.device)
     bs = pred.shape[0]
     try:
-        likelihood_images = ab_likelihood(pred,gt,**ab_kw)
+        likelihood_images = ab.likelihood(pred,gt)
     except Exception as e:
         from source.utils.mixed import tensor_info
         print("Error in get_likelihood")
@@ -195,7 +194,7 @@ def get_segment_metrics(pred,gt,
         if h1!=h or w1!=w:
             ratio_diff = min(abs(h1/w1-h/w),abs(w1/h1-w/h))
             assert ratio_diff<acceptable_ratio_diff, f"pred and gt aspect ratios deviate too much. found pred.shape: {pred.shape}, gt.shape: {gt.shape}"
-            pred = torch.nn.functional.interpolate(pred,(h,w),mode="nearest")
+            pred = torch.nn.functional.interpolate(pred.float(),(h,w),mode="nearest").int()
 
     assert len(pred.shape)==len(gt.shape)==3 or len(pred.shape)==len(gt.shape)==4, "pred and gt must be 3D or 4D torch tensors. found pred.shape: "+str(pred.shape)+", gt.shape: "+str(gt.shape)
     assert pred.shape[-1]==gt.shape[-1] and pred.shape[-2]==gt.shape[-2], "pred and gt must have the same spatial dimensions. found pred.shape: "+str(pred.shape)+", gt.shape: "+str(gt.shape)

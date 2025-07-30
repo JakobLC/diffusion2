@@ -38,7 +38,7 @@ from source.utils.mixed import (dump_kvs,fancy_print_kvs,bracket_glob_fix,
 from jlc import load_state_dict_loose, MatplotlibTempBackend
 from source.utils.metric_and_loss import get_all_metrics, get_likelihood
 from torchvision.transforms.functional import resize
-from source.utils.analog_bits import ab_bit2int, ab_int2bit, ab_kwargs_from_args
+from source.utils.analog_bits import AnalogBits
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 VALID_DEBUG_RUNS = ["print_model_name_and_exit","no_dl","anomaly","only_dl",
@@ -134,7 +134,7 @@ class DiffusionModelTrainer:
         if self.args.mode in ["new","load","cont"]:
             self.create_datasets(["train","vali"])
         
-        self.ab_kwargs = ab_kwargs_from_args(self.args)
+        self.ab = AnalogBits(self.args)
 
         self.kvs_buffer = {}
         self.kvs_gen_buffer = {}
@@ -390,7 +390,7 @@ class DiffusionModelTrainer:
             model_kwargs["image_features"] = self.get_image_features(model_kwargs,info,bs)
         if self.args.crop_method=="sam_big":
             model_kwargs["image"] = F.avg_pool2d(unet_kwarg_to_tensor(model_kwargs["image"]),1024//self.args.image_size)
-        model_kwargs = cond_kwargs_int2bit(model_kwargs,ab_kw=self.ab_kwargs)
+        model_kwargs = cond_kwargs_int2bit(model_kwargs,ab=self.ab)
         model_kwargs = format_model_kwargs(model_kwargs,del_none=del_none,dev=self.device,list_instead=True)
         return x,model_kwargs,info
     
@@ -421,7 +421,7 @@ class DiffusionModelTrainer:
     def run_train_step(self, batch):
         zero_grad(self.model_params)
         gt_int,model_kwargs,info = self.get_kwargs(batch)
-        gt_bit = ab_int2bit(gt_int,**self.ab_kwargs)
+        gt_bit = self.ab.int2bit(gt_int)
         output = self.cgd.train_loss_step(model=self.model,
                                           x=gt_bit,
                                           loss_mask=(gt_int.cpu()!=self.args.padding_idx).float(),
@@ -431,8 +431,9 @@ class DiffusionModelTrainer:
             self.log("NaN in output, stopping training.")
             self.restart_flag = True
             return output,{}
-        output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
-        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"],ab_kw=self.ab_kwargs)[0]
+        output["pred_int"] = self.ab.bit2int(output["pred_bit"],info=info)
+
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"],ab=self.ab)[0]
         output["gt_int"] = gt_int
         
         output = {**output,**model_kwargs}
@@ -454,7 +455,7 @@ class DiffusionModelTrainer:
             metrics = get_all_metrics(output,
                                     ignore_zero=not self.args.agnostic,
                                     ambiguous=False, 
-                                    ab_kw=self.ab_kwargs)
+                                    ab=self.ab)
         self.log_train_step(output,metrics)
         
         return output,metrics
@@ -468,18 +469,18 @@ class DiffusionModelTrainer:
 
     def run_vali_step(self, batch):
         gt_int,model_kwargs,info = self.get_kwargs(batch)
-        gt_bit = ab_int2bit(gt_int,**self.ab_kwargs)
+        gt_bit = self.ab.int2bit(gt_int)
         output = self.cgd.train_loss_step(model=self.model,
                                           x=gt_bit,
                                           loss_mask=(gt_int.cpu()!=self.args.padding_idx).float(),
                                           model_kwargs=model_kwargs)
-        output["pred_int"] = ab_bit2int(output["pred_bit"],**self.ab_kwargs)
+        output["pred_int"] = self.ab.bit2int(output["pred_bit"],info=info)
         output["gt_int"] = gt_int
-        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"],ab_kw=self.ab_kwargs)[0]
+        output["likelihood"] = get_likelihood(output["pred_bit"],gt_bit,mask=output["loss_mask"],ab=self.ab)[0]
         metrics = get_all_metrics(output,
                                   ignore_zero=not self.args.agnostic,
                                   ambiguous=False,
-                                  ab_kw=self.ab_kwargs)
+                                  ab=self.ab)
         self.log_vali_step(output,metrics)
         
     def log_vali_step(self,output,metrics,prefix="vali_"):
@@ -621,7 +622,7 @@ class DiffusionModelTrainer:
                     plot_forward_pass(Path(self.args.save_path)/f"forward_pass_{self.step:06d}.png",
                                       output,metrics,
                                       imagenet_stats=self.args.crop_method.startswith("sam"),
-                                      ab_kw=self.ab_kwargs)
+                                      ab=self.ab)
             
             if self.step % self.args.gen_interval == 0 and self.args.gen_interval>0:
                 self.generate_samples()

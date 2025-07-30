@@ -734,9 +734,20 @@
             "onehot_sweep": {"onehot": true, "final_activation": "none", "predict": "x;v;eps"},
             "onehot_sweep_acts": {"onehot": true, "final_activation": "sigmoid_if_x;softmax_if_x", "predict": "x"},
             "skipm": {"skip_train_segment_metrics": true},
-            "lap_sweep": {"lap_mode": "max_sim;random;min_sim"},
+            "lap_sweep": {"lap_mode": "similar;random;different"},
             "lap": {"lap_mode": "similar"},
-            "lap2": {"lap_mode": "similar_largest"}
+            "lap2": {"lap_mode": "similar_largest"},
+            "update_often": {
+                "gen_interval": 2000,
+                "log_vali_interval": 200,
+                "update_loss_plot_interval": 200,
+                "update_forward_pass_plot_interval": 200,
+                "gen_setups": "entopt[vali][25ts][16],entopt[train][25ts][16]"
+            },
+            "onehot_lap_sweep": {"onehot": true, "final_activation": "none", "predict": "x",
+                                "lap_mode": "none;random", "diff_channels": "4;6"},
+            "unigs_lap_sweep": {"lap_mode": "none;random", "encoding_type": "RGB"}
+            
         },
         "datasets": "entityseg",
         "image_size": 128,

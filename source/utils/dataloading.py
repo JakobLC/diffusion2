@@ -26,8 +26,6 @@ from source.models.unet import get_sam_image_encoder2, sam12_info
 from source.utils.argparsing import get_current_default_version,load_existing_args,TieredParser
 import shutil
 import pandas as pd
-from multiprocessing import Value
-
 turbo_jpeg = TurboJPEG()
 
 required_class_table_info_keys = ["i","imshape","classes","class_counts","dataset_name"]
@@ -884,13 +882,14 @@ class SegmentationDataset(torch.utils.data.Dataset):
             old_to_new = {k: v for k,v in zip(idx_old,idx_new)}
             old_to_new[-1] = self.padding_idx
 
+        if not self.ambiguous_mode:
+            label = np.vectorize(old_to_new.get)(label)
+            info["old_to_new"] = old_to_new
         if self.lap_mode!="none":
             lap_map = self.LAP.mapping_from_labels(label)
             label = np.vectorize(lap_map.get)(label)
-            info["old_to_new"] = lap_map
-        elif not self.ambiguous_mode:
-            label = np.vectorize(old_to_new.get)(label)
-            info["old_to_new"] = old_to_new
+            old_to_new_to_lap_map = {k: lap_map.get(v,v) for k,v in old_to_new.items()}
+            info["old_to_new"] = old_to_new_to_lap_map
         return label,info
 
     def load_cond_image_label(self,info,probs):

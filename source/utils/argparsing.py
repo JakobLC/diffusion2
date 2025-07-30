@@ -650,6 +650,7 @@ def add_folder_ids(folder,
             for i,sample_opts in enumerate(sample_opts_list):
                 if not dry:
                     save_args(sample_opts,append_local=(i>0))
+                    print(f"Saved sample_opts with id={sample_opts.gen_id} to {sample_opts.default_save_folder}")
                 else:
                     print(f"Would save sample_opts with id={sample_opts.gen_id}")
 

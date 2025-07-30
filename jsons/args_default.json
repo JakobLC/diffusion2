@@ -36,7 +36,7 @@
         "deeper_net": [false,                       "Should a deeper net be used? TYPE: boolean. DEFAULT: true. "],
         "diff_channels": [6,                        "Maximum number of diff channels, giving 2^diff_channels max labels in image. TYPE: positive integer. DEFAULT: 6. "],
         "time_cond_type": ["t",                     "TODO, not implemented. Which time conditioning type to use? TYPE: One of ['t','logsnr']. DEFAULT: 't'. "],
-        "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "],
+        "encoding_type": ["analog_bits",            "Which encoding type to use for the model? TYPE: One of ['analog_bits','onehot','RGB']. DEFAULT: 'analog_bits'. "],
         "final_activation": ["tanh_if_x",           "Activation function to apply once as the final layer inn the network. One of ['tanh','softmax','none','tanh_if_x']. TYPE: string. DEFAULT: 'none'. "],
         "image_encoder_depth": [0,                  "Depth of the layer to add the image encoder features for the UNet. TYPE: positive integer. DEFAULT: 0"],
         "unet_spatialness": ["0,1,2,3" ,            "Which spatialness inputs to use for the UNet. TYPE: comma separated list of integers. DEFAULT: '0,1,2,3'. "],
@@ -187,7 +187,8 @@
         "vit_spatialness": ["",                     "Which spatialness inputs to use for the ViT. TYPE: comma separated list of integers. DEFAULT: ''. "],
         "cond_vit_setup": ["1a2abcde3a4a",          "Which Vision Transformer setup to use. TYPE: string. 1[a-b]2[a-e]3[a-d]4[a-d] DEFAULT: '1a2abcde3a4a'. "],
         "cond_patch_size": [8 ,                     "Size of the patches in pixels for the Vision Transformer. TYPE: positive integer. DEFAULT: 8. "],
-        "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "]
+        "sigma_small": [false,                      "Should the small sigma posterior std deviation value be used? TYPE: boolean. DEFAULT: false. DEFAULT: false. "],
+        "onehot": [false,                           "Should onehot encoding be used for class labels? TYPE: boolean. DEFAULT: false. "]
     },
     "renamed": {
         "image_prob": "p_image",

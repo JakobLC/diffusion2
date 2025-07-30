@@ -14,7 +14,7 @@ from source.utils.mixed import (bracket_glob_fix, save_dict_list_to_json,
                                 load_json_to_dict_list, wildcard_match,
                                 sam_resize_index,unet_kwarg_to_tensor,model_arg_is_trivial,
                                 didx_from_info)
-from source.utils.analog_bits import ab_bit2prob, ab_bit2color
+from source.utils.analog_bits import AnalogBits
 from source.utils.metric_and_loss import get_likelihood
 from source.utils.dataloading import get_dataset_from_args, load_raw_image_label
 from source.models.unet import dynamic_image_keys
@@ -460,7 +460,11 @@ def normal_image(x,imagenet_stats=True):
     else:
         return (x*0.5+0.5).clamp(0,1).cpu().detach().permute(1,2,0).numpy()
 
-def plot_inter(foldername,sample_output,model_kwargs,save_i_idx=None,plot_text=False,imagenet_stats=True,ab_kw={}):
+def plot_inter(foldername,
+               sample_output,
+               model_kwargs,
+               ab,
+               save_i_idx=None,plot_text=False,imagenet_stats=True):
     t = sample_output["inter"]["t"]
     num_timesteps = len(t)
     
@@ -476,18 +480,8 @@ def plot_inter(foldername,sample_output,model_kwargs,save_i_idx=None,plot_text=F
             save_i_idx = np.arange(batch_size)[save_i_idx]
         batch_size = len(save_i_idx)
     image_size = sample_output["pred_bit"].shape[-1]
-    
-    """im = np.zeros((batch_size,image_size,image_size,3))+0.5
-    aboi = lambda x,i: mask_overlay_smooth(im[i],ab_bit2prob(x.unsqueeze(0),**ab_kw)[0].permute(1,2,0).cpu().numpy(),alpha_mask=1.0)
-    points_aboi = lambda x,i: aboi(pretty_point(x),i)
-    normal_image2 = lambda x,i: normal_image(x,imagenet_stats=imagenet_stats)
-    map_dict = {"x_t": aboi,
-                "pred_bit": aboi,
-                "gt_bit": aboi,
-                "pred_eps": aboi,
-                "image": normal_image2,
-                "points": points_aboi}"""
-    map_dict = get_map_dict(imagenet_stats,ab_kw)
+
+    map_dict = get_map_dict(imagenet_stats,ab)
     zero_image = np.zeros((image_size,image_size,3))
     has_classes = contains_nontrivial_key_val("classes",model_kwargs)
     if not os.path.exists(foldername):
@@ -539,14 +533,14 @@ def get_sample_names_from_info(info,newline=True):
 
 def plot_grid(filename,
               output,
+              ab,
               max_images=32,
               remove_old=False,
               measure='ari',
               text_inside=True,
               sample_names=None,
               imagenet_stats=True,
-              show_keys=dynamic_image_keys+["image","gt_bit","pred_bit","points"],
-              ab_kw={}):
+              show_keys=dynamic_image_keys+["image","gt_bit","pred_bit","points"]):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
     k0 = "pred_bit"
@@ -555,7 +549,7 @@ def plot_grid(filename,
     image_size = output[k0].shape[-1]
     if bs>max_images:
         bs = max_images
-    map_dict = get_map_dict(imagenet_stats,ab_kw)
+    map_dict = get_map_dict(imagenet_stats,ab)
     for k in list(show_keys):
         if model_arg_is_trivial(output.get(k,None)):
             show_keys.remove(k)
@@ -627,10 +621,10 @@ def likelihood_image(x):
 def get_zero_im(x):
     return np.zeros((x.shape[-2],x.shape[-1],3))+0.5
 
-def bit_to_np(x,ab_kw):
-    return ab_bit2prob(x.unsqueeze(0),**ab_kw)[0].permute(1,2,0).cpu().numpy()
+def bit_to_np(x,ab):
+    return ab.bit2prob(x.unsqueeze(0))[0].permute(1,2,0).cpu().numpy()
 
-def aboi_memory_efficient(x,ab_kw):
+def aboi_memory_efficient(x,ab):
     """
     Memory efficient version of aboi (analog bits on image), 
     which uses less memory by not storing the intermediate results.
@@ -639,20 +633,23 @@ def aboi_memory_efficient(x,ab_kw):
         x = x.cpu().detach().numpy()
     assert isinstance(x,np.ndarray), "aboi_memory_efficient expects a numpy array"
     assert len(x.shape)==3, "aboi_memory_efficient expects a 3D numpy array"
-    color_im = ab_bit2color(x[None],**ab_kw)[0].transpose((1,2,0))
+    color_im = ab.bit2color(x[None])[0].transpose((1,2,0))
     return color_im
 
-def get_map_dict(imagenet_stats,ab_kw):
+def get_map_dict(imagenet_stats,ab):
     imgn_s = imagenet_stats
-    nb = ab_kw.get("num_bits",6)
+    nb = ab.num_bits
 
     if nb==1 or nb==3:
         aboi = lambda x: normal_image(x,imagenet_stats=False)
     elif nb>8:
-        aboi = lambda x: aboi_memory_efficient(x,ab_kw)
+        aboi = lambda x: aboi_memory_efficient(x,ab)
     else:
-        aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab_kw),alpha_mask=1.0)
-    aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3],ab_kw),alpha_mask=0.6)
+        if ab.RGB:
+            aboi = lambda x: x.cpu().detach().permute(1,2,0).numpy()
+        else:
+            aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab),alpha_mask=1.0)
+    aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3],ab),alpha_mask=0.6)
     points_aboi = lambda x: aboi(pretty_point(x))
     err_im = lambda x: error_image(x)
     lik_im = lambda x: likelihood_image(x)
@@ -672,6 +669,7 @@ def get_map_dict(imagenet_stats,ab_kw):
 def plot_forward_pass(filename,
                       output,
                       metrics,
+                      ab,
                       max_images=32,
                       remove_old=True,
                       text_inside=False,
@@ -679,8 +677,7 @@ def plot_forward_pass(filename,
                       sample_names=None,
                       imagenet_stats=True,
                       show_keys=["image","gt_bit","pred_bit","err_x","likelihood","pred_eps","gt_eps","x_t",
-                                 "self_cond","points"]+dynamic_image_keys,
-                      ab_kw={}):
+                                 "self_cond","points"]+dynamic_image_keys):
     if isinstance(sample_names,list):
         sample_names = get_sample_names_from_info(sample_names)
     k0 = "x_t" #key which determines batch size and image size
@@ -689,7 +686,7 @@ def plot_forward_pass(filename,
         bs = max_images
     image_size = output[k0].shape[-1]
 
-    map_dict = get_map_dict(imagenet_stats,ab_kw)
+    map_dict = get_map_dict(imagenet_stats,ab)
     for k in list(show_keys):
         if k in ["err_x","likelihood"]:
             continue

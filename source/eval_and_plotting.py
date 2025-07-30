@@ -27,7 +27,7 @@ from source.utils.mixed import (imagenet_preprocess, ambiguous_info_from_fn,
 from source.utils.plot import (mask_overlay_smooth, darker_color, 
                               get_matplotlib_color,index_dict_with_bool,
                               render_text_gridlike)
-from source.utils.analog_bits import ab_bit2prob
+from source.utils.analog_bits import AnalogBits
 import enum
 from collections import OrderedDict
 import pandas as pd
@@ -1601,8 +1601,7 @@ def extract_from_samples(samples,
                          extract=["pred_int","pred_prob","gt","image","raw_image","raw_gt"],
                          sam_reshape=True,
                          inv_imagenet=True,
-                         raw_longest_side_resize=0,
-                         ab_kw={}):
+                         raw_longest_side_resize=0):
     assert "pred" in samples.keys(), "expected samples to have key 'pred'. Found keys: "+str(samples.keys())
     if ab is None:
         ab = AnalogBits(num_bits=samples["pred"].shape[1])
@@ -1615,10 +1614,7 @@ def extract_from_samples(samples,
         extracted["pred_int"] = samples["pred_int"]
     if "pred_prob" in extract:
         if "pred_bit" in samples.keys():
-            #unsafe addition of kwargs here, since passing the ab_kw to ab_bit2prob is bothersome
-            if "num_bits" not in ab_kw.keys():
-                ab_kw["num_bits"] = samples["pred_bit"].shape[1]
-            extracted["pred_prob"] = ab_bit2prob(samples["pred_bit"],**ab_kw)
+            extracted["pred_prob"] = ab.bit2prob(samples["pred_bit"])
     if "gt" in extract:
         extracted["gt"] = samples["gt_int"]
     if "image" in extract:
