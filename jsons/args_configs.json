@@ -744,7 +744,7 @@
                 "update_forward_pass_plot_interval": 200,
                 "gen_setups": "entopt[vali][25ts][16],entopt[train][25ts][16]"
             },
-            "onehot_lap_sweep": {"onehot": true, "final_activation": "none", "predict": "x",
+            "onehot_lap_sweep": {"encoding_type": "onehot", "final_activation": "none", "predict": "x",
                                 "lap_mode": "none;random", "diff_channels": "4;6"},
             "unigs_lap_sweep": {"lap_mode": "none;random", "encoding_type": "RGB"}
             

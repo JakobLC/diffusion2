@@ -205,7 +205,7 @@ class AnalogBits(object):
             x_new = x_new.reshape(list(x.shape)+[num_classes])
             transpose_list = list(range(len(x_new.shape)))
             transpose_list[-1],transpose_list[self.bit_dim] = self.bit_dim,-1
-            x = x_new.transpose(transpose_list).squeeze(-1).astype(np.float32)
+            y = x_new.transpose(transpose_list).squeeze(-1).astype(np.float32)
         elif self.RGB:
             assert x.max()<=124, "RGB max value allowed is 2**5-1=124, got "+str(x.max())
             y = UniGS_colormap_encoding(x,axis=self.bit_dim)
