@@ -877,8 +877,8 @@ def trainer_from_sample_opts(sample_opts,verbose=True):
     ckpt_name = get_ckpt_name(sample_opts.name_match_str,return_multiple_matches=False)
     if verbose: print("\nckpt_name:",ckpt_name)
     if len(ckpt_name)==0:
-        print("No ckpt found")
-        return
+        raise ValueError(f"Could not find ckpt with name_match_str: {sample_opts.name_match_str}. "
+                         "Please check the name_match_str or the save_path.")
     if verbose: print(str(Path(ckpt_name).parent / "args.json"))
     if sample_opts.use_raw_args:
         assert (Path(ckpt_name).parent / "args.json").exists(), "args.json must exist when use_raw_args=False"

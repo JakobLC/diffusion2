@@ -649,6 +649,7 @@ def get_map_dict(imagenet_stats,ab):
             aboi = lambda x: x.cpu().detach().permute(1,2,0).numpy()
         else:
             aboi = lambda x: mask_overlay_smooth(get_zero_im(x),bit_to_np(x,ab),alpha_mask=1.0)
+            
     aboi_split = lambda x: mask_overlay_smooth(normal_image(x[-3:],imgn_s),bit_to_np(x[:-3],ab),alpha_mask=0.6)
     points_aboi = lambda x: aboi(pretty_point(x))
     err_im = lambda x: error_image(x)
@@ -659,7 +660,7 @@ def get_map_dict(imagenet_stats,ab):
                 "err_x": err_im,
                 "err_eps": err_im,
                 "points": points_aboi,
-                "likelihood": lik_im}
+                "likelihood": lik_im,}
     for k in aboi_keys:
         map_dict[k] = aboi
     for k in dynamic_image_keys:

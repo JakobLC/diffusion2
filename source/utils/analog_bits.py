@@ -33,10 +33,9 @@ class AnalogBits(object):
             if self.num_bits>8:
                 warnings.warn("bit2prob will create a (H,W,2**num_bits) tensor which may be very large when num_bits>8. Consider using ab_bit2prob_idx instead.")
         x, was_torch, device = self.convert_and_assert(x)
-
         if self.onehot:
             onehot_probs = x
-        if self.RGB:
+        elif self.RGB:
             num_classes = 124  # RGB encoding has 125 classes (0-124)
             onehot_shape = list(x.shape)
             onehot_shape[self.bit_dim] = num_classes
@@ -61,11 +60,7 @@ class AnalogBits(object):
             slicer[self.bit_dim] = slice(idx,idx+1) if keepdims else idx
             prob_idx = x[slicer]
         else:
-            pure_bits = self.int2bit(np.array([idx]).reshape(*[1 for _ in range(len(x.shape))]),
-                                        num_bits=self.num_bits,
-                                        onehot=False,
-                                        padding_idx=self.padding_idx,
-                                        bit_dim=self.bit_dim)
+            pure_bits = self.int2bit(np.array([idx]).reshape(*[1 for _ in range(len(x.shape))]))
             prob_idx = np.prod(1-0.5*np.abs(pure_bits-x),axis=self.bit_dim,keepdims=keepdims)
 
         prob_idx = self.convert_back(prob_idx, was_torch, device)
@@ -136,13 +131,9 @@ class AnalogBits(object):
         if self.onehot:
             num_classes = 2**self.num_bits
             assert x.shape[self.bit_dim]==num_classes, "x.shape: "+str(x.shape)+", num_classes: "+str(num_classes)+", bit_dim: "+str(self.bit_dim)
-            if x.dtype in [np.float32,np.float64,np.float16]:
-                x = (x>0).astype(np.uint8)
         elif self.RGB:
             assert x.shape[self.bit_dim]==3, "x.shape: "+str(x.shape)+", RGB encoding requires bit_dim=1 and 3 channels"
         else:
-            if x.dtype in [np.float32,np.float64,np.float16]:
-                x = (x>0).astype(np.uint8)
             assert x.shape[self.bit_dim]==self.num_bits, "x.shape: "+str(x.shape)+", num_bits: "+str(self.num_bits)+", bit_dim: "+str(self.bit_dim)
         return x, was_torch, device
     
@@ -163,17 +154,19 @@ class AnalogBits(object):
             for i in range(x.shape[0]):
                 crop_hw = sam_resize_index(*info[i]["imshape"][:2], x[i].shape[-1])
                 #x_list.append(np.zeros((1, x[i].shape[-2], x[i].shape[-1]), dtype=np.int32))
-                x_list.append(progressive_dichotomy_module(x[i],
+                """x_list.append(progressive_dichotomy_module(x[i],
                                                            crop_hw=crop_hw,
                                                            delta=10.0, 
                                                            max_depth=10, 
-                                                           min_pixels=20))
-                """x_list.append(palette_baseline_segmentation(x[i],
+                                                           min_pixels=20))"""
+                x_list.append(palette_baseline_segmentation(x[i],
                                                             min_pixels=20,
                                                             crop_hw=crop_hw,
-                                                            padding_idx=self.padding_idx))"""
+                                                            padding_idx=self.padding_idx))
             x = np.stack(x_list, axis=0)
         else:
+            if x.dtype in [np.float32,np.float64,np.float16]:
+                x = (x>0).astype(np.uint8)
             x = np.packbits(x,axis=self.bit_dim,bitorder="little")
             if x.shape[self.bit_dim]>1:
                 mult_shape = [1 for _ in range(len(x.shape))]
@@ -206,16 +199,17 @@ class AnalogBits(object):
             transpose_list = list(range(len(x_new.shape)))
             transpose_list[-1],transpose_list[self.bit_dim] = self.bit_dim,-1
             y = x_new.transpose(transpose_list).squeeze(-1).astype(np.float32)
+            y[x.repeat(self.num_classes,axis=self.bit_dim)==self.padding_idx] = 0
         elif self.RGB:
             assert x.max()<=124, "RGB max value allowed is 2**5-1=124, got "+str(x.max())
             y = UniGS_colormap_encoding(x,axis=self.bit_dim)
+            y[x.repeat(3,axis=self.bit_dim)==self.padding_idx] = 0
         else:
             y = np.unpackbits(x.astype(np.uint8),
                               axis=self.bit_dim,
                               count=self.num_bits,
                               bitorder="little").astype(np.float32)*2-1
-
-        x[x==self.padding_idx] = 0
+            y[x.repeat(self.num_bits,axis=self.bit_dim)==self.padding_idx] = 0
         y = self.convert_back(y, was_torch, device)
         return y
 
