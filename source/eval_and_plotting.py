@@ -981,6 +981,10 @@ class SavedSamples:
             print("Reshaped "+str(n_reshaped)+" heavy data items")
             print("Shape was actually changed in "+str(n_reshaped_actual)+" heavy data items")
 
+    def mean_metric_table(self,**kwargs):
+        ssm = SavedSamplesManager(self)
+        return ssm.mean_metric_table(**kwargs)
+
     def load_heavy_image_gt(self,didx_load=None,resize=True):
         if didx_load is None:
             didx_load = [self.didx[i] for i in range(len(self.didx)) if self.heavy_data[i] is not None]
@@ -1441,7 +1445,10 @@ class SavedSamples:
                 if self.is_ambiguous:
                     metrics.append(get_ambiguous_metrics(seg.permute(1,2,0).cpu().numpy(),gt))
                 else:
-                    metrics.append(get_segment_metrics(seg[None],didx_i)) 
+                    #assuming seg is 128x128x1 or similar
+                    #metrics.append(get_segment_metrics(seg.permute(2,0,1),didx_i))  # old, too slow version
+                    metrics.append(get_segment_metrics(seg.cpu().numpy().transpose((2,0,1)),
+                                                                      gt.transpose((2,0,1))))
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]

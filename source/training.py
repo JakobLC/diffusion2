@@ -638,8 +638,9 @@ class DiffusionModelTrainer:
                 and self.num_nan_losses==0):
                 self.save_train_ckpt()
 
-            if str(self.step) in self.args.save_ckpt_steps.split(","):
-                self.save_train_ckpt(delete_old=False,name_str="savesteps_ckpt_",)
+            if ((str(self.step) in nice_split(self.args.save_ckpt_steps) or 
+                (self.step==self.args.max_iter) and "-1" in nice_split(self.args.save_ckpt_steps))):
+                self.save_train_ckpt(delete_old=False,name_str="savesteps_ckpt_",only_keep_keys=["step","model"])
             self.step += 1
             if self.exit_flag or self.restart_flag:
                 break

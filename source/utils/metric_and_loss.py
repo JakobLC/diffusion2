@@ -221,24 +221,22 @@ def get_segment_metrics(pred,gt,
     assert len(pred.shape)==len(gt.shape)==4, "batched_metrics expects 3D or 4D torch tensors"
     bs = pred.shape[0]
     assert gt.shape[0]==bs, f"pred and gt must have the same batch size. Found pred.shape={pred.shape}, gt.shape={gt.shape}"
-    metric_dict = {"iou": partial(standard_iou,ignore_zero=ignore_zero),
-                   "hiou": partial(hungarian_iou,ignore_zero=ignore_zero),
-                   "ari": adjusted_rand_score}
-    metrics = list(metric_dict.keys())
-    #has to be defined inline for ab to be implicitly passed
-    times = {m: 0 for m in metrics}
-    #metric_dict = {k: handle_empty(v) for k,v in metric_dict.items()}
-    out = {metric: [] for metric in metrics}
+    out = defaultdict(list)
     for i in range(bs):
         pred_i,gt_i = metric_preprocess(pred[i],gt[i],mask=mask[i] if mask is not None else None)
-        for metric in metrics:
-            out[metric].append(metric_dict[metric](pred_i,gt_i))
+        hiou_output = hungarian_iou(pred_i,gt_i,ignore_zero=ignore_zero,match_zero=False,return_assignment=True)
+        out["hiou"].append(hiou_output["val"])
+        out["hiou_e"].append(hiou_output["val_over_gts"])
+        out["ari"].append(adjusted_rand_score(pred_i,gt_i))
+        out["iou"].append(standard_iou(pred_i,gt_i,ignore_zero=ignore_zero))
         if compute_ap:
             ap_output = ap_entity(pred[i][0],gt[i][0])
             for k,v in ap_output.items():
                 if not k in out:
                     out[k] = []
                 out[k].append(v)
+    out = dict(out)
+    metrics = list(out.keys())
     if was_single:
         for metric in metrics:
             out[metric] = out[metric][0]
@@ -305,7 +303,8 @@ def lsa_no_warning(mat, maximize=True):
 def hungarian_iou(pred,gt,ignore_zero=False,match_zero=False,return_assignment=False):
     uq_gt,gt,conf_rowsum = np.unique(gt,return_inverse=True,return_counts=True)
     uq_pred  ,pred  ,conf_colsum = np.unique(pred,return_inverse=True,return_counts=True)
-
+    uq_pred = uq_pred.astype(int)
+    uq_gt = uq_gt.astype(int)
     conf_rowsum,conf_colsum = extend_shorter_vector(conf_rowsum,conf_colsum)
     uq_gt,uq_pred = extend_shorter_vector(uq_gt,uq_pred,fill_value=-1)
 
@@ -354,14 +353,19 @@ def hungarian_iou(pred,gt,ignore_zero=False,match_zero=False,return_assignment=F
         if match_zero:
             if (0 in uq_gt) and (0 in uq_pred):
                 val = 1.0
+                val_over_gts = 1.0
             else:
                 val = 0.0
+                val_over_gts = 0.0
         else:
             val = 1.0
+            val_over_gts = 1.0
     else:
         val = np.mean(iou_per_assignment[mask])
+        val_over_gts = np.mean(iou_per_assignment[assign_gt[mask]>0])
     if return_assignment:
-        out = {"val":val, 
+        out = {"val":val,
+               "val_over_gts": val_over_gts,
                "assign_gt": assign_gt, 
                "assign_pred": assign_pred,
                "iou_per_assignment": iou_per_assignment}

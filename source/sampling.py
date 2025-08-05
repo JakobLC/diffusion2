@@ -259,9 +259,6 @@ class DiffusionSampler(object):
             for batch_ite in progress_bar:
                 gt_int, model_kwargs, info, batch_queue = self.form_next_batch()
                 gt_bit = self.ab.int2bit(gt_int)
-                print(gt_int[4,:,-1,48])
-                print(gt_bit[4,:,-1,48])
-                #exit()
                 x_init = torch.randn_like(gt_bit)
                 sample_output = self.trainer.cgd.sample_loop(model=model, 
                                             x_init=x_init, 
