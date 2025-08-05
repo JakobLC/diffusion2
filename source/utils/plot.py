@@ -281,7 +281,7 @@ def make_loss_plot(save_path,
                     ["mse_x","vali_mse_x"],
                     ["mse_eps","vali_mse_eps"],
                     ["iou","vali_iou"],
-                    ["gen_GED"] if is_ambiguous else ["gen_hiou","gen_max_hiou"],
+                    ["gen_GED"] if is_ambiguous else ["gen_hiou_e","gen_max_hiou_e"],
                     ["gen_iou"] if is_ambiguous else ["gen_ari","gen_max_ari"],
                     ["step_loss"],
                     ["likelihood","vali_likelihood"]]

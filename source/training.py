@@ -827,7 +827,7 @@ class DiffusionModelTrainer:
             parent = parent.parent
         assert out, "The save path must be a subfolder of the saves folder. save_path: "+str(save_path)+", saves_folder: "+str(saves_folder)
     
-    def generate_samples(self, list_of_sample_opts=None, max_reduction_measures=["hiou","ari"]):
+    def generate_samples(self, list_of_sample_opts=None, max_reduction_measures=["hiou_e","ari"]):
         """
         Inputs:
             gen_tuples: list of tuples (gen_setup, modified_args) with types (str,dict).
