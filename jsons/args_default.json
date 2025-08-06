@@ -1,6 +1,6 @@
 {               
     "model_name": ["default",                       "Name of the model. TYPE: string. DEFAULT: 'default'. "],
-    "model_version": ["1.5.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.4.5."],
+    "model_version": ["1.5.0",                      "Current version of the model. TYPE: str. DEFAULT: 1.5.0."],
     "dynamic": {
         "model_id": ["[model_name]_*",              "Unique id of the model. Replaces [key] with the key as a string. Replaces * with a unique identifer. TYPE: str. DEFAULT: '[model_name]_*'. "],
         "save_path": ["",                           "Path to save the model. TYPE: str. DEFAULT: ''. "],
