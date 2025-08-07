@@ -89,7 +89,7 @@
         "ema_rate": ["0.9999,",                     "EMA rate for model weights. TYPE: comma separated list of floats. DEFAULT: '0.9999,'. "],
         "clip_grad_norm": [1.0,                     "Gradient clipping norm. Disabled when 0.0. TYPE: float. DEFAULT: 1.0. "],
         "shuffle_zero": [true,                      "Should the zeroth channel (background) be shuffled? TYPE: boolean. DEFAULT: true. "],
-        "lap_mode": ["none",                        "Which type of location aware palette should be used? TYPE: One of ['none','random','similar', 'different']. DEFAULT: 'none'. "],
+        "lap_mode": ["none",                        "Which type of location aware palette should be used? TYPE: One of ['none','random','similar', 'different','range']. DEFAULT: 'none'. "],
         "crop_method": ["sam_small",                "Which crop method to use? TYPE: One of ['multicrop_most_border','multicrop_most_classes','full_image','sam_small','sam_big','sam_lidc64']. DEFAULT: 'sam_small'. "],
         "dl_num_workers": [4,                       "Number of workers for dataloader. TYPE: positive integer. DEFAULT: 4"],
         "ignore_padded": [true,                     "Should the border be ignored when training on images with border padding? TYPE: boolean. DEFAULT: true. "],

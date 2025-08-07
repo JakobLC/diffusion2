@@ -153,9 +153,12 @@ class LocationAwarePalette:
                 padding_idx=-1,
                 mode="similar",
                 largest_first=False):
-        assert mode in ["random","similar","different"], "mode must be one of ['random','min_sim','max_sim'], got "+mode
-        assert (np.log2(max_num_classes)/2).is_integer(), "max_num_classes must be an even power of 2 (:=2^(2k)), got "+str(max_num_classes)
-        
+        valid_modes = ["random","similar","different","range"]
+        assert mode in valid_modes, "mode must be one of "+str(valid_modes)+", got "+mode
+        if mode in ["similar","different"]:
+            assert (np.log2(max_num_classes)/2).is_integer(), "max_num_classes must be an even power of 2 (:=2^(2k)), got "+str(max_num_classes)
+        else:
+            assert np.sqrt(max_num_classes).is_integer(), "max_num_classes must be a perfect square, got "+str(max_num_classes)    
         self.max_num_classes = max_num_classes
         self.num_bits = int(np.log2(max_num_classes))
         self.sidelength = int(np.sqrt(max_num_classes))
@@ -168,6 +171,8 @@ class LocationAwarePalette:
             self.order = similar_ordering(self.num_bits)
         elif mode=="different":
             self.order = different_ordering(self.num_bits)
+        elif mode=="range":
+            self.order = np.arange(max_num_classes)
         self.order = np.array(self.order).reshape((self.sidelength,self.sidelength))
 
     def apply_lap(self, labels):
@@ -268,7 +273,9 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       aug_override=None,
                       global_p=1.0,
                       lap_mode="none",
-                      skip_class_table=False):
+                      skip_class_table=False,
+                      is_rgb=False):
+        self.is_rgb = is_rgb
         self.skip_class_table = skip_class_table
         if skip_class_table:
             assert not conditioning, "conditioning is not supported when skip_class_table is True"
@@ -280,13 +287,16 @@ class SegmentationDataset(torch.utils.data.Dataset):
         self.load_cond_probs = load_cond_probs
         self.global_p = global_p
         if self.lap_mode!="none":
-            recognized_modes = ["random","similar","different"]
+            recognized_modes = ["random","similar","different","range"]
             recognized_modes += [f"{m}_largest" for m in recognized_modes]
             assert self.lap_mode in recognized_modes, f"lap_mode={self.lap_mode} not recognized. Must be one of {recognized_modes}"
             assert not shuffle_labels, "shuffle_labels must be False when using LocationAwarePalette"
-            n_bits_half = np.log2(max_num_classes)
-            assert np.round(n_bits_half) == n_bits_half, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
-            assert n_bits_half//2 == n_bits_half/2, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
+            if self.is_rgb:
+                assert max_num_classes <= 121, "max_num_classes must be <= 121 for RGB encoding, got "+str(max_num_classes)
+            else:
+                n_bits_half = np.log2(max_num_classes)
+                assert np.round(n_bits_half) == n_bits_half, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
+                assert n_bits_half//2 == n_bits_half/2, "max_num_classes must be an even power of 2, got "+str(max_num_classes)
             self.LAP = LocationAwarePalette(max_num_classes=max_num_classes,
                                             image_size=image_size,
                                             padding_idx=padding_idx,
@@ -1360,12 +1370,16 @@ def get_dataset_from_args(args_or_model_id=None,
         load_cond_probs = None
     else:
         conditioning = True
+    if args.encoding_type=="RGB":
+        max_num_classes = 121
+    else:
+        max_num_classes = 2**args.diff_channels
     ds = SegmentationDataset(split=split,
                             split_ratio=[float(item) for item in args.split_ratio.split(",")],
                             image_size=args.image_size,
                             datasets=args.datasets,
                             min_rel_class_area=args.min_label_size,
-                            max_num_classes=2**args.diff_channels,
+                            max_num_classes=max_num_classes,
                             shuffle_zero=args.shuffle_zero,
                             crop_method=args.crop_method,
                             padding_idx=-1 if args.ignore_padded else 0,
@@ -1382,6 +1396,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             global_p=args.aug_prob_multiplier,
                             lap_mode=args.lap_mode,
                             skip_class_table=args.diff_channels>8,
+                            is_rgb=args.encoding_type=="RGB",
                             )
     if return_type=="ds":
         return ds

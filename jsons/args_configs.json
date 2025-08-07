@@ -746,7 +746,9 @@
             },
             "onehot_lap_sweep": {"encoding_type": "onehot", "final_activation": "none", "predict": "x",
                                 "lap_mode": "none;random", "diff_channels": "4;6"},
-            "unigs_lap_sweep": {"lap_mode": "none;random", "encoding_type": "RGB"}
+            "unigs_lap_sweep": {"lap_mode": "none;random", "encoding_type": "RGB"},
+            "long": {"max_iter": 500000,"lr_decay_steps": 150000},
+            "long2": {"max_iter": 1000000,"lr_decay_steps": 300000}
             
         },
         "datasets": "entityseg",
