@@ -1371,7 +1371,10 @@ def get_dataset_from_args(args_or_model_id=None,
     else:
         conditioning = True
     if args.encoding_type=="RGB":
-        max_num_classes = 121
+        if args.lap_mode=="none":
+            max_num_classes = 125
+        else:
+            max_num_classes = 121
     else:
         max_num_classes = 2**args.diff_channels
     ds = SegmentationDataset(split=split,
