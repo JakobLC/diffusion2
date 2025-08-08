@@ -21,11 +21,12 @@ class AnalogBits(object):
         self.num_bits = num_bits
         self.encoding_type = encoding_type
         self.bit_dim = bit_dim
-        self.num_classes = 2**num_bits
         self.padding_idx = padding_idx
 
         self.onehot = self.encoding_type=="onehot"
         self.RGB = self.encoding_type=="RGB"
+
+        self.num_classes = 2**num_bits if not self.RGB else 125  # RGB encoding has 125 classes (0-124)
         assert encoding_type in ["analog_bits","onehot","RGB"], "encoding_type must be one of ['analog_bits','onehot','RGB'], got "+str(encoding_type)
     
     def bit2prob(self,x):
@@ -36,16 +37,14 @@ class AnalogBits(object):
         if self.onehot:
             onehot_probs = x
         elif self.RGB:
-            num_classes = 124  # RGB encoding has 125 classes (0-124)
             onehot_shape = list(x.shape)
-            onehot_shape[self.bit_dim] = num_classes
+            onehot_shape[self.bit_dim] = self.num_classes
             onehot_probs = np.zeros(onehot_shape)
         else:
-            num_classes = 2**self.num_bits
             onehot_shape = list(x.shape)
-            onehot_shape[self.bit_dim] = num_classes
+            onehot_shape[self.bit_dim] = self.num_classes
             onehot_probs = np.zeros(onehot_shape)
-            for i in range(num_classes):
+            for i in range(self.num_classes):
                 pure_bits = self.int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]))
                 onehot_probs[:,i] = np.prod(1-0.5*np.abs(pure_bits-x),axis=self.bit_dim)
         onehot_probs = self.convert_back(onehot_probs, was_torch, device)
@@ -75,20 +74,19 @@ class AnalogBits(object):
             pallete = np.concatenate([np.array([[0,0,0]]),nc.largest_colors],axis=0)
         x, was_torch, device = self.convert_and_assert(x)
         
-        num_classes = 2**self.num_bits
         color_array_shape = list(x.shape)
         color_array_shape[self.bit_dim] = 3
         color_array = np.zeros(color_array_shape,dtype=np.float32)
         color_shape = [1 for _ in range(len(x.shape))]
         color_shape[self.bit_dim] = 3
         if self.onehot:
-            for i in range(num_classes):
+            for i in range(self.num_classes):
                 color_reshaped = pallete[i % len(pallete)].reshape(color_shape)/255
                 color_array += x[i:i+1]*color_reshaped
         elif self.RGB:
             raise NotImplementedError("bit2color is not implemented for RGB encoding type")
         else:
-            for i in range(num_classes):
+            for i in range(self.num_classes):
                 pure_bits = self.int2bit(np.array([i]).reshape(*[1 for _ in range(len(x.shape))]))
                 color_reshaped = pallete[i % len(pallete)].reshape(color_shape)/255
                 prob_idx = np.prod(1-0.5*np.abs(pure_bits-x),axis=self.bit_dim,keepdims=True)
@@ -129,8 +127,7 @@ class AnalogBits(object):
         assert len(x.shape)>=self.bit_dim+1
 
         if self.onehot:
-            num_classes = 2**self.num_bits
-            assert x.shape[self.bit_dim]==num_classes, "x.shape: "+str(x.shape)+", num_classes: "+str(num_classes)+", bit_dim: "+str(self.bit_dim)
+            assert x.shape[self.bit_dim]==self.num_classes, "x.shape: "+str(x.shape)+", num_classes: "+str(self.num_classes)+", bit_dim: "+str(self.bit_dim)
         elif self.RGB:
             assert x.shape[self.bit_dim]==3, "x.shape: "+str(x.shape)+", RGB encoding requires bit_dim=1 and 3 channels"
         else:
@@ -178,7 +175,6 @@ class AnalogBits(object):
         return x
 
     def int2bit(self,x):
-        num_classes = 2**self.num_bits
         if isinstance(x,torch.Tensor):
             device = x.device
             x = x.clone().cpu().detach().numpy()
@@ -190,12 +186,12 @@ class AnalogBits(object):
         assert isinstance(x,np.ndarray)
         assert len(x.shape)>=self.bit_dim+1
         assert x.shape[self.bit_dim]==1
-        assert x[x!=self.padding_idx].max()<=num_classes
+        assert x[x!=self.padding_idx].max()<=self.num_classes, f"Expected x to be in the range [0, {self.num_classes-1}], got {x[x!=self.padding_idx].max()}"
         
         if self.onehot:
-            x_new = np.zeros([x.size,num_classes])
+            x_new = np.zeros([x.size,self.num_classes])
             x_new[np.arange(x.size),x.flatten()] = 1
-            x_new = x_new.reshape(list(x.shape)+[num_classes])
+            x_new = x_new.reshape(list(x.shape)+[self.num_classes])
             transpose_list = list(range(len(x_new.shape)))
             transpose_list[-1],transpose_list[self.bit_dim] = self.bit_dim,-1
             y = x_new.transpose(transpose_list).squeeze(-1).astype(np.float32)
