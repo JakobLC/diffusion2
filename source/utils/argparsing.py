@@ -623,7 +623,7 @@ def add_folder_ids(folder,
         if len(sample_opts_paths)>0:
             if atmost_one_sample_opts_file:
                 assert len(sample_opts_paths)==1, f"len(sample_opts_paths)={len(sample_opts_paths)} must be at most 1."
-            sample_opts_list = load_json_to_dict_list(str(sample_opts_paths[0]))
+            sample_opts_list = load_json_to_dict_list(str(sample_opts_paths[0]),retry=True)
 
         if require_sample_opts:
             assert sample_opts_list is not None, f"{path/'**/sample_opts.json'} does not exist"
@@ -675,7 +675,7 @@ def overwrite_existing_args(args,delete_instead_of_overwrite=False):
     id_dict = tp.load_and_format_id_dict()
     if not args.__dict__[tp.id_key] in id_dict.keys():
         raise ValueError(f"id with name {args.__dict__[tp.id_key]} not found in id_dict.keys().")
-    dict_list = load_json_to_dict_list(global_path)
+    dict_list = load_json_to_dict_list(global_path,retry=True)
     for i in range(len(dict_list)):
         if dict_list[i][tp.id_key] == args.__dict__[tp.id_key]:
             if delete_instead_of_overwrite:
@@ -683,8 +683,8 @@ def overwrite_existing_args(args,delete_instead_of_overwrite=False):
             else:
                 dict_list[i] = args.__dict__
             break
-    save_dict_list_to_json(dict_list,global_path,append=False)
-    dict_list = load_json_to_dict_list(local_path)
+    save_dict_list_to_json(dict_list,global_path,append=False,retry=True)
+    dict_list = load_json_to_dict_list(local_path,retry=True)
     for i in range(len(dict_list)):
         if dict_list[i][tp.id_key] == args.__dict__[tp.id_key]:
             if delete_instead_of_overwrite:
@@ -692,7 +692,7 @@ def overwrite_existing_args(args,delete_instead_of_overwrite=False):
             else:
                 dict_list[i] = args.__dict__
             break
-    save_dict_list_to_json(dict_list,local_path,append=False)
+    save_dict_list_to_json(dict_list,local_path,append=False,retry=True)
 
 def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=False, append_local=True):
     if do_nothing:
@@ -719,8 +719,8 @@ def save_args(args, local_path=None, global_path=None, dry=False, do_nothing=Fal
     assert Path(local_path).parent.exists(), f"Path(local_path).parent={Path(local_path).parent} does not exist."
     assert Path(global_path).parent.exists(), f"Path(global_path).parent={Path(global_path).parent} does not exist."
     if not dry:
-        save_dict_list_to_json([args.__dict__],str(global_path),append=True)
-        save_dict_list_to_json([args.__dict__],str(local_path),append=append_local)
+        save_dict_list_to_json([args.__dict__],str(global_path),append=True,retry=True)
+        save_dict_list_to_json([args.__dict__],str(local_path),append=append_local,retry=True)
     return local_path, global_path
 
 def kill_missing_ids(name_key="args",dry=False,keep_criterion=None):
@@ -746,7 +746,7 @@ def kill_missing_ids(name_key="args",dry=False,keep_criterion=None):
     print(f"Keeping {len(include_keys)} ids out of {len(id_dict)} in {name_key}.")
     if not dry:
         new_dict_list = [id_dict[k] for k in include_keys]
-        save_dict_list_to_json(new_dict_list,tp.filename_ids,append=False)
+        save_dict_list_to_json(new_dict_list,tp.filename_ids,append=False,retry=True)
 
 def kill_by_id(id, name_key="sample_opts", dry=False):
     tp = TieredParser(name_key)
