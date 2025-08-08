@@ -5,9 +5,13 @@ import sys
 from pathlib import Path
 from functools import partial
 from collections import OrderedDict
+
+if __name__ == "__main__":
+    sys.path.append(str(Path(__file__).parent.parent.parent))
 from source.utils.mixed import load_json_to_dict_list, save_dict_list_to_json, longest_common_substring, bracket_glob_fix
 import copy
 from shutil import rmtree
+
 
 special_argkeys = ["deprecated","dynamic","version_backwards_compatability","renamed"]
 dont_load_argskeys = [k for k in special_argkeys if k!="dynamic"]
@@ -773,7 +777,6 @@ def get_current_default_version():
 
 def main():
     import argparse
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--unit_test", type=int, default=0)
     args = parser.parse_args()
