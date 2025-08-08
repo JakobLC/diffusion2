@@ -39,7 +39,7 @@ def load_json_to_dict_list(*args,**kwargs):
                 else:
                     raise
     else:
-        return jlc_load_json_to_dict_list(**kwargs)
+        return jlc_load_json_to_dict_list(*args,**kwargs)
 
 def save_dict_list_to_json(*args,**kwargs):
     defaults = {"retry": False,
@@ -60,7 +60,7 @@ def save_dict_list_to_json(*args,**kwargs):
                 else:
                     raise
     else:
-        jlc_save_dict_list_to_json(**kwargs)
+        jlc_save_dict_list_to_json(*args,**kwargs)
 
 
 def didx_from_info(info):
