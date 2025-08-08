@@ -9,11 +9,59 @@ import jsonlines
 import shutil
 import datetime
 import re
-import scipy.ndimage as nd
-import copy
-from jlc import (shaprint, longest_common_substring, 
-                 save_dict_list_to_json, load_json_to_dict_list)
 import warnings
+import time
+import copy
+
+import scipy.ndimage as nd
+
+from jlc import (shaprint, longest_common_substring)
+from jlc import save_dict_list_to_json as jlc_save_dict_list_to_json
+from jlc import load_json_to_dict_list as jlc_load_json_to_dict_list
+
+
+def load_json_to_dict_list(**kwargs):
+    defaults = {"retry": False,
+                "max_retries": 5, 
+                "retry_delay": 3}
+    
+    retry = kwargs.pop("retry", defaults["retry"])
+    max_retries = kwargs.pop("max_retries", defaults["max_retries"])
+    retry_delay = kwargs.pop("retry_delay", defaults["retry_delay"])
+    if retry:
+        for attempt in range(max_retries):
+            try:
+                return jlc_load_json_to_dict_list(**kwargs)
+            except json.JSONDecodeError as e:
+                if attempt < max_retries - 1:
+                    print(f"JSON decode error: {e}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    raise
+    else:
+        return jlc_load_json_to_dict_list(**kwargs)
+
+def save_dict_list_to_json(**kwargs):
+    defaults = {"retry": False,
+                "max_retries": 5, 
+                "retry_delay": 3}
+    
+    retry = kwargs.pop("retry", defaults["retry"])
+    max_retries = kwargs.pop("max_retries", defaults["max_retries"])
+    retry_delay = kwargs.pop("retry_delay", defaults["retry_delay"])
+    if retry:
+        for attempt in range(max_retries):
+            try:
+                return jlc_save_dict_list_to_json(**kwargs)
+            except json.JSONDecodeError as e:
+                if attempt < max_retries - 1:
+                    print(f"JSON decode error: {e}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    raise
+    else:
+        jlc_save_dict_list_to_json(**kwargs)
+
 
 def didx_from_info(info):
     if isinstance(info,dict):
