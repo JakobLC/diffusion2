@@ -20,7 +20,7 @@ from jlc import save_dict_list_to_json as jlc_save_dict_list_to_json
 from jlc import load_json_to_dict_list as jlc_load_json_to_dict_list
 
 
-def load_json_to_dict_list(**kwargs):
+def load_json_to_dict_list(*args,**kwargs):
     defaults = {"retry": False,
                 "max_retries": 5, 
                 "retry_delay": 3}
@@ -31,7 +31,7 @@ def load_json_to_dict_list(**kwargs):
     if retry:
         for attempt in range(max_retries):
             try:
-                return jlc_load_json_to_dict_list(**kwargs)
+                return jlc_load_json_to_dict_list(*args,**kwargs)
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
                     print(f"JSON decode error: {e}. Retrying in {retry_delay} seconds...")
@@ -41,7 +41,7 @@ def load_json_to_dict_list(**kwargs):
     else:
         return jlc_load_json_to_dict_list(**kwargs)
 
-def save_dict_list_to_json(**kwargs):
+def save_dict_list_to_json(*args,**kwargs):
     defaults = {"retry": False,
                 "max_retries": 5, 
                 "retry_delay": 3}
@@ -52,7 +52,7 @@ def save_dict_list_to_json(**kwargs):
     if retry:
         for attempt in range(max_retries):
             try:
-                return jlc_save_dict_list_to_json(**kwargs)
+                return jlc_save_dict_list_to_json(*args,**kwargs)
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
                     print(f"JSON decode error: {e}. Retrying in {retry_delay} seconds...")
