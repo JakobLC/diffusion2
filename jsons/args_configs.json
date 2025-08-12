@@ -767,5 +767,37 @@
         "p_num_labels": 0.0, 
         "p_points": 0.0, 
         "p_self_cond": 0.0
+    },
+    "entityv4": {
+        "versions": {
+            "big": {"image_size": 256, "input_scale": 0.03},
+            "pred_lw_sweep": {"loss_weights": "SNR;SNR_plus1;SNR_trunc;uniform;sigmoid_-4", 
+                            "predict": "x;eps;v", "decouple_loss_weights": false},
+            "onehot_sweep": {"encoding_type": "onehot", "final_activation": "none", "predict": "x;v;eps"},
+            "onehot_sweep_acts": {"encoding_type": "onehot", "final_activation": "sigmoid;softmax", "predict": "x"},
+            "lap_sweep": {"lap_mode": "similar;random;different"},
+            "onehot_lap_sweep": {"encoding_type": "onehot", 
+                                 "final_activation": "none", "predict": "x",
+                                 "lap_mode": "none;random;range"},
+            "unigs_lap_sweep": {"lap_mode": "none;random;range", "encoding_type": "RGB"},
+            "short": {"max_iter": 200000,"lr_warmup_steps": 1000,"lr_decay_steps": 50000}
+        },
+        "datasets": "entityseg",
+        "image_size": 128,
+        "input_scale": 0.05, 
+        "loss_weights": "sigmoid_-4",
+        "gen_setups": "entoptv4[vali],entoptv4[train]", 
+        "decouple_loss_weights": true,
+        "max_iter": 500000,
+        "lr_warmup_steps": 1000,
+        "lr_decay_steps": 200000,
+        "gen_interval": 10000,
+        "log_vali_interval": 1000,               
+        "update_loss_plot_interval": 1000, 
+        "update_forward_pass_plot_interval": 1000,
+        "p_num_labels": 0.0, 
+        "p_points": 0.0, 
+        "p_self_cond": 0.0
     }
+
 }
