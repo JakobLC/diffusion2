@@ -1447,8 +1447,19 @@ class SavedSamples:
                 else:
                     #assuming seg is 128x128x1 or similar
                     #metrics.append(get_segment_metrics(seg.permute(2,0,1),didx_i))  # old, too slow version
-                    metrics.append(get_segment_metrics(seg.cpu().numpy().transpose((2,0,1)),
-                                                                      gt.transpose((2,0,1))))
+                    if len(seg.shape)==2:
+                        #add channel dimension
+                        seg = seg[...,None]
+                    if len(gt.shape)==2:
+                        gt = gt[...,None]
+                    if torch.is_tensor(seg):
+                        seg = seg.cpu().numpy()
+                    if torch.is_tensor(gt):
+                        gt = gt.cpu().numpy()
+                    assert len(gt.shape)==3 and len(seg.shape)==3, f"expected gt and seg to have 3 dimensions, found gt={gt.shape} and seg={seg.shape}"
+                    assert gt.shape[2]==seg.shape[2]==1, f"expected gt and seg to have 1 channel, found gt={gt.shape} and seg={seg.shape}"
+
+                    metrics.append(get_segment_metrics(seg.transpose((2,0,1)),gt.transpose((2,0,1))))
         for i in range(len(segments)):
             idx = self.didx_to_idx[didx[i]]
             self.light_data[idx]["metrics"] = metrics[i]

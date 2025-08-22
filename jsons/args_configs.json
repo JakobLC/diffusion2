@@ -723,7 +723,7 @@
     },
     "entityv3": {
         "versions": {
-            "big": {"image_size": 256, "input_scale": 0.06, "decouple_loss_weights": true},
+            "big": {"image_size": 256, "input_scale": 0.03},
             "sam": {"image_encoder": "sam1_h", "image_encoder_depth": 1, "aug_prob_multiplier": 0,
                     "gen_setups": "entopt[vali][sam][w0],entopt[train][sam][w0]"},
             "short": {"max_iter": 100000,"lr_warmup_steps": 1000,"lr_decay_steps": 20000},
@@ -748,8 +748,11 @@
                                 "lap_mode": "none;random", "diff_channels": "4;6"},
             "unigs_lap_sweep": {"lap_mode": "none;random", "encoding_type": "RGB"},
             "long": {"max_iter": 500000,"lr_decay_steps": 150000},
-            "long2": {"max_iter": 1000000,"lr_decay_steps": 300000}
-            
+            "long2": {"max_iter": 1000000,"lr_decay_steps": 300000},
+            "unigs_pred_sweep": {"final_activation": "none", "lap_mode": "random", "encoding_type": "RGB", "predict": "v;eps"},
+            "unigs_b_sweep": {"final_activation": "none", "lap_mode": "random", "encoding_type": "RGB", "input_scale": "0.1;0.3;0.5;1.0"},
+            "onehot_b_sweep": {"lap_mode": "random", "encoding_type": "onehot", 
+                                "final_activation": "none", "input_scale": "0.1;0.3;0.5;1.0"}
         },
         "datasets": "entityseg",
         "image_size": 128,

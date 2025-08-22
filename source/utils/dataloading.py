@@ -152,7 +152,8 @@ class LocationAwarePalette:
                 image_size,
                 padding_idx=-1,
                 mode="similar",
-                largest_first=False):
+                largest_first=False,
+                random_seed=0):
         valid_modes = ["random","similar","different","range"]
         assert mode in valid_modes, "mode must be one of "+str(valid_modes)+", got "+mode
         if mode in ["similar","different"]:
@@ -166,7 +167,8 @@ class LocationAwarePalette:
         self.padding_idx = padding_idx
         self.largest_first = largest_first
         if mode=="random":
-            self.order = np.random.permutation(max_num_classes)
+            with jlc.TemporarilyDeterministic(seed=random_seed):
+                self.order = np.random.permutation(max_num_classes)
         elif mode=="similar":
             self.order = similar_ordering(self.num_bits)
         elif mode=="different":
@@ -274,7 +276,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                       global_p=1.0,
                       lap_mode="none",
                       skip_class_table=False,
-                      is_rgb=False):
+                      is_rgb=False,
+                      lap_seed=0):
         self.is_rgb = is_rgb
         self.skip_class_table = skip_class_table
         if skip_class_table:
@@ -301,7 +304,8 @@ class SegmentationDataset(torch.utils.data.Dataset):
                                             image_size=image_size,
                                             padding_idx=padding_idx,
                                             mode=self.lap_mode.replace("_largest",""),
-                                            largest_first="largest" in self.lap_mode)
+                                            largest_first="largest" in self.lap_mode,
+                                            random_seed=lap_seed)
         if self.load_cond_probs is not None:
             assert isinstance(self.load_cond_probs,dict), "load_cond_probs must be a dict or None"
             assert all([k in cond_image_prob_keys for k in self.load_cond_probs.keys()]), "unexpected key, got "+str(self.load_cond_probs.keys())+" expected "+str(cond_image_prob_keys)
@@ -1400,6 +1404,7 @@ def get_dataset_from_args(args_or_model_id=None,
                             lap_mode=args.lap_mode,
                             skip_class_table=args.diff_channels>8,
                             is_rgb=args.encoding_type=="RGB",
+                            lap_seed=args.seed,
                             )
     if return_type=="ds":
         return ds

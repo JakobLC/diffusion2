@@ -18,6 +18,30 @@ dont_load_argskeys = [k for k in special_argkeys if k!="dynamic"]
 
 to_list_if_str = lambda x: [x] if isinstance(x,str) else x
 
+def args_diffs(list_of_model_ids,
+               ignore_keys=["seed","training_history","save_path",
+                            "model_id","origin","model_name","ckpt_name",
+                            "mode"],
+               super_verbose=False,
+               name_key="args"):
+    """Returns a list of differences the args of a list of models"""
+    arg_lists = {}
+    for model_id in list_of_model_ids:
+        args = load_existing_args(model_id,name_key=name_key).__dict__
+        for k,v in args.items():
+            if k not in arg_lists:
+                arg_lists[k] = []
+            arg_lists[k].append(v)
+    for k,v in arg_lists.items():
+        if k in ignore_keys:
+            continue
+        setlen = len(set(list(v)))
+        if setlen>1:
+            print(f"Key {k} has {setlen} different values")
+            if super_verbose:
+                for model_id,vv in zip(list_of_model_ids,v):
+                    print(f"  {model_id}: {vv}")
+
 def get_ckpt_name(s,saves_folder="./saves/",return_multiple_matches=False):
     if ";" in s:
         return sum([to_list_if_str(get_ckpt_name(x,saves_folder,return_multiple_matches)) for x in s.split(";")],[])
@@ -623,13 +647,16 @@ def add_folder_ids(folder,
         if len(sample_opts_paths)>0:
             if atmost_one_sample_opts_file:
                 assert len(sample_opts_paths)==1, f"len(sample_opts_paths)={len(sample_opts_paths)} must be at most 1."
-            sample_opts_list = load_json_to_dict_list(str(sample_opts_paths[0]),retry=True)
+            sample_opts_list = load_json_to_dict_list(str(sample_opts_paths[0]))
 
         if require_sample_opts:
             assert sample_opts_list is not None, f"{path/'**/sample_opts.json'} does not exist"
         if args is not None:
             if not tpa.is_unique_id(args.model_id):
-                args.model_id = args.model_id+"_*"
+                if args.model_id.split("_")[-1].isnumeric():
+                    args.model_id = "_".join(args.model_id.split("_")[:-1]+["*"])
+                else:
+                    args.model_id = args.model_id+"_*"
                 args.model_id = tpa.get_unique_id(args)
             if change_save_path:
                 args.save_path = str(path)

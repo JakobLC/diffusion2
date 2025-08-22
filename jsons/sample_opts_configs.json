@@ -171,10 +171,12 @@
     },
     "ent": {
         "versions": {
+            "1v": {"num_votes": 1},
             "512": {"num_samples": 512}, 
             "64": {"num_samples": 64},
             "ts_sweep": {"sampler_type": "ddpm;ddim", "num_timesteps":"2;5;10;20;50;100;200"},
-            "gw_sweep": {"guidance_weight": "-1.0;-0.1;0.0;0.1;0.2;0.3;0.5;0.8;1.0;1.5;2.0;3.0;10.0"}
+            "gw_sweep": {"guidance_weight": "-1.0;-0.1;0.0;0.1;0.2;0.3;0.5;0.8;1.0;1.5;2.0;3.0;10.0"},
+            "10ts": {"num_timesteps": 10}
         },
         "datasets": "entityseg",
         "num_timesteps": 25,
@@ -223,7 +225,9 @@
             "1v": {"num_votes": 1},
             "repeat_didx": {"pri_didx": "entity_repeat", "split": "all"},
             "25ts": {"num_timesteps": 25},
-            "64": {"num_samples": 64}
+            "64": {"num_samples": 64},
+            "512": {"num_samples": 512},
+            "unigs_opt" : {"num_timesteps": 10, "guidance_weight":0.5}
         },
         "num_timesteps": 10, 
         "sampler_type": "ddpm", 

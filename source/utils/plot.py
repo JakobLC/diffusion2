@@ -48,7 +48,8 @@ def collect_gen_table(gen_id_patterns="all_ade20k[ts_sweep]*",
                    record_from_args=[],
                    sort_by_key=["save_path"],
                    do_map_to_float=True,
-                   round_digits=3):
+                   round_digits=3,
+                   remove_duplicates=True):
     if isinstance(record_from_sample_opts,str):
         record_from_sample_opts = [record_from_sample_opts]
     if isinstance(record_from_args,str):
