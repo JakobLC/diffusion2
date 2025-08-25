@@ -365,8 +365,7 @@ class TieredParser():
         assert isinstance(name,str), f"name={name} not a valid type."
         if name.find(";")>=0:
             return {}, {}, {}
-        name_based_args = json.loads((Path(__file__).parent.parent.parent/self.filename_model).read_text())
-
+        name_based_args = load_json_to_dict_list(str(Path(__file__).parent.parent.parent/self.filename_model),retry=True)
         if "+" in name:
             plus_names = name.split("+")[1:]
             root_name = name.split("+")[0]
@@ -463,7 +462,7 @@ class TieredParser():
             return ""
 
     def load_and_format_id_dict(self,return_type="dict"):
-        id_list = json.loads((Path(__file__).parent.parent.parent/self.filename_ids).read_text())
+        id_list = load_json_to_dict_list(str(Path(__file__).parent.parent.parent/self.filename_ids),retry=True)
         if return_type=="list":
             return id_list
         elif return_type=="dict":
@@ -535,7 +534,7 @@ def load_existing_args(path_or_id,
     assert behavior_on_mismatch in ["raise","theo","loaded"], f"behavior_on_mismatch={behavior_on_mismatch} must be one of ['raise','theo','loaded']"
     tp = TieredParser(name_key)
     if str(path_or_id).endswith(".json"):
-        args_loaded = json.loads(Path(path_or_id).read_text())
+        args_loaded = load_json_to_dict_list(str(Path(path_or_id)))
         if isinstance(args_loaded,list):
             assert len(args_loaded)==1, f"Expected len(args_loaded)==1, but len(args_loaded)={len(args_loaded)} for path_or_id={path_or_id}."
             args_loaded = args_loaded[0]

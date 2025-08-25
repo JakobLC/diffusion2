@@ -752,7 +752,9 @@
             "unigs_pred_sweep": {"final_activation": "none", "lap_mode": "random", "encoding_type": "RGB", "predict": "v;eps"},
             "unigs_b_sweep": {"final_activation": "none", "lap_mode": "random", "encoding_type": "RGB", "input_scale": "0.1;0.3;0.5;1.0"},
             "onehot_b_sweep": {"lap_mode": "random", "encoding_type": "onehot", 
-                                "final_activation": "none", "input_scale": "0.1;0.3;0.5;1.0"}
+                                "final_activation": "none", "input_scale": "0.1;0.3;0.5;1.0"},
+            "onehot_c_sweep": {"encoding_type": "onehot", "final_activation": "none", "predict": "x",
+                                "lap_mode": "random", "diff_channels": "2;4;6"}
         },
         "datasets": "entityseg",
         "image_size": 128,

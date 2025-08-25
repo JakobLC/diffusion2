@@ -927,7 +927,6 @@ class UNetModel(nn.Module):
 def create_unet_from_args(args):
     if not isinstance(args,dict):
         args = copy.deepcopy(args.__dict__)
-
     if args["channel_multiplier"]=="auto":
         image_size = args["image_size"]
         if image_size == 256:

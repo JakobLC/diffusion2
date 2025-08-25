@@ -167,8 +167,8 @@ class LocationAwarePalette:
         self.padding_idx = padding_idx
         self.largest_first = largest_first
         if mode=="random":
-            with jlc.TemporarilyDeterministic(seed=random_seed):
-                self.order = np.random.permutation(max_num_classes)
+            rng = np.random.default_rng(random_seed)
+            self.order = rng.permutation(max_num_classes)
         elif mode=="similar":
             self.order = similar_ordering(self.num_bits)
         elif mode=="different":

@@ -70,7 +70,7 @@ class DiffusionModelTrainer:
         else:
             self.restart_step5 = False
 
-        if not self.restart_flag:
+        if not self.restart_flag and self.args.mode not in ["cont"]:
             self.args.seed = set_random_seed(self.args.seed)
         self.cgd = create_diffusion_from_args(self.args)
         if not self.args.mode=="data":
@@ -99,6 +99,8 @@ class DiffusionModelTrainer:
             ckpt = torch.load(self.args.ckpt_name,weights_only=False)
             if self.args.save_path=="":
                 self.args.save_path = str(Path(self.args.ckpt_name).parent)
+            old_args = json.loads((Path(self.args.ckpt_name).parent/"args.json").read_text())[0]
+            self.args.seed = old_args["seed"]
             self.log("Continuing training run.")
         elif self.args.mode=="gen":
             self.args.ckpt_name = self.load_ckpt(self.args.ckpt_name)

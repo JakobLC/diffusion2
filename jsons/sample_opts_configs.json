@@ -235,5 +235,27 @@
         "num_votes": 3,
         "kwargs_mode": "only_image",
         "num_samples": 256
+    },
+    "ent5": {
+        "versions": {
+            "vali": {},
+            "train": {"split": "train"},
+            "all": {"num_samples": -1},
+            "all_test": {"num_samples": -1, "split_method": "native", "split": "test"},
+            "save": {"save_raw_samples": true, "save_light_stats": true, "only_save_raw_pred": true, "num_save_raw_samples": 1e10},
+            "test": {"split": "test"},
+            "3v": {"num_votes": 3},
+            "repeat_didx": {"pri_didx": "entity_repeat", "split": "all"},
+            "25ts": {"num_timesteps": 25},
+            "64": {"num_samples": 64},
+            "512": {"num_samples": 512},
+            "unigs_opt" : {"num_timesteps": 10, "guidance_weight":0.5}
+        },
+        "num_timesteps": 5, 
+        "sampler_type": "ddpm", 
+        "guidance_weight": 1.0,
+        "num_votes": 1,
+        "kwargs_mode": "only_image",
+        "num_samples": 8
     }
 }

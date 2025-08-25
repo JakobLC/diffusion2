@@ -362,7 +362,7 @@ def hungarian_iou(pred,gt,ignore_zero=False,match_zero=False,return_assignment=F
             val_over_gts = 1.0
     else:
         val = np.mean(iou_per_assignment[mask])
-        val_over_gts = np.mean(iou_per_assignment[assign_gt[mask]>0])
+        val_over_gts = np.mean(iou_per_assignment[assign_gt[mask]>=0])
     if return_assignment:
         out = {"val":val,
                "val_over_gts": val_over_gts,
